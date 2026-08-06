@@ -46,6 +46,21 @@ export function generateRecommendations(signals: SignalResult[], score: number):
       case "base-url":
         recommendations.push("ANTHROPIC_BASE_URL 包含敏感域名，请更换代理");
         break;
+      case "fonts":
+        recommendations.push("系统安装中文字体暴露真实地区，建议卸载或禁用中文字体");
+        break;
+      case "dns":
+        recommendations.push("DNS 解析可能泄露真实地区，建议使用安全 DNS（如 8.8.8.8）");
+        break;
+      case "proxy-env":
+        recommendations.push("未配置代理环境变量，请设置 HTTP_PROXY/HTTPS_PROXY");
+        break;
+      case "win-region":
+        recommendations.push("Windows 区域格式为中文，运行 `cc-fix persist on` 修复");
+        break;
+      case "utc-offset":
+        recommendations.push("UTC 偏移与目标时区不一致，运行 `cc-fix persist on` 修复");
+        break;
     }
   }
 

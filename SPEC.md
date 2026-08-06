@@ -48,6 +48,16 @@
 19. As a Claude Code 用户, I want to 检测出口 IP 是否正常, so that 我知道代理是否生效
 20. As a Claude Code 用户, I want to 检测代理环境变量是否配置正确, so that 我知道 HTTP_PROXY/HTTPS_PROXY 是否设置
 
+### Phase 2 新增用户故事
+23. As a Claude Code 用户, I want to 检测 DNS 解析是否泄露真实地区, so that 我知道 DNS 是否安全
+24. As a Claude Code 用户, I want to 检测系统是否安装了中文字体, so that 我了解字体层面的风险
+25. As a Claude Code 用户, I want to 检测 ANTHROPIC_BASE_URL 是否包含敏感域名, so that 我知道代理配置是否安全
+26. As a Claude Code 用户, I want to 检测代理环境变量是否配置, so that 我知道 HTTP_PROXY 是否生效
+27. As a Claude Code 用户, I want to 检测 Windows 区域格式是否为中文, so that 我了解注册表级别的风险
+28. As a Claude Code 用户, I want to 检测 UTC 偏移是否与目标时区一致, so that 我验证 TZ 环境变量是否生效
+29. As a Claude Code 用户, I want to 知道出口 IP 是住宅还是数据中心, so that 我了解 IP 质量
+30. As a Claude Code 用户, I want to 多个 IP 情报源交叉验证, so that 我知道情报是否一致
+
 ### 状态查看
 21. As a Claude Code 用户, I want to 查看当前持久化状态, so that 我知道哪些环境变量已被修改
 22. As a Claude Code 用户, I want to 看到修复建议, so that 我知道下一步该做什么
@@ -86,18 +96,28 @@
 
 ### 检测模块
 
-18 个检测维度，分三个优先级：
+10 个检测维度（Phase 1: 4 高优 + Phase 2: 6 中优），总权重 125，评分归一化到 100：
 
-**高优先级（必须检测）**：
+**高优先级（已实现）**：
 - 系统时区（权重 25）— Claude Code 已知主动检测
 - 出口 IP 国家（权重 25）— 约 60% 封号原因
 - 系统语言（权重 20）— 第二高权重信号
 - 信号一致性（权重 15）— 多信号矛盾触发风控
 
-**中优先级（建议检测）**：
-- UTC 偏移量、Node.js Intl Locale、代理配置、DNS 配置、IP ASN、BASE_URL 域名、Windows 系统区域格式、系统字体
+**中优先级（Phase 2 新增）**：
+- 系统字体（权重 10）— 扫描 Windows Fonts 目录检测中文字体，checkcc.org 对应 +24 分项
+- DNS 配置（权重 8）— dns.lookup 解析 Anthropic API 域名，对比 IP 所在国家
+- BASE_URL 域名（权重 8）— 检查 ANTHROPIC_BASE_URL 是否包含 147 个中国 AI 敏感域名
+- 代理环境（权重 6）— 检查 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY 是否配置
+- Windows 区域格式（权重 4）— 注册表 HKCU\Control Panel\International 的 LocaleName
+- UTC 偏移（权重 4）— 验证 TZ 环境变量是否生效
 
-**低优先级（可选）**：
+**IP 情报增强（Phase 2）**：
+- 多源对比：并行查询 ip-api.com + ipinfo.io，对比 country/ASN 一致性（不一致 +15 分）
+- 数据中心判断：硬编码云厂商 ASN 清单（AWS/Azure/GCP/Cloudflare/阿里云/腾讯云等），命中则 +13 分
+- 新增 IpIntelligence 字段：ipType / multiSourceConsistent / sourceCount
+
+**低优先级（暂不实现）**：
 - 主机名/用户名、厂商字体、制造商信息、键盘布局、Node.js 版本、环境变量完整性
 
 ### 评分模型
@@ -165,20 +185,36 @@ run 命令:
 cc-fix/
 ├── src/
 │   ├── index.ts              # CLI 入口
-│   ├── detection/            # 检测模块（复用 check-cc）
+│   ├── detection/            # 检测模块（10 个插件 + 评分引擎）
 │   │   ├── types.ts
 │   │   ├── scoring.ts
 │   │   ├── runner.ts
+│   │   ├── plugin.ts
+│   │   ├── regions.ts
 │   │   ├── config/
-│   │   ├── regions/
+│   │   │   └── sensitive-domains.ts  # 147 个中国 AI 敏感域名
 │   │   └── plugins/
-│   ├── persist/              # 持久化管理（备份/恢复）
-│   ├── run/                  # 进程级注入启动
-│   ├── proxy/                # 代理检测
+│   │       ├── timezone.ts        # 系统时区 (Phase 1)
+│   │       ├── language.ts        # 系统语言 (Phase 1)
+│   │       ├── locale.ts          # Intl Locale (Phase 1)
+│   │       ├── consistency.ts     # 信号一致性 (Phase 1)
+│   │       ├── dns.ts             # DNS 配置 (Phase 2)
+│   │       ├── fonts.ts           # 系统字体 (Phase 2)
+│   │       ├── base-url.ts        # BASE_URL 域名 (Phase 2)
+│   │       ├── proxy-env.ts       # 代理环境 (Phase 2)
+│   │       ├── win-locale.ts      # Windows 区域格式 (Phase 2)
+│   │       └── utc-offset.ts      # UTC 偏移 (Phase 2)
 │   ├── platform/             # 平台抽象层
-│   │   ├── adapter.ts
 │   │   └── windows.ts
-│   └── output/               # 终端输出（表格/JSON）
+│   ├── proxy/                # 出口 IP 检测（多源 + 数据中心判断）
+│   │   └── ip-intel.ts
+│   ├── run/                  # 进程级注入启动
+│   │   └── injector.ts
+│   └── output/               # 终端输出（chalk + cli-table3）
+│       └── terminal.ts
+├── scripts/
+│   ├── cc-fix.bat            # 双击菜单式操作
+│   └── install.ps1           # PowerShell 一键安装
 ├── package.json
 ├── tsconfig.json
 └── tsup.config.ts

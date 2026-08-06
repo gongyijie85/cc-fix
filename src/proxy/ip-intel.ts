@@ -1,6 +1,35 @@
-// IP 情报查询 — 多源回退，国内可用
+// IP 情报查询 — 多源对比 + 数据中心判断
 
 import type { IpIntelligence } from "../detection/types.js";
+
+// 常见云厂商 ASN 前缀（数据中心 IP）
+const DATACENTER_ASN_PREFIXES = [
+  "AS16509",  // AWS
+  "AS14618",  // AWS
+  "AS8075",   // Azure
+  "AS15169",  // Google
+  "AS396982", // Google Cloud
+  "AS13335",  // Cloudflare
+  "AS14061",  // DigitalOcean
+  "AS37963",  // 阿里云
+  "AS45090",  // 腾讯云
+  "AS36351",  // SoftLayer
+  "AS20473",  // Vultr
+  "AS63949",  // Linode/Akamai
+  "AS51167",  // Contabo
+  "AS9009",   // M247
+  "AS212238", // Datacamp Limited
+];
+
+type RawIpData = {
+  ip: string | null;
+  country: string | null;
+  region: string | null;
+  city: string | null;
+  asn: string | null;
+  org: string | null;
+  timezone: string | null;
+};
 
 type IpApiResult = {
   ip?: string;
@@ -12,8 +41,13 @@ type IpApiResult = {
   as?: string;
 };
 
+function isDatacenterAsn(asn: string | null): boolean {
+  if (!asn) return false;
+  return DATACENTER_ASN_PREFIXES.some((prefix) => asn.startsWith(prefix));
+}
+
 // 源 1: ip-api.com（国内可用，免费，无需 key）
-async function fetchFromIpApi(): Promise<IpIntelligence | null> {
+async function fetchFromIpApi(): Promise<RawIpData | null> {
   try {
     const response = await fetch("http://ip-api.com/json/?lang=zh-CN", {
       signal: AbortSignal.timeout(5000),
@@ -36,7 +70,7 @@ async function fetchFromIpApi(): Promise<IpIntelligence | null> {
 }
 
 // 源 2: ipinfo.io（备用）
-async function fetchFromIpInfo(): Promise<IpIntelligence | null> {
+async function fetchFromIpInfo(): Promise<RawIpData | null> {
   try {
     const response = await fetch("https://ipinfo.io/json", {
       signal: AbortSignal.timeout(5000),
@@ -64,8 +98,58 @@ async function fetchFromIpInfo(): Promise<IpIntelligence | null> {
   }
 }
 
+function toIpIntelligence(
+  primary: RawIpData,
+  secondary: RawIpData | null
+): IpIntelligence {
+  // 多源一致性检查
+  let multiSourceConsistent = true;
+  let sourceCount = 1;
+
+  if (secondary) {
+    sourceCount = 2;
+    const countryMatch =
+      !primary.country || !secondary.country ||
+      primary.country.toUpperCase() === secondary.country.toUpperCase();
+    const asnMatch =
+      !primary.asn || !secondary.asn ||
+      primary.asn === secondary.asn;
+    multiSourceConsistent = countryMatch && asnMatch;
+  }
+
+  // 数据中心判断
+  const ipType = isDatacenterAsn(primary.asn)
+    ? "datacenter" as const
+    : primary.asn
+      ? "residential" as const
+      : "unknown" as const;
+
+  return {
+    ip: primary.ip,
+    country: primary.country,
+    region: primary.region,
+    city: primary.city,
+    asn: primary.asn,
+    org: primary.org,
+    timezone: primary.timezone,
+    ipType,
+    multiSourceConsistent,
+    sourceCount,
+  };
+}
+
 export async function fetchIpIntelligence(): Promise<IpIntelligence | null> {
-  // 依次尝试多个源，任一成功即返回
-  const result = (await fetchFromIpApi()) ?? (await fetchFromIpInfo());
-  return result;
+  // 并行查询多个源
+  const [primary, secondary] = await Promise.all([
+    fetchFromIpApi(),
+    fetchFromIpInfo(),
+  ]);
+
+  if (primary) {
+    return toIpIntelligence(primary, secondary);
+  }
+  if (secondary) {
+    return toIpIntelligence(secondary, null);
+  }
+  return null;
 }

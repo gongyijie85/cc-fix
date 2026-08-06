@@ -2,7 +2,7 @@
 
 import chalk from "chalk";
 import Table from "cli-table3";
-import type { CheckResponse, SignalResult } from "../detection/types.js";
+import type { CheckResponse, SignalResult, IpIntelligence } from "../detection/types.js";
 
 function getRiskColor(risk: SignalResult["risk"]): (text: string) => string {
   switch (risk) {
@@ -45,6 +45,28 @@ function getRiskLabel(risk: SignalResult["risk"]): string {
   }
 }
 
+function renderIpIntel(ip: IpIntelligence): void {
+  console.log(chalk.bold("🌐 网络出口信息:"));
+  console.log(`  IP: ${ip.ip || "N/A"}`);
+  console.log(`  位置: ${[ip.country, ip.region, ip.city].filter(Boolean).join(" / ") || "N/A"}`);
+  console.log(`  组织: ${ip.org || "N/A"} (${ip.asn || "N/A"})`);
+  console.log(`  时区: ${ip.timezone || "N/A"}`);
+
+  // Phase 2 新增字段
+  const ipTypeLabel = ip.ipType === "datacenter"
+    ? chalk.red("数据中心 IP ⚠️")
+    : ip.ipType === "residential"
+      ? chalk.green("住宅/普通 ISP")
+      : chalk.dim("未知");
+  console.log(`  IP 类型: ${ipTypeLabel}`);
+
+  const consistencyLabel = ip.multiSourceConsistent
+    ? chalk.green(`一致 (${ip.sourceCount} 源)`)
+    : chalk.red(`不一致 (${ip.sourceCount} 源) ⚠️`);
+  console.log(`  多源一致性: ${consistencyLabel}`);
+  console.log();
+}
+
 export function renderCheckResponse(response: CheckResponse): void {
   const { score, riskLevel, signals, recommendations, ipIntelligence } = response;
 
@@ -65,17 +87,15 @@ export function renderCheckResponse(response: CheckResponse): void {
     console.log(chalk.bold.cyan("║") + chalk.red(`  ⚠️  命中高危风险 ${highRiskCount} 个`) + "                                        ".slice(0, 56 - 14 - String(highRiskCount).length) + chalk.bold.cyan("║"));
   }
 
+  // 检测维度统计
+  console.log(chalk.bold.cyan("║") + `  📊 检测维度: ${signals.length} 个信号` + "                                  ".slice(0, Math.max(0, 56 - 14 - String(signals.length).length)) + chalk.bold.cyan("║"));
+
   console.log(chalk.bold.cyan("╚══════════════════════════════════════════════════════╝"));
   console.log();
 
   // IP 信息摘要
   if (ipIntelligence) {
-    console.log(chalk.bold("🌐 网络出口信息:"));
-    console.log(`  IP: ${ipIntelligence.ip || "N/A"}`);
-    console.log(`  位置: ${[ipIntelligence.country, ipIntelligence.region, ipIntelligence.city].filter(Boolean).join(" / ") || "N/A"}`);
-    console.log(`  组织: ${ipIntelligence.org || "N/A"} (${ipIntelligence.asn || "N/A"})`);
-    console.log(`  时区: ${ipIntelligence.timezone || "N/A"}`);
-    console.log();
+    renderIpIntel(ipIntelligence);
   }
 
   // 信号详情表格

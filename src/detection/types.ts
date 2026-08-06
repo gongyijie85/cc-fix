@@ -42,6 +42,10 @@ export type IpIntelligence = {
   asn: string | null;
   org: string | null;
   timezone: string | null;
+  // Phase 2 新增
+  ipType: "residential" | "datacenter" | "unknown";
+  multiSourceConsistent: boolean;
+  sourceCount: number;
 };
 
 export type CheckResponse = {
