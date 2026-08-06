@@ -16,11 +16,12 @@ echo     4. 查看持久化状态
 echo     5. 检测出口 IP / 代理
 echo     6. 安全模式启动 Claude Code
 echo     7. 安全模式启动 Claude Desktop
+echo     8. 打开可视化 Web 面板（GUI）
 echo     0. 退出
 echo.
 echo   ========================================
 echo.
-set /p choice=  请输入选项编号 (0-7): 
+set /p choice=  请输入选项编号 (0-8): 
 
 if "%choice%"=="1" goto check
 if "%choice%"=="2" goto persist_on
@@ -29,6 +30,7 @@ if "%choice%"=="4" goto status
 if "%choice%"=="5" goto proxy
 if "%choice%"=="6" goto run_claude
 if "%choice%"=="7" goto run_desktop
+if "%choice%"=="8" goto gui
 if "%choice%"=="0" exit
 echo.
 echo   无效选项，请重新输入
@@ -92,4 +94,12 @@ echo.
 echo   以安全环境启动 Claude Desktop...
 echo.
 call cc-fix run --desktop
+goto menu
+
+:gui
+echo.
+echo   正在启动 Web 面板...
+echo   浏览器将自动打开，按 Ctrl+C 退出
+echo.
+call cc-fix gui
 goto menu

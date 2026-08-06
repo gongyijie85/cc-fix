@@ -8,6 +8,8 @@ import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
 import { createBackup, restoreBackup, getPersistStatus, setEnvVar, loadBackup } from "./platform/windows.js";
 import { runWithInjectedEnv, runDesktop } from "./run/injector.js";
+import { startGuiServer } from "./gui/server.js";
+import { exec } from "node:child_process";
 
 
 const program = new Command();
@@ -157,6 +159,22 @@ program
       console.log("\n✅ 出口 IP 地区正常");
     }
     console.log();
+  });
+
+// gui 命令
+program
+  .command("gui")
+  .description("启动可视化 Web 面板")
+  .option("-p, --port <port>", "端口号", "3456")
+  .action(async (options) => {
+    const port = parseInt(options.port, 10) || 3456;
+    await startGuiServer(port);
+    const url = `http://127.0.0.1:${port}`;
+    console.log(`🛡️  CC-Fix Web 面板已启动`);
+    console.log(`🌐 打开浏览器访问: ${url}`);
+    console.log("   按 Ctrl+C 退出");
+    // 自动打开浏览器
+    exec(`start ${url}`);
   });
 
 program.parse();

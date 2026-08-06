@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CC-Fix 环境安全检测</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e4e4e7; --muted: #71717a; --accent: #6366f1;
+    --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 24px; }
+  .container { max-width: 800px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 32px; }
+  header h1 { font-size: 24px; font-weight: 600; }
+  header p { color: var(--muted); font-size: 14px; margin-top: 4px; }
+  .score-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 24px; }
+  .score-value { font-size: 56px; font-weight: 700; line-height: 1; }
+  .score-label { font-size: 14px; color: var(--muted); margin-top: 8px; }
+  .score-low { color: var(--green); } .score-medium { color: var(--yellow); }
+  .score-high { color: var(--orange); } .score-critical { color: var(--red); }
+  .ip-info { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; }
+  .ip-info h3 { font-size: 14px; color: var(--muted); margin-bottom: 8px; }
+  .ip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+  .ip-item { font-size: 13px; } .ip-item span { color: var(--muted); }
+  .signals { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 24px; }
+  .signals h3 { padding: 12px 20px; font-size: 14px; color: var(--muted); border-bottom: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 8px 16px; font-size: 12px; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 16px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .risk-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 9999px; font-size: 12px; font-weight: 500; }
+  .risk-low { background: rgba(34,197,94,.15); color: var(--green); }
+  .risk-medium { background: rgba(234,179,8,.15); color: var(--yellow); }
+  .risk-high { background: rgba(239,68,68,.15); color: var(--red); }
+  .risk-critical { background: rgba(239,68,68,.2); color: var(--red); }
+  .contrib { font-weight: 600; font-size: 13px; }
+  .contrib-zero { color: var(--green); } .contrib-nonzero { color: var(--red); }
+  .actions { display: flex; gap: 12px; margin-bottom: 24px; }
+  .btn { flex: 1; padding: 12px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .2s; }
+  .btn:hover { opacity: .85; } .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-on { background: var(--green); color: #000; } .btn-off { background: var(--red); color: #fff; }
+  .btn-refresh { background: var(--accent); color: #fff; }
+  .recommendations { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; }
+  .recommendations h3 { font-size: 14px; color: var(--muted); margin-bottom: 8px; }
+  .recommendations li { font-size: 13px; margin-left: 16px; margin-bottom: 4px; }
+  .loading { text-align: center; padding: 40px; color: var(--muted); }
+  .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .status-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 13px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status-dot.on { background: var(--green); } .status-dot.off { background: var(--muted); }
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--green); color: #000; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 500; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🛡️ CC-Fix 环境安全检测</h1>
+    <p>Claude Code 环境风险可视化面板</p>
+  </header>
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">检测中...</span>
+  </div>
+  <div id="content"><div class="loading"><div class="spinner"></div><p>正在检测环境...</p></div></div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const riskLabel = { low: "安全", medium: "中风险", high: "高风险", critical: "极高风险" };
+const scoreClass = (s) => s >= 71 ? "score-critical" : s >= 51 ? "score-high" : s >= 21 ? "score-medium" : "score-low";
+
+function showToast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2000);
+}
+
+async function loadStatus() {
+  try {
+    const res = await fetch("/api/status");
+    const status = await res.json();
+    const dot = $("#statusDot"), txt = $("#statusText");
+    if (status.enabled) { dot.className = "status-dot on"; txt.textContent = `持久化已开启 — 目标: ${status.region || "auto"}`; }
+    else { dot.className = "status-dot off"; txt.textContent = "持久化未开启"; }
+  } catch {}
+}
+
+async function loadCheck() {
+  try {
+    const res = await fetch("/api/check");
+    const data = await res.json();
+    render(data);
+  } catch (e) {
+    $("#content").innerHTML = `<div class="loading"><p>检测失败: ${e.message}</p></div>`;
+  }
+}
+
+function render(data) {
+  const { score, riskLevel, signals, ipIntelligence: ip, recommendations } = data;
+  const sorted = [...signals].sort((a, b) => b.contribution - a.contribution);
+  const highCount = signals.filter(s => s.risk === "high" || s.risk === "critical").length;
+
+  let html = `
+    <div class="score-card">
+      <div class="score-value ${scoreClass(score)}">${score}<span style="font-size:24px;color:var(--muted)">/100</span></div>
+      <div class="score-label">风险评分 · ${riskLabel[riskLevel]}${highCount > 0 ? ` · ${highCount} 个高危` : ""}</div>
+    </div>`;
+
+  if (ip) {
+    const ipTypeLabel = ip.ipType === "datacenter" ? '<span style="color:var(--red)">数据中心</span>' : ip.ipType === "residential" ? '<span style="color:var(--green)">住宅 ISP</span>' : ip.ipType;
+    html += `<div class="ip-info"><h3>🌐 网络出口</h3><div class="ip-grid">
+      <div class="ip-item"><span>IP:</span> ${ip.ip || "N/A"}</div>
+      <div class="ip-item"><span>位置:</span> ${[ip.country, ip.city].filter(Boolean).join(" / ") || "N/A"}</div>
+      <div class="ip-item"><span>ASN:</span> ${ip.asn || "N/A"}</div>
+      <div class="ip-item"><span>类型:</span> ${ipTypeLabel}</div>
+      <div class="ip-item"><span>多源:</span> ${ip.multiSourceConsistent ? '<span style="color:var(--green)">一致</span>' : '<span style="color:var(--red)">不一致</span>'}</div>
+    </div></div>`;
+  }
+
+  html += `<div class="signals"><h3>📊 检测信号 (${signals.length})</h3><table><thead><tr><th>检测项</th><th>当前值</th><th>风险</th><th>分值</th></tr></thead><tbody>`;
+  for (const s of sorted) {
+    const val = s.value && s.value.length > 30 ? s.value.slice(0, 30) + "..." : (s.value || "N/A");
+    html += `<tr><td>${s.label}</td><td style="color:var(--muted)">${val}</td><td><span class="risk-badge risk-${s.risk}">${riskLabel[s.risk]}</span></td><td class="contrib ${s.contribution > 0 ? "contrib-nonzero" : "contrib-zero"}">${s.contribution > 0 ? "+" + s.contribution : "+0"}</td></tr>`;
+  }
+  html += `</tbody></table></div>`;
+
+  html += `<div class="actions">
+    <button class="btn btn-on" onclick="persistOn()">✅ 一键修复 (Persist On)</button>
+    <button class="btn btn-off" onclick="persistOff()">❌ 恢复原始 (Persist Off)</button>
+    <button class="btn btn-refresh" onclick="refresh()">🔄 重新检测</button>
+  </div>`;
+
+  if (recommendations.length > 0) {
+    html += `<div class="recommendations"><h3>💡 修复建议</h3><ul>`;
+    for (const r of recommendations) html += `<li>${r}</li>`;
+    html += `</ul></div>`;
+  }
+
+  $("#content").innerHTML = html;
+}
+
+async function persistOn() {
+  const res = await fetch("/api/persist/on", { method: "POST" });
+  const data = await res.json();
+  if (data.success) { showToast("✅ 已开启安全环境: " + data.region); loadStatus(); loadCheck(); }
+}
+
+async function persistOff() {
+  const res = await fetch("/api/persist/off", { method: "POST" });
+  const data = await res.json();
+  if (data.success) { showToast("✅ 已恢复原始环境"); loadStatus(); loadCheck(); }
+  else { showToast("❌ " + data.error); }
+}
+
+function refresh() { $("#content").innerHTML = '<div class="loading"><div class="spinner"></div><p>正在检测...</p></div>'; loadCheck(); }
+
+loadStatus();
+loadCheck();
+</script>
+</body>
+</html>

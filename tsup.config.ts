@@ -8,6 +8,9 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   target: "node20",
+  loader: {
+    ".html": "text",
+  },
   banner: {
     js: "#!/usr/bin/env node",
   },
