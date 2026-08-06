@@ -14,8 +14,21 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": ["claude", "claude-code", "environment-checker", "risk-analysis"],
+  "keywords": ["claude", "claude-code", "environment-checker", "risk-analysis", "anthropic", "cursor", "claude-desktop", "cli", "security"],
   "license": "MIT",
+  "author": "cc-fix contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gongyijie85/bookrank.git",
+    "directory": "cc-fix"
+  },
+  "homepage": "https://github.com/gongyijie85/bookrank/tree/main/cc-fix#readme",
+  "bugs": {
+    "url": "https://github.com/gongyijie85/bookrank/issues"
+  },
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=20"
   },

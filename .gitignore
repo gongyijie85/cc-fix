@@ -1,4 +1,30 @@
-node_modules
-dist
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Test coverage
+coverage/
+
+# Logs
 *.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Backup files (runtime generated)
+persist-backup.json
