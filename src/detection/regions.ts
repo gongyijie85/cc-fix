@@ -1,0 +1,40 @@
+// 目标地区配置
+
+import type { TargetRegion } from "../detection/types.js";
+
+export const TARGET_REGIONS: Record<string, TargetRegion> = {
+  us: {
+    code: "us",
+    name: "United States",
+    timezone: "America/New_York",
+    lang: "en_US.UTF-8",
+    lcAll: "en_US.UTF-8",
+  },
+  eu: {
+    code: "eu",
+    name: "Europe",
+    timezone: "Europe/London",
+    lang: "en_GB.UTF-8",
+    lcAll: "en_GB.UTF-8",
+  },
+  jp: {
+    code: "jp",
+    name: "Japan",
+    timezone: "Asia/Tokyo",
+    lang: "ja_JP.UTF-8",
+    lcAll: "ja_JP.UTF-8",
+  },
+  sg: {
+    code: "sg",
+    name: "Singapore",
+    timezone: "Asia/Singapore",
+    lang: "en_SG.UTF-8",
+    lcAll: "en_SG.UTF-8",
+  },
+};
+
+export const DEFAULT_REGION = "us";
+
+export function getTargetRegion(code: string): TargetRegion {
+  return TARGET_REGIONS[code] ?? TARGET_REGIONS[DEFAULT_REGION];
+}
