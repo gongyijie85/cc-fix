@@ -42,5 +42,33 @@ export async function runDetection(
     plugins.map((plugin) => plugin.run(context))
   );
 
+  // IP 情报派生信号（参与评分）
+  if (ipIntel) {
+    if (ipIntel.ipType === "datacenter") {
+      signals.push({
+        id: "ip-datacenter",
+        label: "数据中心 IP",
+        value: `${ipIntel.asn} (${ipIntel.org || "未知"})`,
+        score: 1,
+        weight: 13,
+        contribution: 13,
+        source: "network",
+        risk: "high",
+      });
+    }
+    if (!ipIntel.multiSourceConsistent) {
+      signals.push({
+        id: "ip-multi-source",
+        label: "多源不一致",
+        value: `${ipIntel.sourceCount} 个情报源结果不一致`,
+        score: 1,
+        weight: 15,
+        contribution: 15,
+        source: "network",
+        risk: "high",
+      });
+    }
+  }
+
   return buildCheckResponse(signals, ipIntel, regionCode);
 }

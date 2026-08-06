@@ -3,8 +3,11 @@
 import type { SignalResult, CheckResponse, AccessStatus, IpIntelligence, RegionCode } from "./types.js";
 
 export function calculateScore(signals: SignalResult[]): number {
-  const total = signals.reduce((sum, signal) => sum + signal.contribution, 0);
-  return Math.min(100, Math.max(0, total));
+  const totalWeight = signals.reduce((sum, s) => sum + s.weight, 0);
+  const rawScore = signals.reduce((sum, s) => sum + s.contribution, 0);
+  if (totalWeight === 0) return 0;
+  // 归一化到 0-100：当所有信号都命中时，rawScore == totalWeight，映射为 100
+  return Math.min(100, Math.round((rawScore / totalWeight) * 100));
 }
 
 export function getRiskLevel(score: number): "low" | "medium" | "high" | "critical" {

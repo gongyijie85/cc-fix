@@ -65,15 +65,16 @@ export const dnsPlugin: DetectionPlugin = {
         risk: isConsistent ? "low" : "medium",
       };
     } catch {
+      // DNS 解析失败（网络不可达等）≠ DNS 泄露，跳过不加分
       return {
         id: "dns",
         label: "DNS 配置",
-        value: "DNS 解析失败",
-        score: 0.5,
+        value: "DNS 解析失败（可能网络不可达）",
+        score: 0,
         weight: 8,
-        contribution: 4,
+        contribution: 0,
         source: "network",
-        risk: "medium",
+        risk: "low",
       };
     }
   },

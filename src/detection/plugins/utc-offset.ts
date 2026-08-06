@@ -19,6 +19,14 @@ const EXPECTED_OFFSETS: Record<string, number> = {
   "Australia/Sydney": 600,
 };
 
+function formatUtcOffset(offsetMinutes: number): string {
+  const sign = offsetMinutes <= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const h = String(Math.floor(abs / 60)).padStart(2, "0");
+  const m = String(abs % 60).padStart(2, "0");
+  return `UTC${sign}${h}:${m}`;
+}
+
 export const utcOffsetPlugin: DetectionPlugin = {
   id: "utc-offset",
   label: "UTC 偏移",
@@ -26,12 +34,13 @@ export const utcOffsetPlugin: DetectionPlugin = {
   run: async (context: DetectionContext): Promise<SignalResult> => {
     const actualOffset = new Date().getTimezoneOffset(); // 分钟，正数表示 UTC 之前
     const expectedOffset = EXPECTED_OFFSETS[context.targetTimezone];
+    const offsetStr = formatUtcOffset(actualOffset);
 
     if (expectedOffset === undefined) {
       return {
         id: "utc-offset",
         label: "UTC 偏移",
-        value: `UTC${actualOffset <= 0 ? "+" : "-"}${String(Math.abs(Math.floor(actualOffset / 60))).padStart(2, "0")}:${String(Math.abs(actualOffset % 60)).padStart(2, "0")}`,
+        value: offsetStr,
         score: 0,
         weight: 4,
         contribution: 0,
@@ -43,8 +52,6 @@ export const utcOffsetPlugin: DetectionPlugin = {
     // 考虑夏令时：允许 ±60 分钟偏差
     const diff = Math.abs(actualOffset - expectedOffset);
     const isMatch = diff <= 60;
-
-    const offsetStr = `UTC${actualOffset <= 0 ? "+" : "-"}${String(Math.abs(Math.floor(actualOffset / 60))).padStart(2, "0")}:${String(Math.abs(actualOffset % 60)).padStart(2, "0")}`;
 
     return {
       id: "utc-offset",

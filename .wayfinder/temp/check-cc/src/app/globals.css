@@ -1,0 +1,46 @@
+/* CheckCC 的全局样式入口，用于加载 Tailwind CSS、定义主题变量和基础页面样式。 */
+@import "tailwindcss";
+
+:root {
+  --background: #f7f2ea;
+  --foreground: #0b1220;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+
+a {
+  text-decoration: none;
+}
+
+@keyframes risk-card-pulse {
+  0%, 100% {
+    background-color: #dc2626;
+    box-shadow: 0 10px 15px -3px rgb(127 29 29 / 0.3), 0 4px 6px -4px rgb(127 29 29 / 0.3);
+    transform: scale(1);
+  }
+  50% {
+    background-color: #ef4444;
+    box-shadow: 0 18px 30px -8px rgb(127 29 29 / 0.55), 0 0 28px rgb(239 68 68 / 0.45);
+    transform: scale(1.015);
+  }
+}

@@ -21,24 +21,26 @@ describe("calculateScore", () => {
     expect(calculateScore([])).toBe(0);
   });
 
-  it("sums contributions", () => {
+  it("normalizes by total weight", () => {
     const signals = [
-      makeSignal({ contribution: 10 }),
-      makeSignal({ contribution: 20 }),
+      makeSignal({ weight: 10, contribution: 5 }),
+      makeSignal({ weight: 10, contribution: 10 }),
     ];
-    expect(calculateScore(signals)).toBe(30);
+    // totalWeight=20, rawScore=15 → (15/20)*100 = 75
+    expect(calculateScore(signals)).toBe(75);
   });
 
-  it("caps at 100", () => {
+  it("caps at 100 when all signals maxed", () => {
     const signals = [
-      makeSignal({ contribution: 60 }),
-      makeSignal({ contribution: 60 }),
+      makeSignal({ weight: 10, contribution: 10 }),
+      makeSignal({ weight: 10, contribution: 10 }),
     ];
+    // totalWeight=20, rawScore=20 → (20/20)*100 = 100
     expect(calculateScore(signals)).toBe(100);
   });
 
-  it("floors at 0", () => {
-    const signals = [makeSignal({ contribution: -5 })];
+  it("returns 0 for zero contributions", () => {
+    const signals = [makeSignal({ weight: 10, contribution: 0 })];
     expect(calculateScore(signals)).toBe(0);
   });
 });

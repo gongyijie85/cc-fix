@@ -43,7 +43,9 @@ type IpApiResult = {
 
 function isDatacenterAsn(asn: string | null): boolean {
   if (!asn) return false;
-  return DATACENTER_ASN_PREFIXES.some((prefix) => asn.startsWith(prefix));
+  // 精确匹配：提取 ASN 前缀（如 "AS16509 Amazon" → "AS16509"）
+  const asnPrefix = asn.split(/\s+/)[0];
+  return DATACENTER_ASN_PREFIXES.includes(asnPrefix);
 }
 
 // 源 1: ip-api.com（国内可用，免费，无需 key）
