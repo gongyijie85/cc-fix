@@ -1,11 +1,12 @@
 // CC-Fix CLI 入口
 
 import { Command } from "commander";
+import chalk from "chalk";
 import { runDetection } from "./detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION } from "./detection/regions.js";
 import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
-import { createBackup, restoreBackup, getPersistStatus, setEnvVar } from "./platform/windows.js";
+import { createBackup, restoreBackup, getPersistStatus, setEnvVar, loadBackup } from "./platform/windows.js";
 import { runWithInjectedEnv, runDesktop } from "./run/injector.js";
 
 
@@ -47,8 +48,14 @@ persistCmd
     const target = getTargetRegion(options.region);
     const envKeys = ["TZ", "LANG", "LC_ALL"];
 
-    console.log("正在备份当前设置...");
+    const hadBackup = loadBackup() !== null;
     createBackup(envKeys);
+
+    if (hadBackup) {
+      console.log("📋 已有原始备份（不会覆盖），直接更新环境变量...");
+    } else {
+      console.log("📋 已备份当前原始设置...");
+    }
 
     console.log("正在设置环境变量...");
     setEnvVar("TZ", target.timezone);
@@ -56,7 +63,8 @@ persistCmd
     setEnvVar("LC_ALL", target.lcAll);
 
     console.log(`✅ 持久化已开启，目标地区: ${target.name}`);
-    console.log("新终端将自动使用安全环境，日常办公不受影响");
+    console.log("   新终端将自动使用安全环境，日常办公不受影响");
+    console.log(chalk.dim("   提示: 原始值已安全保存，persist off 时会完整恢复"));
   });
 
 persistCmd

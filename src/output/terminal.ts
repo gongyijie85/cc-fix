@@ -1,4 +1,4 @@
-// 终端输出 — 彩色表格和 JSON 格式
+// 终端输出 — 对标 checkcc.org 风格
 
 import chalk from "chalk";
 import Table from "cli-table3";
@@ -6,27 +6,19 @@ import type { CheckResponse, SignalResult } from "../detection/types.js";
 
 function getRiskColor(risk: SignalResult["risk"]): (text: string) => string {
   switch (risk) {
-    case "critical":
-      return chalk.red;
-    case "high":
-      return chalk.red;
-    case "medium":
-      return chalk.yellow;
-    case "low":
-      return chalk.green;
+    case "critical": return chalk.red;
+    case "high": return chalk.red;
+    case "medium": return chalk.yellow;
+    case "low": return chalk.green;
   }
 }
 
 function getRiskEmoji(risk: SignalResult["risk"]): string {
   switch (risk) {
-    case "critical":
-      return "❌";
-    case "high":
-      return "❌";
-    case "medium":
-      return "⚠️";
-    case "low":
-      return "✅";
+    case "critical": return "❌";
+    case "high": return "❌";
+    case "medium": return "⚠️";
+    case "low": return "✅";
   }
 }
 
@@ -44,50 +36,96 @@ function getScoreEmoji(score: number): string {
   return "🟢";
 }
 
+function getRiskLabel(risk: SignalResult["risk"]): string {
+  switch (risk) {
+    case "critical": return "极高风险";
+    case "high": return "高风险";
+    case "medium": return "中风险";
+    case "low": return "安全";
+  }
+}
+
 export function renderCheckResponse(response: CheckResponse): void {
-  const { score, riskLevel, signals, recommendations } = response;
+  const { score, riskLevel, signals, recommendations, ipIntelligence } = response;
 
   console.log();
-  console.log(chalk.bold("╔══════════════════════════════════════════════════╗"));
-  console.log(chalk.bold("║")) + "  " + chalk.bold("CC-Fix 环境检测报告") + "                    " + chalk.bold("║");
-  console.log(chalk.bold("╠══════════════════════════════════════════════════╣"));
+  console.log(chalk.bold.cyan("╔══════════════════════════════════════════════════════╗"));
+  console.log(chalk.bold.cyan("║") + chalk.bold("  🛡️  CC-Fix 环境风险检测报告") + "                    " + chalk.bold.cyan("║"));
+  console.log(chalk.bold.cyan("╠══════════════════════════════════════════════════════╣"));
 
   const scoreColor = getScoreColor(score);
   const scoreEmoji = getScoreEmoji(score);
   const riskLabel = riskLevel === "critical" ? "极高风险" : riskLevel === "high" ? "高风险" : riskLevel === "medium" ? "中风险" : "低风险";
 
-  console.log(chalk.bold("║") + `  风险评分: ${scoreColor(`${score}/100`)} (${scoreEmoji} ${riskLabel})`.padEnd(48) + chalk.bold("║"));
-  console.log(chalk.bold("╠══════════════════════════════════════════════════╣"));
+  console.log(chalk.bold.cyan("║") + `  ${scoreEmoji} 风险评分: ${scoreColor(`${score}/100`)}  ${riskLabel}`.padEnd(56) + chalk.bold.cyan("║"));
+
+  // 统计高危风险数
+  const highRiskCount = signals.filter((s) => s.risk === "high" || s.risk === "critical").length;
+  if (highRiskCount > 0) {
+    console.log(chalk.bold.cyan("║") + chalk.red(`  ⚠️  命中高危风险 ${highRiskCount} 个`) + "                                        ".slice(0, 56 - 14 - String(highRiskCount).length) + chalk.bold.cyan("║"));
+  }
+
+  console.log(chalk.bold.cyan("╚══════════════════════════════════════════════════════╝"));
+  console.log();
+
+  // IP 信息摘要
+  if (ipIntelligence) {
+    console.log(chalk.bold("🌐 网络出口信息:"));
+    console.log(`  IP: ${ipIntelligence.ip || "N/A"}`);
+    console.log(`  位置: ${[ipIntelligence.country, ipIntelligence.region, ipIntelligence.city].filter(Boolean).join(" / ") || "N/A"}`);
+    console.log(`  组织: ${ipIntelligence.org || "N/A"} (${ipIntelligence.asn || "N/A"})`);
+    console.log(`  时区: ${ipIntelligence.timezone || "N/A"}`);
+    console.log();
+  }
+
+  // 信号详情表格
+  console.log(chalk.bold("📊 检测信号详情:"));
   console.log();
 
   const table = new Table({
-    head: ["信号", "当前值", "状态", "权重"],
-    colWidths: [20, 25, 10, 8],
+    head: ["检测项", "当前值", "风险", "风险分值"],
+    colWidths: [18, 28, 8, 12],
     style: { head: ["cyan"] },
   });
 
-  for (const signal of signals) {
+  // 按贡献值排序（高风险在前）
+  const sorted = [...signals].sort((a, b) => b.contribution - a.contribution);
+
+  for (const signal of sorted) {
     const riskColor = getRiskColor(signal.risk);
     const riskEmoji = getRiskEmoji(signal.risk);
+    const contribStr = signal.contribution > 0 ? chalk.red(`+${signal.contribution}`) : chalk.green("+0");
 
     table.push([
       signal.label,
       signal.value || "N/A",
-      riskColor(riskEmoji + " " + signal.risk),
-      String(signal.weight),
+      riskColor(riskEmoji + " " + getRiskLabel(signal.risk)),
+      contribStr,
     ]);
   }
 
   console.log(table.toString());
   console.log();
 
+  // 建议
   if (recommendations.length > 0) {
-    console.log(chalk.bold("建议:"));
+    console.log(chalk.bold("💡 修复建议:"));
     for (const rec of recommendations) {
       console.log(`  • ${rec}`);
     }
     console.log();
   }
+
+  // 快速操作提示
+  console.log(chalk.dim("─────────────────────────────────────────────────"));
+  if (score > 20) {
+    console.log(chalk.bold("  🔧 快速修复: ") + chalk.yellow("cc-fix persist on"));
+    console.log(chalk.dim("  一键设置安全环境，日常办公不受影响"));
+  } else {
+    console.log(chalk.green("  ✅ 环境信号正常，继续保持"));
+  }
+  console.log(chalk.dim("─────────────────────────────────────────────────"));
+  console.log();
 }
 
 export function renderJsonResponse(response: CheckResponse): void {

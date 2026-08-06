@@ -20,6 +20,12 @@ export function ensureDir(): void {
 }
 
 export function createBackup(envKeys: string[]): BackupData {
+  // 如果已有备份，不覆盖——保留最原始的原始值
+  const existing = loadBackup();
+  if (existing) {
+    return existing;
+  }
+
   ensureDir();
 
   const previous: Record<string, string | null> = {};
