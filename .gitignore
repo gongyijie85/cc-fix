@@ -32,3 +32,11 @@ persist-backup.json
 
 # Research snapshots (third-party reference code, not project source)
 .wayfinder/temp/check-cc/
+
+# Local one-off e2e probes (screenshots / scripts; not product assets)
+/e2e-*.png
+/e2e-*.mjs
+/e2e-*.ps1
+/e2e-*-result.txt
+.wayfinder/temp/map-*-body.md
+.wayfinder/temp/map-*-close-body.md

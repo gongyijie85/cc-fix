@@ -7,7 +7,7 @@
     "cc-fix": "./dist/index.js"
   },
   "scripts": {
-    "prepare": "git config core.hooksPath scripts/hooks || exit 0",
+    "prepare": "node scripts/prepare-hooks.mjs",
     "dev": "tsup --watch",
     "build": "tsup",
     "start": "node dist/index.js",
@@ -27,7 +27,8 @@
     "url": "https://github.com/gongyijie85/cc-fix/issues"
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts/prepare-hooks.mjs"
   ],
   "engines": {
     "node": ">=20"
