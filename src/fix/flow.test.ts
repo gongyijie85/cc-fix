@@ -14,6 +14,10 @@ vi.mock("../platform/windows.js", () => ({
   setSystemTimezone: vi.fn(),
   patchBackupSystemTimezone: vi.fn(),
   patchBackupBrowserPolicies: vi.fn(),
+  patchBackupLocaleName: vi.fn(),
+  getWindowsLocaleName: vi.fn(),
+  setWindowsLocaleName: vi.fn(),
+  localeNameFromLang: (lang: string) => lang.split(".")[0]!.replace("_", "-"),
 }));
 
 // Mock 浏览器策略模块（保留纯函数与常量，替换注册表副作用）
@@ -40,6 +44,9 @@ import {
   setSystemTimezone,
   patchBackupSystemTimezone,
   patchBackupBrowserPolicies,
+  patchBackupLocaleName,
+  getWindowsLocaleName,
+  setWindowsLocaleName,
 } from "../platform/windows.js";
 import {
   getPolicy,
@@ -58,6 +65,9 @@ const mockedGetSystemTimezone = vi.mocked(getSystemTimezone);
 const mockedSetSystemTimezone = vi.mocked(setSystemTimezone);
 const mockedPatchBackupSystemTimezone = vi.mocked(patchBackupSystemTimezone);
 const mockedPatchBackupBrowserPolicies = vi.mocked(patchBackupBrowserPolicies);
+const mockedPatchBackupLocaleName = vi.mocked(patchBackupLocaleName);
+const mockedGetWindowsLocaleName = vi.mocked(getWindowsLocaleName);
+const mockedSetWindowsLocaleName = vi.mocked(setWindowsLocaleName);
 const mockedGetPolicy = vi.mocked(getPolicy);
 const mockedSetPolicy = vi.mocked(setPolicy);
 const mockedDeletePolicy = vi.mocked(deletePolicy);
@@ -82,6 +92,10 @@ beforeEach(() => {
   mockedSetSystemTimezone.mockImplementation(() => {});
   mockedPatchBackupSystemTimezone.mockImplementation(() => {});
   mockedPatchBackupBrowserPolicies.mockImplementation(() => {});
+  mockedPatchBackupLocaleName.mockImplementation(() => {});
+  // 默认：区域格式为高风险 zh-SG，写入成功
+  mockedGetWindowsLocaleName.mockReturnValue("zh-SG");
+  mockedSetWindowsLocaleName.mockImplementation(() => {});
   // 默认：浏览器策略全部不存在，写入成功
   mockedGetPolicy.mockReturnValue(null);
   mockedSetPolicy.mockImplementation(() => {});
@@ -105,11 +119,12 @@ describe("persistOnFlow", () => {
     targetLcAll: "en_US.UTF-8",
   };
 
-  it("成功流程：备份 + 3 个 setx + 浏览器策略 + 切换系统时区 + summary", async () => {
+  it("成功流程：备份 + 3 个 setx + 浏览器策略 + 区域格式 + 切换系统时区 + summary", async () => {
     mockedCreateBackup.mockReturnValue({
       timestamp: "2024-01-01T00:00:00Z",
       previous: { TZ: null, LANG: null, LC_ALL: null },
       previousSystemTimezone: "China Standard Time",
+      previousLocaleName: "zh-SG",
     });
 
     const onEvent = collectEvents();
@@ -123,13 +138,14 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // lc
       "step-start", "step-ok",   // browser-policy
       "browser-hint",            // 重启生效提示
+      "step-start", "step-ok",   // win-locale
       "step-start", "step-ok",   // sys-tz
       "summary",
     ]);
 
-    // summary 验证（3 个环境变量 + 1 个浏览器策略 + 1 个系统时区）
+    // summary 验证（3 个环境变量 + 1 个浏览器策略 + 1 个区域格式 + 1 个系统时区）
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
-    expect(summary.ok).toBe(5);
+    expect(summary.ok).toBe(6);
     expect(summary.fail).toBe(0);
     expect(summary.rolledBack).toBe(false);
 
@@ -139,6 +155,12 @@ describe("persistOnFlow", () => {
     expect(mockedSetPolicy).toHaveBeenCalledWith("edge", "AcceptLanguage", "en-US");
     expect(mockedSetPolicy).toHaveBeenCalledWith("chrome", "DefaultWebRtcIPHandlingPolicy", "disable_non_proxied_udp");
     expect(mockedSetPolicy).toHaveBeenCalledWith("edge", "DefaultWebRtcIPHandlingPolicy", "disable_non_proxied_udp");
+
+    // win-locale 步骤携带旧→新值
+    const localeStart = events.find(e => e.type === "step-start" && "stepId" in e && e.stepId === "win-locale") as Extract<StreamEvent, { type: "step-start" }>;
+    expect(localeStart.oldValue).toBe("zh-SG");
+    expect(localeStart.newValue).toBe("en-US");
+    expect(mockedSetWindowsLocaleName).toHaveBeenCalledWith("en-US");
 
     // sys-tz 步骤携带旧→新值
     const sysTzStart = events.find(e => e.type === "step-start" && "stepId" in e && e.stepId === "sys-tz") as Extract<StreamEvent, { type: "step-start" }>;
@@ -151,11 +173,12 @@ describe("persistOnFlow", () => {
     expect(hint.running).toEqual(["chrome"]);
   });
 
-  it("系统时区已是目标值：跳过 sys-tz 步骤，浏览器策略仍写入", async () => {
+  it("系统时区已是目标值：跳过 sys-tz 步骤，浏览器策略与区域格式仍写入", async () => {
     mockedCreateBackup.mockReturnValue({
       timestamp: "2024-01-01T00:00:00Z",
       previous: { TZ: null, LANG: null, LC_ALL: null },
       previousSystemTimezone: "China Standard Time",
+      previousLocaleName: "zh-SG",
     });
     mockedGetSystemTimezone.mockReturnValue("Eastern Standard Time");
 
@@ -170,12 +193,31 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // lc
       "step-start", "step-ok",   // browser-policy
       "browser-hint",            // 重启生效提示
+      "step-start", "step-ok",   // win-locale
       "summary",
     ]);
     expect(mockedSetSystemTimezone).not.toHaveBeenCalled();
+    expect(mockedSetWindowsLocaleName).toHaveBeenCalledWith("en-US");
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
-    expect(summary.ok).toBe(4);
+    expect(summary.ok).toBe(5);
+  });
+
+  it("区域格式已是目标值：跳过 win-locale 步骤", async () => {
+    mockedCreateBackup.mockReturnValue({
+      timestamp: "2024-01-01T00:00:00Z",
+      previous: { TZ: null, LANG: null, LC_ALL: null },
+      previousSystemTimezone: "China Standard Time",
+      previousLocaleName: "en-US",
+    });
+    mockedGetWindowsLocaleName.mockReturnValue("en-US");
+    mockedGetSystemTimezone.mockReturnValue("Eastern Standard Time");
+
+    const onEvent = collectEvents();
+    await persistOnFlow(opts, onEvent);
+
+    expect(events.some(e => e.type === "step-start" && "stepId" in e && e.stepId === "win-locale")).toBe(false);
+    expect(mockedSetWindowsLocaleName).not.toHaveBeenCalled();
   });
 
   it("旧备份缺失系统时区与策略快照字段：补写当前值", async () => {
@@ -220,7 +262,8 @@ describe("persistOnFlow", () => {
     expect(events.some(e => e.type === "browser-hint")).toBe(false);
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
-    expect(summary.ok).toBe(4); // 3 环境变量 + 系统时区
+    expect(summary.ok).toBe(5); // 3 环境变量 + 区域格式 + 系统时区
+    expect(mockedSetWindowsLocaleName).toHaveBeenCalledWith("en-US");
   });
 
   it("浏览器策略写入失败：还原已写策略 + 回滚环境变量", async () => {
@@ -278,17 +321,22 @@ describe("persistOnFlow", () => {
     expect(events.some(e => e.type === "browser-hint")).toBe(false);
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
-    expect(summary.ok).toBe(4); // 3 环境变量 + 系统时区
+    expect(summary.ok).toBe(5); // 3 环境变量 + 区域格式 + 系统时区
     expect(summary.fail).toBe(1);
     expect(summary.fatal).toBeUndefined();
   });
 
-  it("系统时区切换失败：还原浏览器策略 + 回滚已修改的环境变量", async () => {
+  it("系统时区切换失败：还原浏览器策略 + 区域格式 + 回滚已修改的环境变量", async () => {
     mockedCreateBackup.mockReturnValue({
       timestamp: "2024-01-01T00:00:00Z",
       previous: { TZ: null, LANG: null, LC_ALL: null },
       previousSystemTimezone: "China Standard Time",
+      previousLocaleName: "zh-SG",
     });
+    // 写入后 get 返回 en-US，触发回滚写入 zh-SG
+    mockedGetWindowsLocaleName
+      .mockReturnValueOnce("zh-SG") // 读取当前，决定要写
+      .mockReturnValue("en-US");    // 回滚时读到已改值
     mockedSetSystemTimezone.mockImplementation(() => {
       throw new Error("tzutil 退出码 1: 拒绝访问");
     });
@@ -304,16 +352,20 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // lc
       "step-start", "step-ok",   // browser-policy
       "browser-hint",            // 重启生效提示
+      "step-start", "step-ok",   // win-locale
       "step-start", "step-fail", // sys-tz 失败
       "step-start", "step-ok",   // rollback-policy ×4
       "step-start", "step-ok",
       "step-start", "step-ok",
       "step-start", "step-ok",
+      "step-start", "step-ok",   // rollback-win-locale
       "step-start", "step-ok",   // rollback TZ
       "step-start", "step-ok",   // rollback LANG
       "step-start", "step-ok",   // rollback LC_ALL
       "summary",
     ]);
+    expect(mockedSetWindowsLocaleName).toHaveBeenCalledWith("en-US");
+    expect(mockedSetWindowsLocaleName).toHaveBeenCalledWith("zh-SG");
 
     // 策略还原步骤带 rollback 标记
     const rollbackPolicyStart = events.find(

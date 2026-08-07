@@ -16,6 +16,8 @@ export type BackupData = {
   previousSystemTimezone?: string | null;
   /** persist on 前的浏览器策略原值（含"不存在"），旧备份可能缺失（ADR-0003） */
   previousBrowserPolicies?: BrowserPolicySnapshot;
+  /** persist on 前的 Windows 区域格式 LocaleName，旧备份可能缺失 */
+  previousLocaleName?: string | null;
 };
 
 export function ensureDir(): void {
@@ -64,11 +66,20 @@ export function createBackup(envKeys: string[]): BackupData {
     // 策略快照失败不阻断备份，后续写入步骤会自行报错
   }
 
+  // 同时记录 Windows 区域格式（LocaleName），供 persist off 恢复
+  let previousLocaleName: string | null = null;
+  try {
+    previousLocaleName = getWindowsLocaleName();
+  } catch {
+    // 读取失败不阻断备份
+  }
+
   const backup: BackupData = {
     timestamp: new Date().toISOString(),
     previous,
     previousSystemTimezone,
     previousBrowserPolicies,
+    previousLocaleName,
   };
 
   fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
@@ -116,6 +127,41 @@ export function patchBackupBrowserPolicies(snapshot: BrowserPolicySnapshot): voi
   if (!backup || backup.previousBrowserPolicies !== undefined) return;
   backup.previousBrowserPolicies = snapshot;
   fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+}
+
+// 为旧备份补写区域格式字段（不改写已有字段）
+export function patchBackupLocaleName(localeName: string | null): void {
+  const backup = loadBackup();
+  if (!backup || backup.previousLocaleName !== undefined) return;
+  backup.previousLocaleName = localeName;
+  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+}
+
+// ── Windows 区域格式（HKCU\Control Panel\International\LocaleName）──
+
+/** en_US.UTF-8 → en-US */
+export function localeNameFromLang(lang: string): string {
+  return lang.split(".")[0]!.replace("_", "-");
+}
+
+export function getWindowsLocaleName(): string | null {
+  try {
+    const output = execSync(
+      'reg query "HKCU\\Control Panel\\International" /v LocaleName',
+      { encoding: "utf-8", timeout: 3000, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const match = output.match(/LocaleName\s+REG_SZ\s+(\S+)/);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function setWindowsLocaleName(localeName: string): void {
+  execSync(
+    `reg add "HKCU\\Control Panel\\International" /v LocaleName /t REG_SZ /d "${localeName}" /f`,
+    { stdio: "pipe" },
+  );
 }
 
 export function deleteEnvVar(key: string): void {
