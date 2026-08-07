@@ -11,11 +11,13 @@ import {
   BROWSER_LABELS,
   ACCEPT_LANGUAGE_NAME,
   WEBRTC_POLICY_NAME,
+  APPLICATION_LOCALE_NAME,
 } from "../../platform/browser.js";
 
 const SLOT_LABELS: Record<string, string> = {
   [ACCEPT_LANGUAGE_NAME]: "AcceptLanguage",
   [WEBRTC_POLICY_NAME]: "WebRTC 防泄漏",
+  [APPLICATION_LOCALE_NAME]: "ApplicationLocale",
 };
 
 export const browserPolicyPlugin: DetectionPlugin = {

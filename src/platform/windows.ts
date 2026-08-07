@@ -18,6 +18,10 @@ export type BackupData = {
   previousBrowserPolicies?: BrowserPolicySnapshot;
   /** persist on 前的 Windows 区域格式 LocaleName，旧备份可能缺失 */
   previousLocaleName?: string | null;
+  /** persist on 前的用户首选语言列表（LanguageTag），旧备份可能缺失 */
+  previousUserLanguages?: string[] | null;
+  /** persist on 前的用户 Culture（Get-Culture），旧备份可能缺失 */
+  previousUserCulture?: string | null;
 };
 
 export function ensureDir(): void {
@@ -74,12 +78,28 @@ export function createBackup(envKeys: string[]): BackupData {
     // 读取失败不阻断备份
   }
 
+  // 用户首选语言列表 + Culture（checkcc 读 navigator.languages / Intl 的根因）
+  let previousUserLanguages: string[] | null = null;
+  try {
+    previousUserLanguages = getUserLanguageTags();
+  } catch {
+    previousUserLanguages = null;
+  }
+  let previousUserCulture: string | null = null;
+  try {
+    previousUserCulture = getUserCulture();
+  } catch {
+    previousUserCulture = null;
+  }
+
   const backup: BackupData = {
     timestamp: new Date().toISOString(),
     previous,
     previousSystemTimezone,
     previousBrowserPolicies,
     previousLocaleName,
+    previousUserLanguages,
+    previousUserCulture,
   };
 
   fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
@@ -162,6 +182,70 @@ export function setWindowsLocaleName(localeName: string): void {
     `reg add "HKCU\\Control Panel\\International" /v LocaleName /t REG_SZ /d "${localeName}" /f`,
     { stdio: "pipe" },
   );
+}
+
+// ── 用户首选语言 / Culture（对标 check-cc client-engine：navigator.languages）──
+
+function runPowerShell(command: string): string {
+  return execSync(`powershell -NoProfile -NonInteractive -Command ${JSON.stringify(command)}`, {
+    encoding: "utf-8",
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: 15000,
+  }).trim();
+}
+
+export function getUserLanguageTags(): string[] {
+  const out = runPowerShell("(Get-WinUserLanguageList).LanguageTag -join ','");
+  if (!out) return [];
+  return out.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/** 将首选语言设为单一目标标签（去掉 zh-CN 等中文项，降低 checkcc 语言分） */
+export function setUserLanguageListPrimary(languageTag: string): void {
+  // 使用单引号包标签，避免 PowerShell 注入
+  const tag = languageTag.replace(/'/g, "''");
+  runPowerShell(
+    `$list = New-WinUserLanguageList -Language '${tag}'; Set-WinUserLanguageList -LanguageList $list -Force`,
+  );
+}
+
+export function restoreUserLanguageList(tags: string[]): void {
+  if (tags.length === 0) return;
+  const quoted = tags.map((t) => `'${t.replace(/'/g, "''")}'`).join(",");
+  runPowerShell(
+    `$tags = @(${quoted}); $list = New-WinUserLanguageList -Language $tags[0]; ` +
+      `foreach ($t in $tags | Select-Object -Skip 1) { $list.Add($t) | Out-Null }; ` +
+      `Set-WinUserLanguageList -LanguageList $list -Force`,
+  );
+}
+
+export function getUserCulture(): string | null {
+  try {
+    const out = runPowerShell("(Get-Culture).Name");
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setUserCulture(cultureTag: string): void {
+  const tag = cultureTag.replace(/'/g, "''");
+  runPowerShell(`Set-Culture -CultureInfo '${tag}'`);
+}
+
+export function patchBackupUserLanguages(tags: string[] | null): void {
+  const backup = loadBackup();
+  if (!backup || backup.previousUserLanguages !== undefined) return;
+  backup.previousUserLanguages = tags;
+  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+}
+
+export function patchBackupUserCulture(culture: string | null): void {
+  const backup = loadBackup();
+  if (!backup || backup.previousUserCulture !== undefined) return;
+  backup.previousUserCulture = culture;
+  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
 }
 
 export function deleteEnvVar(key: string): void {

@@ -16,6 +16,8 @@ export const BROWSER_POLICY_PATHS: Record<BrowserId, string> = {
 
 export const ACCEPT_LANGUAGE_NAME = "AcceptLanguage";
 export const WEBRTC_POLICY_NAME = "DefaultWebRtcIPHandlingPolicy";
+/** 强制 Chrome/Edge UI 与 navigator 语言相关的应用区域（对标 check-cc 的 navigator.languages 根因） */
+export const APPLICATION_LOCALE_NAME = "ApplicationLocaleValue";
 /** WebRTC 防泄漏规范值（Chromium 官方策略枚举） */
 export const WEBRTC_POLICY_VALUE = "disable_non_proxied_udp";
 
@@ -28,8 +30,10 @@ export interface PolicySlot {
 export const POLICY_SLOTS: PolicySlot[] = [
   { browser: "chrome", name: ACCEPT_LANGUAGE_NAME },
   { browser: "chrome", name: WEBRTC_POLICY_NAME },
+  { browser: "chrome", name: APPLICATION_LOCALE_NAME },
   { browser: "edge", name: ACCEPT_LANGUAGE_NAME },
   { browser: "edge", name: WEBRTC_POLICY_NAME },
+  { browser: "edge", name: APPLICATION_LOCALE_NAME },
 ];
 
 /** 策略快照：槽位 → 原值，null 表示"不存在"（还原时删除） */
@@ -39,19 +43,32 @@ export function slotKey(slot: PolicySlot): string {
   return `${slot.browser}/${slot.name}`;
 }
 
-// en_US.UTF-8 → en-US（浏览器 Accept-Language 格式）
+// en_US.UTF-8 → en-US（浏览器 Accept-Language / ApplicationLocale 标签）
 export function acceptLanguageFromLang(lang: string): string {
-  const base = lang.split(".")[0];
+  const base = lang.split(".")[0]!;
   return base.replace("_", "-");
+}
+
+/** HTTP Accept-Language 值：en-US → en-US,en（贴近真实浏览器列表形态） */
+export function acceptLanguageHeaderFromLang(lang: string): string {
+  const tag = acceptLanguageFromLang(lang);
+  const primary = tag.split("-")[0]!;
+  return primary === tag ? tag : `${tag},${primary}`;
 }
 
 /** persist on 写入的规范值，键为槽位键 */
 export function targetPolicies(targetLang: string): Record<string, string> {
-  const accept = acceptLanguageFromLang(targetLang);
+  const accept = acceptLanguageHeaderFromLang(targetLang);
+  const appLocale = acceptLanguageFromLang(targetLang);
   const result: Record<string, string> = {};
   for (const slot of POLICY_SLOTS) {
-    result[slotKey(slot)] =
-      slot.name === ACCEPT_LANGUAGE_NAME ? accept : WEBRTC_POLICY_VALUE;
+    if (slot.name === ACCEPT_LANGUAGE_NAME) {
+      result[slotKey(slot)] = accept;
+    } else if (slot.name === APPLICATION_LOCALE_NAME) {
+      result[slotKey(slot)] = appLocale;
+    } else {
+      result[slotKey(slot)] = WEBRTC_POLICY_VALUE;
+    }
   }
   return result;
 }

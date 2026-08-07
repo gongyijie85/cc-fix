@@ -22,7 +22,7 @@ beforeEach(() => {
 });
 
 describe("browserPolicyPlugin", () => {
-  it("四槽位均为规范值：通过，risk low", async () => {
+  it("六槽位均为规范值：通过，risk low", async () => {
     mockedGetPolicy.mockImplementation((browser, name) => TARGETS[`${browser}/${name}`]);
 
     const result = await browserPolicyPlugin.run(CONTEXT);
@@ -32,14 +32,14 @@ describe("browserPolicyPlugin", () => {
     expect(result.value).toContain("已就位");
   });
 
-  it("四槽位全部缺失：4/4 异常，risk high，附未设置提示", async () => {
+  it("六槽位全部缺失：6/6 异常，risk high，附未设置提示", async () => {
     mockedGetPolicy.mockReturnValue(null);
 
     const result = await browserPolicyPlugin.run(CONTEXT);
     expect(result.risk).toBe("high");
     expect(result.score).toBe(1);
     expect(result.contribution).toBe(5);
-    expect(result.value).toContain("4/4 槽位异常");
+    expect(result.value).toContain("6/6 槽位异常");
     expect(result.value).toContain("(未设置)");
   });
 
@@ -51,10 +51,11 @@ describe("browserPolicyPlugin", () => {
     });
 
     const result = await browserPolicyPlugin.run(CONTEXT);
+    // 2/6 异常
     expect(result.risk).toBe("medium");
-    expect(result.score).toBe(0.5);
-    expect(result.contribution).toBe(Math.round(0.5 * 5));
-    expect(result.value).toContain("2/4 槽位异常");
+    expect(result.score).toBeCloseTo(2 / 6);
+    expect(result.contribution).toBe(Math.round((2 / 6) * 5));
+    expect(result.value).toContain("2/6 槽位异常");
     expect(result.value).toContain("Chrome/AcceptLanguage=zh-CN");
     expect(result.value).toContain("Edge/WebRTC 防泄漏=disable_non_proxied");
   });

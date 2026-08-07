@@ -39,13 +39,15 @@ describe("acceptLanguageFromLang", () => {
 });
 
 describe("targetPolicies", () => {
-  it("四个槽位均取规范值，AcceptLanguage 跟随地区", () => {
+  it("六个槽位均取规范值，AcceptLanguage/ApplicationLocale 跟随地区", () => {
     const targets = targetPolicies("en_SG.UTF-8");
     expect(targets).toEqual({
-      "chrome/AcceptLanguage": "en-SG",
+      "chrome/AcceptLanguage": "en-SG,en",
       "chrome/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied_udp",
-      "edge/AcceptLanguage": "en-SG",
+      "chrome/ApplicationLocaleValue": "en-SG",
+      "edge/AcceptLanguage": "en-SG,en",
       "edge/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied_udp",
+      "edge/ApplicationLocaleValue": "en-SG",
     });
   });
 });
@@ -67,13 +69,13 @@ describe("getPolicy", () => {
 });
 
 describe("snapshotPolicies / restorePolicies", () => {
-  it("snapshot 覆盖全部四个槽位", () => {
+  it("snapshot 覆盖全部六个槽位", () => {
     mockedExecSync.mockImplementation(() => {
       throw new Error("not found");
     });
     const snapshot = snapshotPolicies();
     expect(Object.keys(snapshot).sort()).toEqual(POLICY_SLOTS.map(slotKey).sort());
-    expect(Object.values(snapshot)).toEqual([null, null, null, null]);
+    expect(Object.values(snapshot)).toEqual([null, null, null, null, null, null]);
   });
 
   it("restore：null → reg delete，有值 → reg add", () => {
@@ -81,14 +83,17 @@ describe("snapshotPolicies / restorePolicies", () => {
     restorePolicies({
       "chrome/AcceptLanguage": null,
       "chrome/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied",
+      "chrome/ApplicationLocaleValue": "en-US",
       "edge/AcceptLanguage": "ja-JP",
       "edge/DefaultWebRtcIPHandlingPolicy": null,
+      "edge/ApplicationLocaleValue": null,
     });
 
     const calls = mockedExecSync.mock.calls.map(c => String(c[0]));
     expect(calls.some(c => c.includes("reg delete") && c.includes("Google\\Chrome") && c.includes("AcceptLanguage"))).toBe(true);
     expect(calls.some(c => c.includes("reg add") && c.includes("disable_non_proxied"))).toBe(true);
     expect(calls.some(c => c.includes("reg add") && c.includes("Microsoft\\Edge") && c.includes("ja-JP"))).toBe(true);
+    expect(calls.some(c => c.includes("reg add") && c.includes("ApplicationLocaleValue") && c.includes("en-US"))).toBe(true);
   });
 
   it("restore：快照缺失的槽位跳过", () => {

@@ -14,9 +14,16 @@ import {
   patchBackupSystemTimezone,
   patchBackupBrowserPolicies,
   patchBackupLocaleName,
+  patchBackupUserLanguages,
+  patchBackupUserCulture,
   getWindowsLocaleName,
   setWindowsLocaleName,
   localeNameFromLang,
+  getUserLanguageTags,
+  setUserLanguageListPrimary,
+  restoreUserLanguageList,
+  getUserCulture,
+  setUserCulture,
   type BackupData,
 } from "../platform/windows.js";
 import {
@@ -95,6 +102,26 @@ export async function persistOnFlow(
     }
   }
 
+  if (backup.previousUserLanguages === undefined) {
+    try {
+      const tags = getUserLanguageTags();
+      patchBackupUserLanguages(tags);
+      backup.previousUserLanguages = tags;
+    } catch {
+      // 读取失败不阻断
+    }
+  }
+
+  if (backup.previousUserCulture === undefined) {
+    try {
+      const culture = getUserCulture();
+      patchBackupUserCulture(culture);
+      backup.previousUserCulture = culture;
+    } catch {
+      // 读取失败不阻断
+    }
+  }
+
   // 步骤 2-N：逐个设置环境变量
   const steps = [
     { key: "TZ",     value: opts.targetTimezone, stepId: "tz",   name: "设置时区 TZ" },
@@ -142,13 +169,14 @@ export async function persistOnFlow(
   });
 
   if (slotsToWrite.length > 0) {
-    const accept = targets[`${POLICY_SLOTS[0].browser}/AcceptLanguage`];
+    const accept = targets[`chrome/${POLICY_SLOTS.find(s => s.name === "AcceptLanguage")?.name ?? "AcceptLanguage"}`];
+    const appLocale = targets["chrome/ApplicationLocaleValue"] ?? "";
     onEvent({
       type: "step-start",
       stepId: "browser-policy",
       name: "写入浏览器策略（Chrome/Edge）",
       oldValue: `${slotsToWrite.length} 项待写入`,
-      newValue: `AcceptLanguage=${accept}, WebRTC=disable_non_proxied_udp`,
+      newValue: `AcceptLanguage=${accept}, ApplicationLocale=${appLocale}, WebRTC=disable_non_proxied_udp`,
     });
     const writtenKeys: string[] = [];
     try {
@@ -218,6 +246,59 @@ export async function persistOnFlow(
     } catch (err) {
       // 注册表写入失败不阻断后续时区步骤；记 fail，备份已含 previousLocaleName
       onEvent({ type: "step-fail", stepId: "win-locale", error: String(err) });
+      failCount++;
+    }
+  }
+
+  // 步骤 N+2b：用户首选语言列表（check-cc 读 navigator.languages）
+  let currentLangTags: string[] = [];
+  try {
+    currentLangTags = getUserLanguageTags();
+  } catch {
+    currentLangTags = [];
+  }
+  const primaryOk =
+    currentLangTags.length === 1 &&
+    currentLangTags[0]?.toLowerCase() === targetLocaleName.toLowerCase();
+  if (!primaryOk) {
+    onEvent({
+      type: "step-start",
+      stepId: "win-lang-list",
+      name: "设置 Windows 首选语言",
+      oldValue: currentLangTags.join(", ") || "(空)",
+      newValue: targetLocaleName,
+    });
+    try {
+      setUserLanguageListPrimary(targetLocaleName);
+      okCount++;
+      onEvent({ type: "step-ok", stepId: "win-lang-list" });
+    } catch (err) {
+      onEvent({ type: "step-fail", stepId: "win-lang-list", error: String(err) });
+      failCount++;
+    }
+  }
+
+  // 步骤 N+2c：用户 Culture（影响部分 Intl / 区域行为）
+  let currentCulture: string | null = null;
+  try {
+    currentCulture = getUserCulture();
+  } catch {
+    currentCulture = null;
+  }
+  if ((currentCulture ?? "").toLowerCase() !== targetLocaleName.toLowerCase()) {
+    onEvent({
+      type: "step-start",
+      stepId: "win-culture",
+      name: "设置 Windows Culture",
+      oldValue: currentCulture ?? "(未知)",
+      newValue: targetLocaleName,
+    });
+    try {
+      setUserCulture(targetLocaleName);
+      okCount++;
+      onEvent({ type: "step-ok", stepId: "win-culture" });
+    } catch (err) {
+      onEvent({ type: "step-fail", stepId: "win-culture", error: String(err) });
       failCount++;
     }
   }
@@ -363,6 +444,65 @@ export async function persistOffFlow(onEvent: EventConsumer): Promise<void> {
         onEvent({ type: "step-ok", stepId: "restore-win-locale" });
       } catch (err) {
         onEvent({ type: "step-fail", stepId: "restore-win-locale", error: String(err) });
+        onEvent({ type: "summary", ok: okCount, fail: 1, rolledBack: false, fatal: true });
+        return;
+      }
+    }
+  }
+
+  // 恢复用户首选语言列表
+  if (backup.previousUserLanguages && backup.previousUserLanguages.length > 0) {
+    let currentTags: string[] = [];
+    try {
+      currentTags = getUserLanguageTags();
+    } catch {
+      currentTags = [];
+    }
+    const same =
+      currentTags.length === backup.previousUserLanguages.length &&
+      currentTags.every((t, i) => t === backup.previousUserLanguages![i]);
+    if (!same) {
+      onEvent({
+        type: "step-start",
+        stepId: "restore-win-lang-list",
+        name: "恢复 Windows 首选语言",
+        oldValue: currentTags.join(", ") || "(空)",
+        newValue: backup.previousUserLanguages.join(", "),
+      });
+      try {
+        restoreUserLanguageList(backup.previousUserLanguages);
+        okCount++;
+        onEvent({ type: "step-ok", stepId: "restore-win-lang-list" });
+      } catch (err) {
+        onEvent({ type: "step-fail", stepId: "restore-win-lang-list", error: String(err) });
+        onEvent({ type: "summary", ok: okCount, fail: 1, rolledBack: false, fatal: true });
+        return;
+      }
+    }
+  }
+
+  // 恢复 Culture
+  if (backup.previousUserCulture) {
+    let cur: string | null = null;
+    try {
+      cur = getUserCulture();
+    } catch {
+      cur = null;
+    }
+    if (cur !== backup.previousUserCulture) {
+      onEvent({
+        type: "step-start",
+        stepId: "restore-win-culture",
+        name: "恢复 Windows Culture",
+        oldValue: cur ?? "(未知)",
+        newValue: backup.previousUserCulture,
+      });
+      try {
+        setUserCulture(backup.previousUserCulture);
+        okCount++;
+        onEvent({ type: "step-ok", stepId: "restore-win-culture" });
+      } catch (err) {
+        onEvent({ type: "step-fail", stepId: "restore-win-culture", error: String(err) });
         onEvent({ type: "summary", ok: okCount, fail: 1, rolledBack: false, fatal: true });
         return;
       }

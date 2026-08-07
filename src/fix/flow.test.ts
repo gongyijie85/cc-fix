@@ -15,8 +15,15 @@ vi.mock("../platform/windows.js", () => ({
   patchBackupSystemTimezone: vi.fn(),
   patchBackupBrowserPolicies: vi.fn(),
   patchBackupLocaleName: vi.fn(),
+  patchBackupUserLanguages: vi.fn(),
+  patchBackupUserCulture: vi.fn(),
   getWindowsLocaleName: vi.fn(),
   setWindowsLocaleName: vi.fn(),
+  getUserLanguageTags: vi.fn(),
+  setUserLanguageListPrimary: vi.fn(),
+  restoreUserLanguageList: vi.fn(),
+  getUserCulture: vi.fn(),
+  setUserCulture: vi.fn(),
   localeNameFromLang: (lang: string) => lang.split(".")[0]!.replace("_", "-"),
 }));
 
@@ -47,6 +54,10 @@ import {
   patchBackupLocaleName,
   getWindowsLocaleName,
   setWindowsLocaleName,
+  getUserLanguageTags,
+  setUserLanguageListPrimary,
+  getUserCulture,
+  setUserCulture,
 } from "../platform/windows.js";
 import {
   getPolicy,
@@ -68,6 +79,10 @@ const mockedPatchBackupBrowserPolicies = vi.mocked(patchBackupBrowserPolicies);
 const mockedPatchBackupLocaleName = vi.mocked(patchBackupLocaleName);
 const mockedGetWindowsLocaleName = vi.mocked(getWindowsLocaleName);
 const mockedSetWindowsLocaleName = vi.mocked(setWindowsLocaleName);
+const mockedGetUserLanguageTags = vi.mocked(getUserLanguageTags);
+const mockedSetUserLanguageListPrimary = vi.mocked(setUserLanguageListPrimary);
+const mockedGetUserCulture = vi.mocked(getUserCulture);
+const mockedSetUserCulture = vi.mocked(setUserCulture);
 const mockedGetPolicy = vi.mocked(getPolicy);
 const mockedSetPolicy = vi.mocked(setPolicy);
 const mockedDeletePolicy = vi.mocked(deletePolicy);
@@ -96,6 +111,11 @@ beforeEach(() => {
   // 默认：区域格式为高风险 zh-SG，写入成功
   mockedGetWindowsLocaleName.mockReturnValue("zh-SG");
   mockedSetWindowsLocaleName.mockImplementation(() => {});
+  // 默认：首选语言含中文、Culture 非目标
+  mockedGetUserLanguageTags.mockReturnValue(["en-US", "zh-Hans-CN"]);
+  mockedSetUserLanguageListPrimary.mockImplementation(() => {});
+  mockedGetUserCulture.mockReturnValue("zh-SG");
+  mockedSetUserCulture.mockImplementation(() => {});
   // 默认：浏览器策略全部不存在，写入成功
   mockedGetPolicy.mockReturnValue(null);
   mockedSetPolicy.mockImplementation(() => {});
@@ -103,8 +123,10 @@ beforeEach(() => {
   mockedSnapshotPolicies.mockReturnValue({
     "chrome/AcceptLanguage": null,
     "chrome/DefaultWebRtcIPHandlingPolicy": null,
+    "chrome/ApplicationLocaleValue": null,
     "edge/AcceptLanguage": null,
     "edge/DefaultWebRtcIPHandlingPolicy": null,
+    "edge/ApplicationLocaleValue": null,
   });
   // 默认：Chrome 正在运行（重启提示加强显示的依据）
   mockedDetectRunningBrowsers.mockReturnValue(["chrome"]);
@@ -139,22 +161,28 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // browser-policy
       "browser-hint",            // 重启生效提示
       "step-start", "step-ok",   // win-locale
+      "step-start", "step-ok",   // win-lang-list
+      "step-start", "step-ok",   // win-culture
       "step-start", "step-ok",   // sys-tz
       "summary",
     ]);
 
-    // summary 验证（3 个环境变量 + 1 个浏览器策略 + 1 个区域格式 + 1 个系统时区）
+    // summary：3 env + 1 browser-policy + 1 locale + 1 lang-list + 1 culture + 1 sys-tz
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
-    expect(summary.ok).toBe(6);
+    expect(summary.ok).toBe(8);
     expect(summary.fail).toBe(0);
     expect(summary.rolledBack).toBe(false);
 
-    // 四个槽位均写入规范值（AcceptLanguage 从 targetLang 推导）
-    expect(mockedSetPolicy).toHaveBeenCalledTimes(4);
-    expect(mockedSetPolicy).toHaveBeenCalledWith("chrome", "AcceptLanguage", "en-US");
-    expect(mockedSetPolicy).toHaveBeenCalledWith("edge", "AcceptLanguage", "en-US");
+    // 六个槽位均写入规范值
+    expect(mockedSetPolicy).toHaveBeenCalledTimes(6);
+    expect(mockedSetPolicy).toHaveBeenCalledWith("chrome", "AcceptLanguage", "en-US,en");
+    expect(mockedSetPolicy).toHaveBeenCalledWith("edge", "AcceptLanguage", "en-US,en");
+    expect(mockedSetPolicy).toHaveBeenCalledWith("chrome", "ApplicationLocaleValue", "en-US");
+    expect(mockedSetPolicy).toHaveBeenCalledWith("edge", "ApplicationLocaleValue", "en-US");
     expect(mockedSetPolicy).toHaveBeenCalledWith("chrome", "DefaultWebRtcIPHandlingPolicy", "disable_non_proxied_udp");
     expect(mockedSetPolicy).toHaveBeenCalledWith("edge", "DefaultWebRtcIPHandlingPolicy", "disable_non_proxied_udp");
+    expect(mockedSetUserLanguageListPrimary).toHaveBeenCalledWith("en-US");
+    expect(mockedSetUserCulture).toHaveBeenCalledWith("en-US");
 
     // win-locale 步骤携带旧→新值
     const localeStart = events.find(e => e.type === "step-start" && "stepId" in e && e.stepId === "win-locale") as Extract<StreamEvent, { type: "step-start" }>;
@@ -194,13 +222,15 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // browser-policy
       "browser-hint",            // 重启生效提示
       "step-start", "step-ok",   // win-locale
+      "step-start", "step-ok",   // win-lang-list
+      "step-start", "step-ok",   // win-culture
       "summary",
     ]);
     expect(mockedSetSystemTimezone).not.toHaveBeenCalled();
     expect(mockedSetWindowsLocaleName).toHaveBeenCalledWith("en-US");
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
-    expect(summary.ok).toBe(5);
+    expect(summary.ok).toBe(7);
   });
 
   it("区域格式已是目标值：跳过 win-locale 步骤", async () => {
@@ -211,6 +241,8 @@ describe("persistOnFlow", () => {
       previousLocaleName: "en-US",
     });
     mockedGetWindowsLocaleName.mockReturnValue("en-US");
+    mockedGetUserLanguageTags.mockReturnValue(["en-US"]);
+    mockedGetUserCulture.mockReturnValue("en-US");
     mockedGetSystemTimezone.mockReturnValue("Eastern Standard Time");
 
     const onEvent = collectEvents();
@@ -218,6 +250,8 @@ describe("persistOnFlow", () => {
 
     expect(events.some(e => e.type === "step-start" && "stepId" in e && e.stepId === "win-locale")).toBe(false);
     expect(mockedSetWindowsLocaleName).not.toHaveBeenCalled();
+    expect(mockedSetUserLanguageListPrimary).not.toHaveBeenCalled();
+    expect(mockedSetUserCulture).not.toHaveBeenCalled();
   });
 
   it("旧备份缺失系统时区与策略快照字段：补写当前值", async () => {
@@ -234,17 +268,21 @@ describe("persistOnFlow", () => {
     expect(mockedPatchBackupBrowserPolicies).toHaveBeenCalledWith({
       "chrome/AcceptLanguage": null,
       "chrome/DefaultWebRtcIPHandlingPolicy": null,
+      "chrome/ApplicationLocaleValue": null,
       "edge/AcceptLanguage": null,
       "edge/DefaultWebRtcIPHandlingPolicy": null,
+      "edge/ApplicationLocaleValue": null,
     });
   });
 
   it("快照中已是规范值的槽位：跳过写入，无 browser-policy 步骤", async () => {
     const canonical = {
-      "chrome/AcceptLanguage": "en-US",
+      "chrome/AcceptLanguage": "en-US,en",
       "chrome/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied_udp",
-      "edge/AcceptLanguage": "en-US",
+      "chrome/ApplicationLocaleValue": "en-US",
+      "edge/AcceptLanguage": "en-US,en",
       "edge/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied_udp",
+      "edge/ApplicationLocaleValue": "en-US",
     };
     mockedCreateBackup.mockReturnValue({
       timestamp: "2024-01-01T00:00:00Z",
@@ -262,7 +300,8 @@ describe("persistOnFlow", () => {
     expect(events.some(e => e.type === "browser-hint")).toBe(false);
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
-    expect(summary.ok).toBe(5); // 3 环境变量 + 区域格式 + 系统时区
+    // 3 env + locale + lang-list + culture + sys-tz
+    expect(summary.ok).toBe(7);
     expect(mockedSetWindowsLocaleName).toHaveBeenCalledWith("en-US");
   });
 
@@ -321,7 +360,8 @@ describe("persistOnFlow", () => {
     expect(events.some(e => e.type === "browser-hint")).toBe(false);
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
-    expect(summary.ok).toBe(5); // 3 环境变量 + 区域格式 + 系统时区
+    // 3 env + locale + lang-list + culture + sys-tz, browser-policy fail counted separately
+    expect(summary.ok).toBe(7);
     expect(summary.fail).toBe(1);
     expect(summary.fatal).toBeUndefined();
   });
@@ -353,8 +393,12 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // browser-policy
       "browser-hint",            // 重启生效提示
       "step-start", "step-ok",   // win-locale
+      "step-start", "step-ok",   // win-lang-list
+      "step-start", "step-ok",   // win-culture
       "step-start", "step-fail", // sys-tz 失败
-      "step-start", "step-ok",   // rollback-policy ×4
+      "step-start", "step-ok",   // rollback-policy ×6
+      "step-start", "step-ok",
+      "step-start", "step-ok",
       "step-start", "step-ok",
       "step-start", "step-ok",
       "step-start", "step-ok",
@@ -595,8 +639,10 @@ describe("persistOffFlow", () => {
         previousBrowserPolicies: {
           "chrome/AcceptLanguage": null,
           "chrome/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied",
+          "chrome/ApplicationLocaleValue": null,
           "edge/AcceptLanguage": null,
           "edge/DefaultWebRtcIPHandlingPolicy": null,
+          "edge/ApplicationLocaleValue": null,
         },
       },
       current: { TZ: "America/New_York" },
@@ -614,17 +660,19 @@ describe("persistOffFlow", () => {
     const edgeStart = events.find(e => e.type === "step-start" && "stepId" in e && e.stepId === "restore-browser-policy-edge") as Extract<StreamEvent, { type: "step-start" }>;
     expect(chromeStart).toBeDefined();
     expect(edgeStart).toBeDefined();
-    // 每步 oldValue/newValue 只含本浏览器的两个槽位
-    expect(chromeStart.oldValue!.split(", ")).toHaveLength(2);
-    expect(edgeStart.oldValue!.split(", ")).toHaveLength(2);
+    // 每步 oldValue/newValue 含本浏览器的三个槽位
+    expect(chromeStart.oldValue!.split(", ")).toHaveLength(3);
+    expect(edgeStart.oldValue!.split(", ")).toHaveLength(3);
 
     // chrome：null → 删除；非法旧值 → 写回原值
     expect(mockedDeletePolicy).toHaveBeenCalledWith("chrome", "AcceptLanguage");
     expect(mockedSetPolicy).toHaveBeenCalledWith("chrome", "DefaultWebRtcIPHandlingPolicy", "disable_non_proxied");
-    // edge：两槽位均删除
+    expect(mockedDeletePolicy).toHaveBeenCalledWith("chrome", "ApplicationLocaleValue");
+    // edge：槽位均删除
     expect(mockedDeletePolicy).toHaveBeenCalledWith("edge", "AcceptLanguage");
     expect(mockedDeletePolicy).toHaveBeenCalledWith("edge", "DefaultWebRtcIPHandlingPolicy");
-    // 策略写入总次数：chrome WebRTC 写回 + edge 两次删除不算写入
+    expect(mockedDeletePolicy).toHaveBeenCalledWith("edge", "ApplicationLocaleValue");
+    // 策略写入总次数：chrome WebRTC 写回
     expect(mockedSetPolicy).toHaveBeenCalledTimes(1);
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
