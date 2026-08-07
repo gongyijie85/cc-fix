@@ -23,6 +23,8 @@ Claude Code 环境安全检测与修复 CLI 工具（Windows 优先）。检测�
 | 常驻通道 | `GET /api/events` 的持久 SSE 连接（EventSource） | |
 | 触发端点 | 只启动动作、返回 202/409 的 POST 端点（`/api/fix/on` 等） | |
 | 备份（backup） | `%APPDATA%/cc-fix/persist-backup.json`，存最原始的环境变量值与系统时区（`previousSystemTimezone`，旧版备份可能缺失），不覆盖 | |
+| 操作日志（history） | `%APPDATA%/cc-fix/history.jsonl` 追加式记录每次 on/off/check，回答"我上次干了什么" | 与备份分工：快照负责可恢复，日志负责可追溯（ADR-0002） |
+| 目标地区（target region） | us/eu/jp/sg 四档，`TARGET_REGIONS` 为 CLI 与 GUI 的同一事实源，非法值回落 us | GUI 下拉框选择不记忆 |
 
 ## 统一事件协议
 
