@@ -70,6 +70,8 @@ export type TargetRegion = {
   code: string;
   name: string;
   timezone: string;
+  /** 对应的 Windows tzutil 时区 ID，用于同步切换系统时区（浏览器指纹） */
+  winTimezone: string;
   lang: string;
   lcAll: string;
 };

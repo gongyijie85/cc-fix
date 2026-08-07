@@ -10,6 +10,9 @@ vi.mock("../platform/windows.js", () => ({
   deleteEnvVar: vi.fn(),
   getEnvVar: vi.fn(),
   getPersistStatus: vi.fn(),
+  getSystemTimezone: vi.fn(),
+  setSystemTimezone: vi.fn(),
+  patchBackupSystemTimezone: vi.fn(),
 }));
 
 import { persistOnFlow, persistOffFlow } from "./flow.js";
@@ -19,6 +22,9 @@ import {
   deleteEnvVar,
   getEnvVar,
   getPersistStatus,
+  getSystemTimezone,
+  setSystemTimezone,
+  patchBackupSystemTimezone,
 } from "../platform/windows.js";
 
 const mockedCreateBackup = vi.mocked(createBackup);
@@ -26,6 +32,9 @@ const mockedSetEnvVar = vi.mocked(setEnvVar);
 const mockedDeleteEnvVar = vi.mocked(deleteEnvVar);
 const mockedGetEnvVar = vi.mocked(getEnvVar);
 const mockedGetPersistStatus = vi.mocked(getPersistStatus);
+const mockedGetSystemTimezone = vi.mocked(getSystemTimezone);
+const mockedSetSystemTimezone = vi.mocked(setSystemTimezone);
+const mockedPatchBackupSystemTimezone = vi.mocked(patchBackupSystemTimezone);
 
 let events: StreamEvent[];
 
@@ -40,26 +49,65 @@ beforeEach(() => {
   mockedGetEnvVar.mockReturnValue(null);
   mockedSetEnvVar.mockImplementation(() => {});
   mockedDeleteEnvVar.mockImplementation(() => {});
+  // 默认：系统时区为中国标准时间，tzutil 写入成功
+  mockedGetSystemTimezone.mockReturnValue("China Standard Time");
+  mockedSetSystemTimezone.mockImplementation(() => {});
+  mockedPatchBackupSystemTimezone.mockImplementation(() => {});
 });
 
 describe("persistOnFlow", () => {
   const opts = {
     regionCode: "us",
     targetTimezone: "America/New_York",
+    targetWinTimezone: "Eastern Standard Time",
     targetLang: "en_US.UTF-8",
     targetLcAll: "en_US.UTF-8",
   };
 
-  it("成功流程：备份 + 3 个 setx + summary", async () => {
+  it("成功流程：备份 + 3 个 setx + 切换系统时区 + summary", async () => {
     mockedCreateBackup.mockReturnValue({
       timestamp: "2024-01-01T00:00:00Z",
       previous: { TZ: null, LANG: null, LC_ALL: null },
+      previousSystemTimezone: "China Standard Time",
     });
 
     const onEvent = collectEvents();
     await persistOnFlow(opts, onEvent);
 
-    // 事件序列：backup-start, backup-ok, tz-start, tz-ok, lang-start, lang-ok, lc-start, lc-ok, summary
+    const types = events.map(e => e.type);
+    expect(types).toEqual([
+      "step-start", "step-ok",   // backup
+      "step-start", "step-ok",   // tz
+      "step-start", "step-ok",   // lang
+      "step-start", "step-ok",   // lc
+      "step-start", "step-ok",   // sys-tz
+      "summary",
+    ]);
+
+    // summary 验证（3 个环境变量 + 1 个系统时区）
+    const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
+    expect(summary.ok).toBe(4);
+    expect(summary.fail).toBe(0);
+    expect(summary.rolledBack).toBe(false);
+
+    // sys-tz 步骤携带旧→新值
+    const sysTzStart = events.find(e => e.type === "step-start" && "stepId" in e && e.stepId === "sys-tz") as Extract<StreamEvent, { type: "step-start" }>;
+    expect(sysTzStart.oldValue).toBe("China Standard Time");
+    expect(sysTzStart.newValue).toBe("Eastern Standard Time");
+    expect(mockedSetSystemTimezone).toHaveBeenCalledWith("Eastern Standard Time");
+  });
+
+  it("系统时区已是目标值：跳过 sys-tz 步骤", async () => {
+    mockedCreateBackup.mockReturnValue({
+      timestamp: "2024-01-01T00:00:00Z",
+      previous: { TZ: null, LANG: null, LC_ALL: null },
+      previousSystemTimezone: "China Standard Time",
+    });
+    mockedGetSystemTimezone.mockReturnValue("Eastern Standard Time");
+
+    const onEvent = collectEvents();
+    await persistOnFlow(opts, onEvent);
+
     const types = events.map(e => e.type);
     expect(types).toEqual([
       "step-start", "step-ok",   // backup
@@ -68,17 +116,54 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // lc
       "summary",
     ]);
+    expect(mockedSetSystemTimezone).not.toHaveBeenCalled();
 
-    // summary 验证
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
     expect(summary.ok).toBe(3);
-    expect(summary.fail).toBe(0);
-    expect(summary.rolledBack).toBe(false);
+  });
 
-    // step-start 应携带 old→new 值
-    const tzStart = events.find(e => e.type === "step-start" && "stepId" in e && e.stepId === "tz") as Extract<StreamEvent, { type: "step-start" }>;
-    expect(tzStart.oldValue).toBe("(未设置)");
-    expect(tzStart.newValue).toBe("America/New_York");
+  it("旧备份缺失系统时区字段：补写当前值", async () => {
+    mockedCreateBackup.mockReturnValue({
+      timestamp: "2024-01-01T00:00:00Z",
+      previous: { TZ: null, LANG: null, LC_ALL: null },
+    });
+
+    const onEvent = collectEvents();
+    await persistOnFlow(opts, onEvent);
+
+    expect(mockedPatchBackupSystemTimezone).toHaveBeenCalledWith("China Standard Time");
+  });
+
+  it("系统时区切换失败：回滚已修改的环境变量", async () => {
+    mockedCreateBackup.mockReturnValue({
+      timestamp: "2024-01-01T00:00:00Z",
+      previous: { TZ: null, LANG: null, LC_ALL: null },
+      previousSystemTimezone: "China Standard Time",
+    });
+    mockedSetSystemTimezone.mockImplementation(() => {
+      throw new Error("tzutil 退出码 1: 拒绝访问");
+    });
+
+    const onEvent = collectEvents();
+    await persistOnFlow(opts, onEvent);
+
+    const types = events.map(e => e.type);
+    expect(types).toEqual([
+      "step-start", "step-ok",   // backup
+      "step-start", "step-ok",   // tz
+      "step-start", "step-ok",   // lang
+      "step-start", "step-ok",   // lc
+      "step-start", "step-fail", // sys-tz 失败
+      "step-start", "step-ok",   // rollback TZ
+      "step-start", "step-ok",   // rollback LANG
+      "step-start", "step-ok",   // rollback LC_ALL
+      "summary",
+    ]);
+
+    const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
+    expect(summary.ok).toBe(3);
+    expect(summary.fail).toBe(1);
+    expect(summary.rolledBack).toBe(true);
   });
 
   it("失败流程：LANG 失败 → 回滚 TZ → summary rolledBack", async () => {
@@ -215,6 +300,71 @@ describe("persistOffFlow", () => {
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
     expect(summary.fatal).toBe(true);
     expect(summary.ok).toBe(0);
+    expect(summary.fail).toBe(1);
+  });
+
+  it("备份含系统时区：恢复环境变量 + 恢复系统时区 + 删备份", async () => {
+    mockedGetPersistStatus.mockReturnValue({
+      enabled: true,
+      backup: {
+        timestamp: "2024-01-01T00:00:00Z",
+        previous: { TZ: null, LANG: null, LC_ALL: null },
+        previousSystemTimezone: "China Standard Time",
+      },
+      current: { TZ: "America/New_York", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" },
+    });
+    mockedGetEnvVar.mockImplementation((key: string) => {
+      const vals: Record<string, string> = { TZ: "America/New_York", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
+      return vals[key] ?? null;
+    });
+    mockedGetSystemTimezone.mockReturnValue("Eastern Standard Time");
+
+    const onEvent = collectEvents();
+    await persistOffFlow(onEvent);
+
+    // 3 个恢复步骤 + 恢复系统时区 + 删备份 + summary
+    const starts = events.filter(e => e.type === "step-start");
+    expect(starts.length).toBe(5);
+
+    const sysTzStart = events.find(e => e.type === "step-start" && "stepId" in e && e.stepId === "restore-sys-tz") as Extract<StreamEvent, { type: "step-start" }>;
+    expect(sysTzStart.oldValue).toBe("Eastern Standard Time");
+    expect(sysTzStart.newValue).toBe("China Standard Time");
+    expect(mockedSetSystemTimezone).toHaveBeenCalledWith("China Standard Time");
+
+    const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
+    expect(summary.ok).toBe(5);
+    expect(summary.fail).toBe(0);
+  });
+
+  it("系统时区恢复失败：fatal 且不删备份", async () => {
+    mockedGetPersistStatus.mockReturnValue({
+      enabled: true,
+      backup: {
+        timestamp: "2024-01-01T00:00:00Z",
+        previous: { TZ: null },
+        previousSystemTimezone: "China Standard Time",
+      },
+      current: { TZ: "America/New_York" },
+    });
+    mockedGetEnvVar.mockReturnValue("America/New_York");
+    mockedGetSystemTimezone.mockReturnValue("Eastern Standard Time");
+    mockedSetSystemTimezone.mockImplementation(() => {
+      throw new Error("tzutil 退出码 1: 拒绝访问");
+    });
+
+    const onEvent = collectEvents();
+    await persistOffFlow(onEvent);
+
+    const types = events.map(e => e.type);
+    // 恢复 TZ(ok) → restore-sys-tz(start/fail) → summary；不进入删备份步骤
+    expect(types).toEqual([
+      "step-start", "step-ok",
+      "step-start", "step-fail",
+      "summary",
+    ]);
+
+    const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
+    expect(summary.fatal).toBe(true);
     expect(summary.fail).toBe(1);
   });
 });

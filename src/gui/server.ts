@@ -88,7 +88,7 @@ async function handleFixOn(res: http.ServerResponse) {
   const target = getTargetRegion(DEFAULT_REGION);
   try {
     await persistOnFlow(
-      { regionCode: "auto", targetTimezone: target.timezone, targetLang: target.lang, targetLcAll: target.lcAll },
+      { regionCode: "auto", targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
       fixEventConsumer,
     );
   } finally {

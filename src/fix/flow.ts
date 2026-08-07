@@ -9,6 +9,9 @@ import {
   deleteEnvVar,
   getEnvVar,
   getPersistStatus,
+  getSystemTimezone,
+  setSystemTimezone,
+  patchBackupSystemTimezone,
   type BackupData,
 } from "../platform/windows.js";
 
@@ -18,6 +21,8 @@ const BACKUP_FILE = path.join(APPDATA, "cc-fix", "persist-backup.json");
 export interface PersistOnOptions {
   regionCode: string;
   targetTimezone: string;
+  /** 目标地区对应的 Windows tzutil 时区 ID，用于同步切换系统时区 */
+  targetWinTimezone: string;
   targetLang: string;
   targetLcAll: string;
 }
@@ -40,6 +45,17 @@ export async function persistOnFlow(
     onEvent({ type: "step-fail", stepId: "backup", error: String(err) });
     onEvent({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
     return;
+  }
+
+  // 旧备份缺失系统时区字段时，在任何改动前补写当前值
+  if (backup.previousSystemTimezone === undefined) {
+    try {
+      const sysTz = getSystemTimezone();
+      patchBackupSystemTimezone(sysTz);
+      backup.previousSystemTimezone = sysTz;
+    } catch {
+      // tzutil 读取失败：不阻断主流程，后续切换步骤会自行报错
+    }
   }
 
   // 步骤 2-N：逐个设置环境变量
@@ -78,7 +94,50 @@ export async function persistOnFlow(
     }
   }
 
-  onEvent({ type: "summary", ok: steps.length, fail: 0, rolledBack: false });
+  let okCount = steps.length;
+
+  // 步骤 N+1：切换 Windows 系统时区（浏览器指纹检测读物理时区，不读 TZ 环境变量）
+  let currentSysTz: string;
+  try {
+    currentSysTz = getSystemTimezone();
+  } catch (err) {
+    onEvent({ type: "step-start", stepId: "sys-tz", name: "切换系统时区" });
+    onEvent({ type: "step-fail", stepId: "sys-tz", error: String(err) });
+    const rollbackOk = await rollbackFlow(changedKeys, backup, onEvent);
+    if (rollbackOk) {
+      onEvent({ type: "summary", ok: changedKeys.length, fail: 1, rolledBack: true });
+    } else {
+      onEvent({ type: "summary", ok: changedKeys.length, fail: 1, rolledBack: false, fatal: true });
+    }
+    return;
+  }
+
+  if (currentSysTz !== opts.targetWinTimezone) {
+    onEvent({
+      type: "step-start",
+      stepId: "sys-tz",
+      name: "切换系统时区",
+      oldValue: currentSysTz,
+      newValue: opts.targetWinTimezone,
+    });
+    try {
+      setSystemTimezone(opts.targetWinTimezone);
+      okCount++;
+      onEvent({ type: "step-ok", stepId: "sys-tz" });
+    } catch (err) {
+      onEvent({ type: "step-fail", stepId: "sys-tz", error: String(err) });
+      // 系统时区尚未改动，只需回滚环境变量
+      const rollbackOk = await rollbackFlow(changedKeys, backup, onEvent);
+      if (rollbackOk) {
+        onEvent({ type: "summary", ok: changedKeys.length, fail: 1, rolledBack: true });
+      } else {
+        onEvent({ type: "summary", ok: changedKeys.length, fail: 1, rolledBack: false, fatal: true });
+      }
+      return;
+    }
+  }
+
+  onEvent({ type: "summary", ok: okCount, fail: 0, rolledBack: false });
 }
 
 // ── persist off ──
@@ -117,6 +176,35 @@ export async function persistOffFlow(onEvent: EventConsumer): Promise<void> {
       onEvent({ type: "step-fail", stepId: `restore-${key}`, error: String(err) });
       onEvent({ type: "summary", ok: okCount, fail: 1, rolledBack: false, fatal: true });
       return;
+    }
+  }
+
+  // 恢复 Windows 系统时区（旧备份可能没有该字段，跳过）
+  if (backup.previousSystemTimezone) {
+    let currentSysTz: string | null = null;
+    try {
+      currentSysTz = getSystemTimezone();
+    } catch {
+      // 读取失败不阻断，直接尝试恢复
+    }
+    if (currentSysTz !== backup.previousSystemTimezone) {
+      onEvent({
+        type: "step-start",
+        stepId: "restore-sys-tz",
+        name: "恢复系统时区",
+        oldValue: currentSysTz ?? "(未知)",
+        newValue: backup.previousSystemTimezone,
+      });
+      try {
+        setSystemTimezone(backup.previousSystemTimezone);
+        okCount++;
+        onEvent({ type: "step-ok", stepId: "restore-sys-tz" });
+      } catch (err) {
+        onEvent({ type: "step-fail", stepId: "restore-sys-tz", error: String(err) });
+        // 保留备份文件供重试，不进入删备份步骤
+        onEvent({ type: "summary", ok: okCount, fail: 1, rolledBack: false, fatal: true });
+        return;
+      }
     }
   }
 

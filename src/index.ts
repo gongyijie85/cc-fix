@@ -51,7 +51,7 @@ persistCmd
   .action(async (options) => {
     const target = getTargetRegion(options.region);
     await persistOnFlow(
-      { regionCode: options.region, targetTimezone: target.timezone, targetLang: target.lang, targetLcAll: target.lcAll },
+      { regionCode: options.region, targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
       (event: StreamEvent) => {
         if (event.type === "step-start") {
           const change = event.oldValue !== undefined ? `: ${event.oldValue} → ${event.newValue}` : "";

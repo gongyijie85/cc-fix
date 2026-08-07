@@ -6,6 +6,7 @@ describe("getTargetRegion", () => {
     const region = getTargetRegion(DEFAULT_REGION);
     expect(region.code).toBe("us");
     expect(region.timezone).toBe("America/New_York");
+    expect(region.winTimezone).toBe("Eastern Standard Time");
     expect(region.lang).toBe("en_US.UTF-8");
   });
 

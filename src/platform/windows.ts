@@ -11,6 +11,8 @@ const BACKUP_FILE = path.join(CC_FIX_DIR, "persist-backup.json");
 export type BackupData = {
   timestamp: string;
   previous: Record<string, string | null>;
+  /** persist on 前的 Windows 系统时区（tzutil ID），旧备份可能缺失 */
+  previousSystemTimezone?: string | null;
 };
 
 export function ensureDir(): void {
@@ -43,9 +45,18 @@ export function createBackup(envKeys: string[]): BackupData {
     }
   }
 
+  // 同时记录当前系统时区，供 persist off 恢复
+  let previousSystemTimezone: string | null = null;
+  try {
+    previousSystemTimezone = getSystemTimezone();
+  } catch {
+    // tzutil 不可用时保留 null，不阻断备份
+  }
+
   const backup: BackupData = {
     timestamp: new Date().toISOString(),
     previous,
+    previousSystemTimezone,
   };
 
   fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
@@ -67,6 +78,24 @@ export function loadBackup(): BackupData | null {
 
 export function setEnvVar(key: string, value: string): void {
   execSync(`setx ${key} "${value}"`, { stdio: "pipe" });
+}
+
+// ── 系统时区（tzutil）──
+
+export function getSystemTimezone(): string {
+  return execSync("tzutil /g", { encoding: "utf-8" }).trim();
+}
+
+export function setSystemTimezone(winTimezoneId: string): void {
+  execSync(`tzutil /s "${winTimezoneId}"`, { stdio: "pipe" });
+}
+
+// 为旧备份补写系统时区字段（不改写已有字段）
+export function patchBackupSystemTimezone(winTimezoneId: string): void {
+  const backup = loadBackup();
+  if (!backup || backup.previousSystemTimezone !== undefined) return;
+  backup.previousSystemTimezone = winTimezoneId;
+  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
 }
 
 export function deleteEnvVar(key: string): void {

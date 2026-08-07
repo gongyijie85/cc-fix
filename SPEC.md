@@ -13,9 +13,10 @@
 
 ## Solution
 
-构建一个 CLI 工具 `cc-fix`，基于 check-cc 开源项目的检测逻辑，适配 Node.js/CLI 场景。核心策略是**用户级环境变量持久化**——只修改用户级环境变量（`TZ`、`LANG`、`LC_ALL`），不修改系统设置。这样：
-- 所有 Node.js/Electron 应用（Claude CLI、Cursor、Claude Desktop）自动继承安全环境
-- Windows 原生应用（系统时钟、Office、Teams）不受影响，因为它们读注册表而非环境变量
+构建一个 CLI 工具 `cc-fix`，基于 check-cc 开源项目的检测逻辑，适配 Node.js/CLI 场景。核心策略是**用户级环境变量持久化 + 系统时区同步切换**：
+- 用户级环境变量（`TZ`、`LANG`、`LC_ALL`）：所有 Node.js/Electron 应用（Claude CLI、Cursor、Claude Desktop）自动继承安全环境
+- Windows 系统时区（`tzutil`）：浏览器/指纹类检测（如 ippure）读的是物理时区而非 `TZ` 环境变量，因此 `persist on` 同步切换系统时区，`persist off` 自动恢复
+- 影响面：persist 开启期间系统时钟等原生应用显示目标时区时间；其余语言/区域设置不动系统项
 - 用户无需频繁切换，`persist on` 一次设置即可长期生效
 
 ## User Stories
@@ -76,12 +77,13 @@
 
 三层修复策略，按优先级排列：
 
-1. **核心层 — 用户级持久化**（`persist on/off`）
+1. **核心层 — 用户级持久化 + 系统时区同步**（`persist on/off`）
    - 通过 `setx` 设置用户级环境变量：`TZ`、`LANG`、`LC_ALL`
+   - 通过 `tzutil` 同步切换 Windows 系统时区（覆盖浏览器/指纹类检测，如 ippure）
    - 无需管理员权限
-   - Windows 原生应用不读这些变量，日常办公零影响
+   - 环境变量对 Windows 原生应用不可见；系统时区切换期间原生应用时钟显示目标时区时间
    - 所有 Node.js/Electron 应用自动继承
-   - 自动备份旧值，`persist off` 时恢复
+   - 自动备份旧值（含系统时区），`persist off` 时恢复
 
 2. **补充层 — 进程级注入**（`run`）
    - 启动命令时注入环境变量：`TZ=... LANG=... claude`
@@ -159,7 +161,7 @@ check 命令:
   采集系统信息 → 运行检测插件（并行） → 加权评分 → 终端输出
 
 persist on 命令:
-  备份旧值 → setx 设置环境变量 → 验证生效 → 输出结果
+  备份旧值（含系统时区） → setx 设置环境变量 → tzutil 切换系统时区 → 输出结果
 
 run 命令:
   构造环境变量 → 包装目标命令启动 → 继承环境运行
@@ -168,8 +170,8 @@ run 命令:
 ### 备份与回滚
 
 - 备份存储在 `%APPDATA%\cc-fix\persist-backup.json`
-- 记录每个环境变量的原始值（不存在记为 null）
-- `persist off` 时根据备份恢复：有值则恢复，null 则删除
+- 记录每个环境变量的原始值（不存在记为 null），以及开启前的 Windows 系统时区（`previousSystemTimezone`，旧版备份可能缺失）
+- `persist off` 时根据备份恢复：环境变量有值则恢复、null 则删除；系统时区恢复到备份值
 
 ### 平台支持
 
