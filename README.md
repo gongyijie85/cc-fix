@@ -25,10 +25,10 @@
 
 - 🔍 **一键检测** 18 个维度的环境风险信号
 - 📊 **量化评分** 直观展示综合风险等级
-- 🔧 **一键修复** 用户级环境变量持久化 + 系统时区同步切换，覆盖 CLI 与浏览器指纹检测
-- 🔄 **安全回滚** 自动备份原始设置（含系统时区），随时恢复
+- 🔧 **一键修复** 用户级环境变量持久化 + 系统时区同步切换 + Chrome/Edge 浏览器策略加固，覆盖 CLI 与浏览器指纹检测
+- 🔄 **安全回滚** 自动备份原始设置（含系统时区与浏览器策略），随时恢复
 
-> **核心原理**：用户级环境变量（`TZ`、`LANG`、`LC_ALL`）让 Node.js / Electron 应用（Claude CLI、Cursor、Claude Desktop）自动继承安全环境；同时用 `tzutil` 同步切换 Windows 系统时区，覆盖浏览器/指纹类检测（如 ippure，它们读物理时区而非 `TZ` 环境变量）。注意：persist 开启期间系统时钟等原生应用会显示目标时区时间，`persist off` 后自动恢复。
+> **核心原理**：用户级环境变量（`TZ`、`LANG`、`LC_ALL`）让 Node.js / Electron 应用（Claude CLI、Cursor、Claude Desktop）自动继承安全环境；同时用 `tzutil` 同步切换 Windows 系统时区，覆盖浏览器/指纹类检测（如 ippure，它们读物理时区而非 `TZ` 环境变量）；并向 Chrome/Edge 写入原生策略（`Accept-Language` 跟随目标地区、WebRTC 防泄漏），压掉浏览器侧语言画像与 IP 泄漏信号（策略需重启浏览器生效；若 `HKCU\Software\Policies` 被 ACL 加固，需以管理员权限运行，其余步骤不受影响）。注意：persist 开启期间系统时钟等原生应用会显示目标时区时间，`persist off` 后自动恢复。
 
 ---
 
@@ -205,9 +205,10 @@ cc-fix persist status          # 查看当前持久化状态
 ```
 
 **工作原理：**
-- `persist on`：通过 Windows `setx` 命令设置用户级环境变量 `TZ`、`LANG`、`LC_ALL`，并通过 `tzutil` 同步切换系统时区（浏览器指纹检测读物理时区，不读 `TZ` 环境变量）
-- 自动备份原始值（含系统时区）到 `%APPDATA%\cc-fix\persist-backup.json`
-- `persist off`：根据备份恢复环境变量与系统时区，无需手动操作
+- `persist on`：通过 Windows `setx` 命令设置用户级环境变量 `TZ`、`LANG`、`LC_ALL`，通过 `tzutil` 同步切换系统时区（浏览器指纹检测读物理时区，不读 `TZ` 环境变量），并向 Chrome/Edge 的 HKCU 策略区写入 `AcceptLanguage`（跟随目标地区）与 WebRTC 防泄漏策略（需重启浏览器生效）
+- 自动备份原始值（含系统时区与浏览器策略原值，"不存在"也记录）到 `%APPDATA%\cc-fix\persist-backup.json`
+- `persist off`：根据备份恢复环境变量、系统时区与浏览器策略（只还原与快照不一致的槽位），无需手动操作
+- 权限说明：若本机 `HKCU\Software\Policies` 被 ACL 加固为只读，策略步骤会失败并提示以管理员权限重试，环境变量与系统时区仍正常切换
 - 影响面：persist 开启期间系统时钟等原生应用显示目标时区时间
 
 **输出行为：** 每个步骤（备份 / 设置单键 / 恢复单键 / 删除备份）实时输出一行（`▶ 步骤名` + `✓ 完成`），失败时给出错误原因与下一步指引，结束时打印成功/失败汇总。

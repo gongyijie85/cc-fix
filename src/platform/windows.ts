@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { snapshotPolicies, type BrowserPolicySnapshot } from "./browser.js";
 
 const APPDATA = process.env.APPDATA || path.join(process.env.HOME || "", ".config");
 const CC_FIX_DIR = path.join(APPDATA, "cc-fix");
@@ -13,6 +14,8 @@ export type BackupData = {
   previous: Record<string, string | null>;
   /** persist on 前的 Windows 系统时区（tzutil ID），旧备份可能缺失 */
   previousSystemTimezone?: string | null;
+  /** persist on 前的浏览器策略原值（含"不存在"），旧备份可能缺失（ADR-0003） */
+  previousBrowserPolicies?: BrowserPolicySnapshot;
 };
 
 export function ensureDir(): void {
@@ -53,10 +56,19 @@ export function createBackup(envKeys: string[]): BackupData {
     // tzutil 不可用时保留 null，不阻断备份
   }
 
+  // 同时快照浏览器策略原值（含"不存在"），供 persist off 精确还原
+  let previousBrowserPolicies: BrowserPolicySnapshot | undefined;
+  try {
+    previousBrowserPolicies = snapshotPolicies();
+  } catch {
+    // 策略快照失败不阻断备份，后续写入步骤会自行报错
+  }
+
   const backup: BackupData = {
     timestamp: new Date().toISOString(),
     previous,
     previousSystemTimezone,
+    previousBrowserPolicies,
   };
 
   fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
@@ -95,6 +107,14 @@ export function patchBackupSystemTimezone(winTimezoneId: string): void {
   const backup = loadBackup();
   if (!backup || backup.previousSystemTimezone !== undefined) return;
   backup.previousSystemTimezone = winTimezoneId;
+  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+}
+
+// 为旧备份补写浏览器策略快照字段（不改写已有字段）
+export function patchBackupBrowserPolicies(snapshot: BrowserPolicySnapshot): void {
+  const backup = loadBackup();
+  if (!backup || backup.previousBrowserPolicies !== undefined) return;
+  backup.previousBrowserPolicies = snapshot;
   fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
 }
 
