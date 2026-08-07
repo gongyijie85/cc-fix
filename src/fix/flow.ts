@@ -23,6 +23,7 @@ import {
   setPolicy,
   deletePolicy,
   snapshotPolicies,
+  detectRunningBrowsers,
 } from "../platform/browser.js";
 
 const APPDATA = process.env.APPDATA || path.join(process.env.HOME || "", ".config");
@@ -143,6 +144,14 @@ export async function persistOnFlow(
       }
       okCount++;
       onEvent({ type: "step-ok", stepId: "browser-policy" });
+      // 策略需重启浏览器才生效：推送提示事件，附运行中浏览器（探测失败降级为空 → 普通样式）
+      let running: string[] = [];
+      try {
+        running = detectRunningBrowsers();
+      } catch {
+        // 探测失败不阻断修复流
+      }
+      onEvent({ type: "browser-hint", running });
     } catch (err) {
       const errText = String(err);
       const accessDenied = /Access is denied|拒绝访问/i.test(errText);

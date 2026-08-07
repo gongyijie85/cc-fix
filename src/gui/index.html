@@ -85,6 +85,11 @@
   .sum-rollback { background: rgba(249,115,22,.15); color: var(--orange); }
   .score-delta { margin-left: auto; font-weight: 700; font-size: 15px; color: var(--green); }
 
+  /* 浏览器重启生效提示（ADR-0003）：浏览器运行中时加强显示 */
+  .browser-hint { display: none; margin-top: 12px; padding: 10px 14px; border-radius: 8px; font-size: 13px; background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.35); color: var(--text); }
+  .browser-hint.visible { display: block; }
+  .browser-hint.strong { background: rgba(234,179,8,.12); border-color: rgba(234,179,8,.5); color: var(--yellow); font-weight: 700; }
+
   /* ── 检测流面板 ── */
   .detect-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; display: none; }
   .detect-card.visible { display: block; }
@@ -135,6 +140,7 @@
     <h3 id="fixTitle">修复进行中…</h3>
     <div id="stepList"></div>
     <div class="sum-bar" id="sumBar" style="display:none"></div>
+    <div class="browser-hint" id="browserHint"></div>
   </div>
 
   <!-- 检测流卡片 -->
@@ -158,7 +164,7 @@ const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;","
 const riskLabel = { low: "安全", medium: "中风险", high: "高风险", critical: "极高风险" };
 const scoreClass = (s) => s >= 71 ? "score-critical" : s >= 51 ? "score-high" : s >= 21 ? "score-medium" : "score-low";
 
-// ── 检测信号占位表（12 行） ──
+// ── 检测信号占位表（13 行） ──
 const DETECT_SIGNALS = [
   { id: "timezone", label: "时区" },
   { id: "language", label: "语言" },
@@ -170,11 +176,14 @@ const DETECT_SIGNALS = [
   { id: "proxy-env", label: "代理环境" },
   { id: "win-region", label: "Windows 区域" },
   { id: "utc-offset", label: "UTC 偏移" },
+  { id: "browser-policy", label: "浏览器策略" },
   { id: "ip-datacenter", label: "数据中心 IP" },
   { id: "ip-multi-source", label: "多源不一致" },
 ];
 
 let fixActive = false; // 修复流是否进行中（防止每个 step-start 重复初始化卡片）
+let lastFixAction = null;      // "on" | "off" — summary 时决定提示显示/消失
+let pendingBrowserHint = null; // 服务端推送的运行中浏览器（null = 本流未写入策略）
 
 // ── Toast ──
 function showToast(msg) {
@@ -198,6 +207,10 @@ function ensureFixCard() {
   $("#stepList").innerHTML = "";
   $("#sumBar").style.display = "none";
   $("#sumBar").innerHTML = "";
+  const hint = $("#browserHint");
+  hint.classList.remove("visible", "strong");
+  hint.textContent = "";
+  pendingBrowserHint = null;
 }
 
 function addStepRow(event) {
@@ -270,6 +283,26 @@ function showSummary(event) {
   }
 
   setButtonsDisabled(false);
+
+  // 浏览器策略生效提示：on 流写入策略后显示；off 后消失（ADR-0003）
+  const hint = $("#browserHint");
+  if (lastFixAction === "off") {
+    hint.classList.remove("visible", "strong");
+    hint.textContent = "";
+  } else if (lastFixAction === "on" && pendingBrowserHint !== null && !event.fatal) {
+    const running = pendingBrowserHint;
+    hint.classList.add("visible");
+    if (running.length > 0) {
+      // 浏览器运行中：加强显示，新策略不会立即生效
+      hint.classList.add("strong");
+      const names = running.map(b => b === "chrome" ? "Chrome" : "Edge").join("、");
+      hint.textContent = `⚠️ 浏览器策略已写入，但检测到 ${names} 正在运行 — 请重启浏览器后新策略才生效`;
+    } else {
+      hint.classList.remove("strong");
+      hint.textContent = "浏览器策略已写入，请重启 Chrome/Edge 生效";
+    }
+  }
+  pendingBrowserHint = null;
 
   // 成功后自动复测（评分对比由服务端 recheck 事件推送）
   if (event.fail === 0) {
@@ -362,6 +395,7 @@ function handleEvent(event) {
   else if (event.type === "step-ok") { updateStep(event.stepId, "ok", event.rollback); }
   else if (event.type === "step-fail") { updateStep(event.stepId, "fail", event.rollback, event.error); }
   else if (event.type === "summary") { fixActive = false; showSummary(event); loadHistory(); }
+  else if (event.type === "browser-hint") { pendingBrowserHint = event.running; }
   else if (event.type === "recheck") { showScoreDelta(event.before, event.after); }
   else if (event.type === "detect-start") { buildDetectTable(); }
   else if (event.type === "detect-ok") { fillDetectRow(event.signal); }
@@ -384,6 +418,7 @@ evtSource.onerror = () => { /* EventSource 自动重连 */ };
 // ── 操作按钮 ──
 async function persistOn() {
   setButtonsDisabled(true);
+  lastFixAction = "on";
   const region = document.getElementById("regionSelect")?.value || "us";
   const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}`, { method: "POST" });
   if (!res.ok) {
@@ -395,6 +430,7 @@ async function persistOn() {
 
 async function persistOff() {
   setButtonsDisabled(true);
+  lastFixAction = "off";
   const res = await fetch("/api/fix/off", { method: "POST" });
   if (!res.ok) {
     setButtonsDisabled(false);

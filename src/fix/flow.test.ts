@@ -25,6 +25,7 @@ vi.mock("../platform/browser.js", async (importOriginal) => {
     setPolicy: vi.fn(),
     deletePolicy: vi.fn(),
     snapshotPolicies: vi.fn(),
+    detectRunningBrowsers: vi.fn(),
   };
 });
 
@@ -45,6 +46,7 @@ import {
   setPolicy,
   deletePolicy,
   snapshotPolicies,
+  detectRunningBrowsers,
 } from "../platform/browser.js";
 
 const mockedCreateBackup = vi.mocked(createBackup);
@@ -60,6 +62,7 @@ const mockedGetPolicy = vi.mocked(getPolicy);
 const mockedSetPolicy = vi.mocked(setPolicy);
 const mockedDeletePolicy = vi.mocked(deletePolicy);
 const mockedSnapshotPolicies = vi.mocked(snapshotPolicies);
+const mockedDetectRunningBrowsers = vi.mocked(detectRunningBrowsers);
 
 let events: StreamEvent[];
 
@@ -89,6 +92,8 @@ beforeEach(() => {
     "edge/AcceptLanguage": null,
     "edge/DefaultWebRtcIPHandlingPolicy": null,
   });
+  // 默认：Chrome 正在运行（重启提示加强显示的依据）
+  mockedDetectRunningBrowsers.mockReturnValue(["chrome"]);
 });
 
 describe("persistOnFlow", () => {
@@ -117,6 +122,7 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // lang
       "step-start", "step-ok",   // lc
       "step-start", "step-ok",   // browser-policy
+      "browser-hint",            // 重启生效提示
       "step-start", "step-ok",   // sys-tz
       "summary",
     ]);
@@ -139,6 +145,10 @@ describe("persistOnFlow", () => {
     expect(sysTzStart.oldValue).toBe("China Standard Time");
     expect(sysTzStart.newValue).toBe("Eastern Standard Time");
     expect(mockedSetSystemTimezone).toHaveBeenCalledWith("Eastern Standard Time");
+
+    // 策略写入成功后推送重启提示，携带运行中浏览器
+    const hint = events.find(e => e.type === "browser-hint") as Extract<StreamEvent, { type: "browser-hint" }>;
+    expect(hint.running).toEqual(["chrome"]);
   });
 
   it("系统时区已是目标值：跳过 sys-tz 步骤，浏览器策略仍写入", async () => {
@@ -159,6 +169,7 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // lang
       "step-start", "step-ok",   // lc
       "step-start", "step-ok",   // browser-policy
+      "browser-hint",            // 重启生效提示
       "summary",
     ]);
     expect(mockedSetSystemTimezone).not.toHaveBeenCalled();
@@ -205,6 +216,8 @@ describe("persistOnFlow", () => {
 
     expect(events.some(e => e.type === "step-start" && "stepId" in e && e.stepId === "browser-policy")).toBe(false);
     expect(mockedSetPolicy).not.toHaveBeenCalled();
+    // 未写入策略则无重启提示
+    expect(events.some(e => e.type === "browser-hint")).toBe(false);
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
     expect(summary.ok).toBe(4); // 3 环境变量 + 系统时区
@@ -261,6 +274,8 @@ describe("persistOnFlow", () => {
     expect(mockedSetSystemTimezone).toHaveBeenCalledWith("Eastern Standard Time");
     // 未触发环境变量回滚（无 rollback-* 步骤）
     expect(events.some(e => e.type === "step-start" && "stepId" in e && String(e.stepId).startsWith("rollback-"))).toBe(false);
+    // 策略未写入成功：不推送重启提示
+    expect(events.some(e => e.type === "browser-hint")).toBe(false);
 
     const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
     expect(summary.ok).toBe(4); // 3 环境变量 + 系统时区
@@ -288,6 +303,7 @@ describe("persistOnFlow", () => {
       "step-start", "step-ok",   // lang
       "step-start", "step-ok",   // lc
       "step-start", "step-ok",   // browser-policy
+      "browser-hint",            // 重启生效提示
       "step-start", "step-fail", // sys-tz 失败
       "step-start", "step-ok",   // rollback-policy ×4
       "step-start", "step-ok",

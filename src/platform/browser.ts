@@ -109,3 +109,31 @@ export function restorePolicies(snapshot: BrowserPolicySnapshot): void {
     }
   }
 }
+
+// 进程名 → 浏览器（tasklist 的 IMAGENAME）
+const PROCESS_IMAGES: Record<string, BrowserId> = {
+  "chrome.exe": "chrome",
+  "msedge.exe": "edge",
+};
+
+/** 探测正在运行的浏览器；单个浏览器探测失败降级跳过（不阻断调用方） */
+// 注意：tasklist 的多个 /FI 过滤器按 AND 连接，IMAGENAME 不可能同时等于两个值（恒假），
+// 必须按进程名逐个查询后合并结果（E2E-17 实测：组合查询即使 chrome.exe 运行中也返回空）
+export function detectRunningBrowsers(): BrowserId[] {
+  const running = new Set<BrowserId>();
+  for (const [image, browser] of Object.entries(PROCESS_IMAGES)) {
+    try {
+      const output = execSync(
+        `tasklist /NH /FI "IMAGENAME eq ${image}"`,
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
+      );
+      const hit = output
+        .split("\n")
+        .some(line => line.trim().split(/\s+/)[0]?.toLowerCase() === image);
+      if (hit) running.add(browser);
+    } catch {
+      // 单个浏览器探测失败不影响其它结果
+    }
+  }
+  return [...running];
+}

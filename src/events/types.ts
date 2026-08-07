@@ -9,6 +9,7 @@ export type FixEvent =
   | { type: "step-ok";    stepId: string; rollback?: boolean }
   | { type: "step-fail";  stepId: string; error: string; rollback?: boolean }
   | { type: "summary";    ok: number; fail: number; rolledBack: boolean; fatal?: boolean }
+  | { type: "browser-hint"; running: string[] }
   | { type: "recheck";    before: number; after: number };
 
 // ── 检测流事件 ──
