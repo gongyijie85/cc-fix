@@ -2,6 +2,10 @@
 
 Claude Code 环境安全检测与修复 CLI 工具。详见 `README.md` 与 `SPEC.md`。
 
+## 源码边界
+
+真实源码仅限 `src/`（构建入口 `src/index.ts`）。`.wayfinder/temp/check-cc/` 是上游 [yacuo/check-cc](https://github.com/yacuo/check-cc) 的研究快照（只读参考），**不是本项目源码，禁止修改、禁止纳入构建/测试/静态扫描范围**；检测逻辑的移植实现位于 `src/detection/`。
+
 ## Agent skills
 
 ### Issue tracker

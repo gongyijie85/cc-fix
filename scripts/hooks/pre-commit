@@ -1,0 +1,22 @@
+#!/bin/sh
+# cc-fix pre-commit 变更门禁
+# 由 package.json 的 prepare 脚本通过 `git config core.hooksPath scripts/hooks` 接线，
+# 不引入额外依赖；紧急情况可用 git commit --no-verify 绕过。
+
+echo "[pre-commit] 运行 pnpm typecheck ..."
+if ! pnpm typecheck; then
+  echo ""
+  echo "[pre-commit] ❌ 门禁未通过：pnpm typecheck 失败。"
+  echo "[pre-commit] 请修复上方类型错误后重新 git commit。"
+  exit 1
+fi
+
+echo "[pre-commit] 运行 pnpm test ..."
+if ! pnpm test; then
+  echo ""
+  echo "[pre-commit] ❌ 门禁未通过：pnpm test 失败。"
+  echo "[pre-commit] 请修复上方失败用例后重新 git commit。"
+  exit 1
+fi
+
+echo "[pre-commit] ✅ 门禁通过（typecheck + test）。"

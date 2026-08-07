@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Issues and specs for this repo live as GitHub issues in `gongyijie85/cc-fix` (github.com/gongyijie85/cc-fix). Use the `gh` CLI for all operations.
 
 > **历史注记**：2026-08 之前的 wayfinder 地图与票据以本地 markdown 存放于 `.wayfinder/`（`map.md` + `tickets/NN-*.md` + `research/`），历史票据继续就地维护；新地图起改用 GitHub Issues。
 
@@ -13,7 +13,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
-Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
+Infer the repo from `git remote -v` (origin is `gongyijie85/cc-fix`) — `gh` does this automatically when run inside a clone.
 
 ## Pull requests as a triage surface
 
