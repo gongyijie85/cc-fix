@@ -146,8 +146,9 @@ export function renderCheckResponse(response: CheckResponse): void {
     console.log(chalk.bold("  🔧 快速修复: ") + chalk.yellow("cc-fix persist on"));
     console.log(chalk.dim("  一键统一时区/语言/区域/浏览器策略"));
   } else if (score > 0) {
-    console.log(chalk.bold("  ℹ️  persist 已无法进一步降低本机信号"));
-    console.log(chalk.dim("  剩余项多为出口 IP / 中文字体等，需网络侧或手动处理"));
+    console.log(chalk.bold("  ℹ️  本机 persist 已到位；剩余靠网络侧"));
+    console.log(chalk.dim("  出口 IP → 在路由器/代理面板换目标地区节点；中文字体 → 手动卸载"));
+    console.log(chalk.dim("  cc-fix 只检测与提示，不会改路由器或 VPN 配置"));
   } else {
     console.log(chalk.green("  ✅ 环境信号正常，继续保持"));
   }

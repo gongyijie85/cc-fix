@@ -59,24 +59,34 @@ export function generateRecommendations(signals: SignalResult[], score: number):
         recommendations.push("系统语言设置暴露真实地区，运行 `cc-fix persist on` 修复");
         break;
       case "ip-country":
-        recommendations.push("出口 IP 位于高风险区域，请检查代理/节点配置");
+        recommendations.push(
+          "出口 IP 位于高风险区域：在路由器/本机代理面板将节点切到目标地区（如 US 住宅），cc-fix 不改路由配置",
+        );
         break;
       case "ip-datacenter":
-        recommendations.push("出口为数据中心/云厂商 IP，建议改用住宅或 ISP 节点");
+        recommendations.push(
+          "出口为数据中心/云厂商 IP：优先改用住宅或 ISP 节点（在代理面板操作，非本工具）",
+        );
         break;
       case "ip-multi-source":
-        recommendations.push("多源 IP 情报不一致（可能分流/污染），请核对代理与 DNS");
+        recommendations.push(
+          "多源 IP 不一致（节点抖动/分流）：代理组固定单一目标地区节点，避免自动选择在多国间跳动",
+        );
         break;
       case "consistency": {
         const v = signal.value ?? "";
         const hasLocal = /时区|Locale/i.test(v);
         const hasIp = /IP\(/i.test(v);
         if (hasLocal && hasIp) {
-          recommendations.push("环境信号不一致（本地设置 + 出口 IP），先 `cc-fix persist on` 再检查代理节点");
+          recommendations.push(
+            "环境信号不一致（本地 + 出口）：本地先 `cc-fix persist on`；出口在代理面板切到目标地区节点",
+          );
         } else if (hasLocal) {
           recommendations.push("本地时区/语言/区域不一致，运行 `cc-fix persist on` 统一信号");
         } else if (hasIp) {
-          recommendations.push("出口 IP 与目标地区不一致，请切换代理/VPN 节点到目标地区");
+          recommendations.push(
+            "出口 IP 与目标地区不一致：在路由器透明代理/Clash 面板切换到目标地区节点后重跑 `cc-fix check`（本工具只提示，不改路由）",
+          );
         } else {
           recommendations.push("环境信号不一致，请检查时区、语言与出口 IP");
         }
