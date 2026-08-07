@@ -244,7 +244,7 @@ cc-fix/
 - **IP/代理切换**：工具检测代理状态，但不负责切换代理节点
 - **字体修改**：CLI 场景下字体不会被检测，不需要修改
 - **自动更新**：不提供自动更新机制
-- **GUI 界面**：纯 CLI 工具，不做桌面 GUI
+- **桌面 GUI**：仅 `cc-fix gui` 的本地 Web 面板，不做 Electron 等桌面应用
 - **macOS/Linux 实现**：Phase 1 仅支持 Windows，但预留 PlatformAdapter 接口
 
 ## Further Notes

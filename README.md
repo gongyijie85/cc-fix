@@ -43,6 +43,7 @@
 | ↩️ 安全回滚 | `persist off` 自动恢复备份的原始设置 |
 | 🚀 进程注入 | `run claude` 临时注入安全环境，关闭即恢复 |
 | 🖥️ Desktop 支持 | `run --desktop` 包装启动 Claude Desktop |
+| 🖱️ Web 可视化面板 | `gui` 启动本地 Web 界面，修复/复测过程实时可视 |
 | 🎯 多地区 | 支持指定目标地区（默认美国，可扩展） |
 | 📦 JSON 输出 | `check --json` 供其他工具消费 |
 
@@ -108,6 +109,7 @@ cc-fix run --desktop
     5. 检测出口 IP / 代理
     6. 安全模式启动 Claude Code
     7. 安全模式启动 Claude Desktop
+    8. 打开可视化 Web 面板（GUI）
     0. 退出
 ```
 
@@ -205,6 +207,26 @@ cc-fix persist status          # 查看当前持久化状态
 - `persist on`：通过 Windows `setx` 命令设置用户级环境变量 `TZ`、`LANG`、`LC_ALL`
 - 自动备份原始值到 `%APPDATA%\cc-fix\persist-backup.json`
 - `persist off`：根据备份恢复，无需手动操作
+
+**输出行为：** 每个步骤（备份 / 设置单键 / 恢复单键 / 删除备份）实时输出一行（`▶ 步骤名` + `✓ 完成`），失败时给出错误原因与下一步指引，结束时打印成功/失败汇总。
+
+### `cc-fix gui`
+
+启动本地可视化 Web 面板（默认端口 3456，自动打开浏览器）。
+
+```bash
+cc-fix gui              # 启动面板，Ctrl+C 退出
+cc-fix gui -p 8080      # 指定端口
+```
+
+面板功能：
+
+- **风险总览**：评分、风险等级、出口 IP 情报、全部检测信号表
+- **一键修复（Persist On）/ 恢复原始（Persist Off）**：点击后以步骤清单卡片实时推进——每个步骤展示名称、旧值→新值、成功/失败徽章；失败步骤显示红色错误框，回滚步骤以橙色标记，结束时给出汇总条
+- **自动复测**：修复成功后自动重新检测，并展示修复前后的评分对比条
+- **并发保护**：同一时刻只允许一个操作（修复/恢复/检测）运行，重复触发返回 `409`，按钮保持禁用并提示"已有操作进行中"
+
+技术模型：浏览器通过 `GET /api/events` 的 SSE 常驻通道接收事件；`POST /api/fix/on`、`/api/fix/off`、`/api/check/start` 为触发端点，只启动动作并立即返回 `202`（忙时返回 `409`），不等待结果。
 
 ### `cc-fix run`
 
@@ -321,8 +343,8 @@ cc-fix
 
 ```bash
 # 开发模式
-git clone https://github.com/gongyijie85/bookrank.git
-cd bookrank
+git clone https://github.com/gongyijie85/cc-fix.git
+cd cc-fix
 pnpm install
 pnpm dev    # watch 模式，修改自动编译
 

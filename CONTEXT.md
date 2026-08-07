@@ -21,3 +21,12 @@ Claude Code 环境安全检测与修复 CLI 工具（Windows 优先）。检测�
 | 常驻通道 | `GET /api/events` 的持久 SSE 连接（EventSource） | |
 | 触发端点 | 只启动动作、返回 202/409 的 POST 端点（`/api/fix/on` 等） | |
 | 备份（backup） | `%APPDATA%/cc-fix/persist-backup.json`，存最原始的环境变量值，不覆盖 | |
+
+## 统一事件协议
+
+修复流与检测流共用同一联合类型 `StreamEvent = FixEvent | DetectEvent`（定义于 `src/events/types.ts`），编排层以回调推送事件，消费方（终端渲染 / GUI 服务端）自行决定呈现方式。
+
+- **GUI 传输模型**：浏览器维护一条 `GET /api/events` 的 SSE 常驻通道接收全部事件；`POST /api/fix/on`、`/api/fix/off`、`/api/check/start` 为触发端点，只启动动作并立即返回 `202`（全局忙时返回 `409`），不等待结果——因此不存在同步阻塞式端点
+- **修复流事件**：`step-start`（携带旧→新值）→ `step-ok` / `step-fail` → `summary`（终结事件）；失败触发的回滚步骤带 `rollback: true`
+- **检测流事件**：`phase`（如 IP 情报获取中）→ `detect-start` → 逐个 `detect-ok` → `detect-done`（含最终评分）
+- **recheck**：修复成功后前端自动触发复测，服务端对比修复前后评分并推送 `{ type: "recheck", before, after }`
