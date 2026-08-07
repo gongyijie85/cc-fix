@@ -32,6 +32,8 @@ type RawIpData = {
 };
 
 type IpApiResult = {
+  /** ip-api.com 用 query 字段表示出口 IP，不是 ip */
+  query?: string;
   ip?: string;
   country?: string;
   countryCode?: string;
@@ -41,6 +43,13 @@ type IpApiResult = {
   timezone?: string;
   as?: string;
 };
+
+/** 归一化 ASN 为 AS12345，避免 "AS16509 Amazon" vs "AS16509" 误判不一致 */
+export function normalizeAsn(asn: string | null | undefined): string | null {
+  if (!asn) return null;
+  const match = asn.toUpperCase().match(/AS\d+/);
+  return match ? match[0] : null;
+}
 
 function isDatacenterAsn(asn: string | null): boolean {
   if (!asn) return false;
@@ -59,13 +68,14 @@ async function fetchFromIpApi(): Promise<RawIpData | null> {
     const data = (await response.json()) as IpApiResult & { status?: string };
     if (data.status === "fail") return null;
     return {
-      ip: data.ip ?? null,
+      // ip-api.com 官方字段是 query；兼容错误文档里的 ip
+      ip: data.query ?? data.ip ?? null,
       // 统一用 ISO 国家码（ip-api 的 country 是本地化全名，与 ipinfo 的 ISO 码无法直接对比）
       country: data.countryCode ?? null,
       region: data.regionName ?? null,
       city: data.city ?? null,
-      asn: data.as?.split(" ")[0] ?? null,
-      org: data.org ?? data.as ?? null,
+      asn: normalizeAsn(data.as),
+      org: data.org || data.as || null,
       timezone: data.timezone ?? null,
     };
   } catch {
@@ -93,7 +103,7 @@ async function fetchFromIpInfo(): Promise<RawIpData | null> {
       country: data.country ?? null,
       region: data.region ?? null,
       city: data.city ?? null,
-      asn: data.org?.split(" ")[0] ?? null,
+      asn: normalizeAsn(data.org),
       org: data.org ?? null,
       timezone: data.timezone ?? null,
     };
@@ -115,10 +125,14 @@ function toIpIntelligence(
     const countryMatch =
       !primary.country || !secondary.country ||
       primary.country.toUpperCase() === secondary.country.toUpperCase();
+    const primaryAsn = normalizeAsn(primary.asn);
+    const secondaryAsn = normalizeAsn(secondary.asn);
     const asnMatch =
-      !primary.asn || !secondary.asn ||
-      primary.asn === secondary.asn;
-    multiSourceConsistent = countryMatch && asnMatch;
+      !primaryAsn || !secondaryAsn || primaryAsn === secondaryAsn;
+    // 出口 IP 本身不一致（不同源看到不同地址）也算多源冲突
+    const ipMatch =
+      !primary.ip || !secondary.ip || primary.ip === secondary.ip;
+    multiSourceConsistent = countryMatch && asnMatch && ipMatch;
   }
 
   // 数据中心判断

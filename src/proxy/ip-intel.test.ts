@@ -3,10 +3,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { fetchIpIntelligence } from "./ip-intel.js";
 
-function ipApiResponse(asStr: string, countryCode = "US") {
+function ipApiResponse(asStr: string, countryCode = "US", query = "203.0.113.1") {
   return {
     status: "success",
-    ip: "203.0.113.1",
+    // 真实 API 字段是 query（不是 ip）
+    query,
     country: "United States",
     countryCode,
     regionName: "California",
@@ -109,5 +110,36 @@ describe("fetchIpIntelligence", () => {
 
     const intel = await fetchIpIntelligence();
     expect(intel).toBeNull();
+  });
+
+  it("reads ip-api.com query field as exit IP (not ip)", async () => {
+    globalThis.fetch = mockFetchBySources({
+      "ip-api.com": ipApiResponse("AS7922 Comcast", "US", "198.51.100.10"),
+      "ipinfo.io": { ...ipinfoResponse("AS7922 Comcast"), ip: "198.51.100.10" },
+    });
+
+    const intel = await fetchIpIntelligence();
+    expect(intel!.ip).toBe("198.51.100.10");
+  });
+
+  it("treats ASN with descriptive suffix as same ASN across sources", async () => {
+    globalThis.fetch = mockFetchBySources({
+      "ip-api.com": ipApiResponse("AS7922 Comcast Cable Communications"),
+      "ipinfo.io": ipinfoResponse("AS7922 Comcast Cable"),
+    });
+
+    const intel = await fetchIpIntelligence();
+    expect(intel!.asn).toBe("AS7922");
+    expect(intel!.multiSourceConsistent).toBe(true);
+  });
+
+  it("flags multi-source inconsistency when exit IPs differ", async () => {
+    globalThis.fetch = mockFetchBySources({
+      "ip-api.com": ipApiResponse("AS7922 Comcast", "US", "203.0.113.1"),
+      "ipinfo.io": { ...ipinfoResponse("AS7922 Comcast"), ip: "198.51.100.1" },
+    });
+
+    const intel = await fetchIpIntelligence();
+    expect(intel!.multiSourceConsistent).toBe(false);
   });
 });

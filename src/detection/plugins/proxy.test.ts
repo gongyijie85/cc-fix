@@ -18,12 +18,13 @@ describe("proxyPlugin", () => {
     }
   });
 
-  it("returns medium risk when no proxy env is set", async () => {
+  it("returns low risk with zero contribution when no proxy env is set", async () => {
     for (const key of proxyKeys) delete process.env[key];
     const result = await proxyPlugin.run({ targetTimezone: "America/New_York", targetLang: "en" });
     expect(result.id).toBe("proxy-env");
-    expect(result.risk).toBe("medium");
-    expect(result.contribution).toBe(6);
+    expect(result.risk).toBe("low");
+    expect(result.contribution).toBe(0);
+    expect(result.value).toContain("未配置");
   });
 
   it("returns low risk when HTTP_PROXY is set", async () => {

@@ -3,6 +3,7 @@
 import chalk from "chalk";
 import Table from "cli-table3";
 import type { CheckResponse, SignalResult, IpIntelligence } from "../detection/types.js";
+import { isPersistFixable } from "../detection/scoring.js";
 
 function getRiskColor(risk: SignalResult["risk"]): (text: string) => string {
   switch (risk) {
@@ -136,11 +137,17 @@ export function renderCheckResponse(response: CheckResponse): void {
     console.log();
   }
 
-  // 快速操作提示
+  // 快速操作提示（仅当仍有 persist 可修项时推 on）
   console.log(chalk.dim("─────────────────────────────────────────────────"));
-  if (score > 20) {
+  const needsPersist = signals.some(
+    (s) => s.contribution > 0 && isPersistFixable(s.id, s.value),
+  );
+  if (needsPersist) {
     console.log(chalk.bold("  🔧 快速修复: ") + chalk.yellow("cc-fix persist on"));
-    console.log(chalk.dim("  一键设置安全环境，日常办公不受影响"));
+    console.log(chalk.dim("  一键统一时区/语言/区域/浏览器策略"));
+  } else if (score > 0) {
+    console.log(chalk.bold("  ℹ️  persist 已无法进一步降低本机信号"));
+    console.log(chalk.dim("  剩余项多为出口 IP / 中文字体等，需网络侧或手动处理"));
   } else {
     console.log(chalk.green("  ✅ 环境信号正常，继续保持"));
   }

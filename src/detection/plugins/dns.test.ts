@@ -34,12 +34,7 @@ describe("dnsPlugin", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("returns low risk when resolved IP country matches target region", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ country: "United States", countryCode: "US" }),
-    }) as unknown as typeof fetch;
-
+  it("returns low risk for Cloudflare CDN IPs without geo penalty", async () => {
     const result = await dnsPlugin.run({
       targetTimezone: "America/New_York",
       targetLang: "en",
@@ -47,24 +42,39 @@ describe("dnsPlugin", () => {
     expect(result.id).toBe("dns");
     expect(result.risk).toBe("low");
     expect(result.contribution).toBe(0);
+    expect(result.value).toContain("Cloudflare");
   });
 
-  it("returns medium risk when resolved IP country differs from target region", async () => {
-    mockLookup.__setState(async () => ({ address: "1.2.3.4", family: 4 }));
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ country: "China", countryCode: "CN" }),
-    }) as unknown as typeof fetch;
+  it("returns medium risk for poison/fake 198.18.x addresses", async () => {
+    mockLookup.__setState(async () => ({ address: "198.18.0.16", family: 4 }));
 
     const result = await dnsPlugin.run({
       targetTimezone: "America/New_York",
       targetLang: "en",
     });
     expect(result.risk).toBe("medium");
-    expect(result.contribution).toBe(4);
+    expect(result.contribution).toBe(6);
+    expect(result.value).toContain("污染");
   });
 
-  it("returns low risk when geo lookup fails", async () => {
+  it("returns low risk for other public IPs even if geo country differs", async () => {
+    mockLookup.__setState(async () => ({ address: "1.2.3.4", family: 4 }));
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ country: "China", countryCode: "CN", as: "AS4134" }),
+    }) as unknown as typeof fetch;
+
+    const result = await dnsPlugin.run({
+      targetTimezone: "America/New_York",
+      targetLang: "en",
+    });
+    // 不再因「非目标国家」加分（CDN/边缘常态）
+    expect(result.risk).toBe("low");
+    expect(result.contribution).toBe(0);
+  });
+
+  it("returns low risk when geo lookup fails for non-CDN IP", async () => {
+    mockLookup.__setState(async () => ({ address: "8.8.8.8", family: 4 }));
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false }) as unknown as typeof fetch;
 
     const result = await dnsPlugin.run({

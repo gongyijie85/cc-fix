@@ -94,4 +94,18 @@ describe("generateRecommendations", () => {
     const recs = generateRecommendations(signals, 50);
     expect(recs.some((r) => r.includes("persist on"))).toBe(true);
   });
+
+  it("recommends network check for multi-source IP mismatch", () => {
+    const signals = [makeSignal({ id: "ip-multi-source", risk: "high", contribution: 15 })];
+    const recs = generateRecommendations(signals, 40);
+    expect(recs.some((r) => r.includes("多源") || r.includes("代理"))).toBe(true);
+  });
+
+  it("does not push generic persist when only fonts remain", () => {
+    const signals = [makeSignal({ id: "fonts", risk: "high", contribution: 10 })];
+    const recs = generateRecommendations(signals, 25);
+    expect(recs.some((r) => r.includes("中文字体"))).toBe(true);
+    expect(recs.some((r) => r.includes("persist on"))).toBe(false);
+  });
 });
+
