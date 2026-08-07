@@ -4,7 +4,7 @@
   "description": "Claude Code 环境安全检测与修复 CLI 工具",
   "type": "module",
   "bin": {
-    "cc-fix": "./dist/index.js"
+    "cc-fix": "dist/index.js"
   },
   "scripts": {
     "prepare": "node scripts/prepare-hooks.mjs",
@@ -15,12 +15,22 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": ["claude", "claude-code", "environment-checker", "risk-analysis", "anthropic", "cursor", "claude-desktop", "cli", "security"],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "environment-checker",
+    "risk-analysis",
+    "anthropic",
+    "cursor",
+    "claude-desktop",
+    "cli",
+    "security"
+  ],
   "license": "MIT",
   "author": "cc-fix contributors",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gongyijie85/cc-fix.git"
+    "url": "git+https://github.com/gongyijie85/cc-fix.git"
   },
   "homepage": "https://github.com/gongyijie85/cc-fix#readme",
   "bugs": {
