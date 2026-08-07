@@ -8,6 +8,7 @@ import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
 import { getPersistStatus } from "./platform/windows.js";
 import { persistOnFlow, persistOffFlow } from "./fix/flow.js";
+import { recordFixSummary, recordCheck } from "./fix/history.js";
 import { runWithInjectedEnv, runDesktop } from "./run/injector.js";
 import { startGuiServer } from "./gui/server.js";
 import { exec } from "node:child_process";
@@ -31,6 +32,7 @@ program
     const target = getTargetRegion(options.region);
     const ipIntel = await fetchIpIntelligence();
     const response = await runDetection("auto", target.timezone, target.lang, ipIntel);
+    recordCheck(response.score);
 
     if (options.json) {
       renderJsonResponse(response);
@@ -64,6 +66,7 @@ persistCmd
           console.log(chalk.red(`  ✗ 失败${event.rollback ? " (回滚)" : ""}: ${event.error}`));
         }
         if (event.type === "summary") {
+          recordFixSummary("persist-on", event);
           if (event.fatal) {
             console.log(chalk.red.bold("══ 致命错误，需手动检查 HKCU\\Environment ══"));
           } else {
@@ -94,6 +97,7 @@ persistCmd
         console.log(chalk.red(`  ✗ 失败: ${event.error}`));
       }
       if (event.type === "summary") {
+        recordFixSummary("persist-off", event);
         if (event.fatal) {
           console.log(chalk.red.bold("══ 致命错误，需手动检查 HKCU\\Environment ══"));
         } else {

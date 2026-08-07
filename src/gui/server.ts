@@ -8,6 +8,7 @@ import { getTargetRegion, DEFAULT_REGION } from "../detection/regions.js";
 import { fetchIpIntelligence } from "../proxy/ip-intel.js";
 import { getPersistStatus } from "../platform/windows.js";
 import { persistOnFlow, persistOffFlow } from "../fix/flow.js";
+import { recordFixSummary, recordCheck, readHistory } from "../fix/history.js";
 import type { StreamEvent } from "../events/types.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
@@ -60,15 +61,24 @@ function releaseLock() {
 let lastDetectScore: number | null = null;
 let pendingRecheck: number | null = null;
 
-// 包装事件消费：透传广播并维护 recheck 状态
-function fixEventConsumer(e: StreamEvent) {
-  broadcast(e);
-  if (e.type === "summary" && e.fail === 0 && !e.fatal && lastDetectScore !== null) {
-    pendingRecheck = lastDetectScore;
-  }
+// 包装事件消费：透传广播、记录操作日志并维护 recheck 状态
+// 日志先于广播写入，前端收到 summary 后拉取历史时不会落空
+function fixEventConsumer(action: "persist-on" | "persist-off") {
+  return (e: StreamEvent) => {
+    if (e.type === "summary") {
+      recordFixSummary(action, e);
+    }
+    broadcast(e);
+    if (e.type === "summary" && e.fail === 0 && !e.fatal && lastDetectScore !== null) {
+      pendingRecheck = lastDetectScore;
+    }
+  };
 }
 
 function checkEventConsumer(e: StreamEvent) {
+  if (e.type === "detect-done") {
+    recordCheck(e.response.score);
+  }
   broadcast(e);
   if (e.type === "detect-done") {
     lastDetectScore = e.response.score;
@@ -89,7 +99,7 @@ async function handleFixOn(res: http.ServerResponse) {
   try {
     await persistOnFlow(
       { regionCode: "auto", targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
-      fixEventConsumer,
+      fixEventConsumer("persist-on"),
     );
   } finally {
     releaseLock();
@@ -101,7 +111,7 @@ async function handleFixOff(res: http.ServerResponse) {
   res.writeHead(202); res.end();
 
   try {
-    await persistOffFlow(fixEventConsumer);
+    await persistOffFlow(fixEventConsumer("persist-off"));
   } finally {
     releaseLock();
   }
@@ -123,6 +133,10 @@ async function handleCheckStart(res: http.ServerResponse) {
 async function handleStatus(res: http.ServerResponse) {
   const status = getPersistStatus();
   sendJson(res, status);
+}
+
+async function handleHistory(res: http.ServerResponse) {
+  sendJson(res, readHistory(10));
 }
 
 // ── 服务器 ──
@@ -160,6 +174,8 @@ export function startGuiServer(port = 3456): Promise<http.Server> {
         req.on("close", () => clients.delete(res));
       } else if (method === "GET" && url.pathname === "/api/status") {
         await handleStatus(res);
+      } else if (method === "GET" && url.pathname === "/api/history") {
+        await handleHistory(res);
       } else if (method === "POST" && url.pathname === "/api/fix/on") {
         await handleFixOn(res);
       } else if (method === "POST" && url.pathname === "/api/fix/off") {

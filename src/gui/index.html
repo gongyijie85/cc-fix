@@ -96,6 +96,19 @@
   .detect-pending { color: var(--muted); font-style: italic; }
   .detect-flash { animation: flash .6s ease; }
   @keyframes flash { 0% { background: rgba(99,102,241,.2); } 100% { background: transparent; } }
+
+  /* 最近操作面板 */
+  .history-panel { margin-top: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; }
+  .history-panel summary { cursor: pointer; color: var(--muted); font-size: 14px; user-select: none; }
+  .history-panel summary:hover { color: var(--text); }
+  .history-row { display: flex; gap: 12px; align-items: baseline; padding: 6px 0; font-size: 13px; }
+  .history-row + .history-row { border-top: 1px solid var(--border); }
+  .history-time { color: var(--muted); flex-shrink: 0; }
+  .history-action { color: var(--text); }
+  .history-result { margin-left: auto; color: var(--muted); }
+  .history-result.ok { color: var(--green); }
+  .history-result.fail { color: var(--red); }
+  .history-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
 </style>
 </head>
 <body>
@@ -123,6 +136,12 @@
   </div>
 
   <div id="content"><div class="loading"><div class="spinner"></div><p>正在检测环境...</p></div></div>
+
+  <!-- 最近操作面板 -->
+  <details class="history-panel" id="historyPanel">
+    <summary>🕘 最近操作</summary>
+    <div id="historyList"></div>
+  </details>
 </div>
 <div class="toast" id="toast"></div>
 <script>
@@ -293,6 +312,39 @@ function showDetectDone(response) {
   render(response);
 }
 
+// ── 最近操作 ──
+const historyActionLabel = { "persist-on": "一键切换到安全环境", "persist-off": "一键还原日常配置", "check": "重新检测" };
+
+function renderHistoryRow(entry) {
+  const time = new Date(entry.timestamp);
+  const timeStr = isNaN(time)
+    ? esc(entry.timestamp)
+    : time.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const label = historyActionLabel[entry.action] || esc(entry.action);
+  let result, cls = "";
+  if (entry.action === "check") {
+    result = `评分 ${entry.score ?? "-"}`;
+  } else if (entry.fatal) {
+    result = "致命错误"; cls = "fail";
+  } else if (entry.fail > 0) {
+    result = `${entry.ok} 成功 · ${entry.fail} 失败${entry.rolledBack ? " · 已回滚" : ""}`; cls = "fail";
+  } else {
+    result = `${entry.ok} 成功`; cls = "ok";
+  }
+  return `<div class="history-row"><span class="history-time">${timeStr}</span><span class="history-action">${label}</span><span class="history-result ${cls}">${esc(result)}</span></div>`;
+}
+
+async function loadHistory() {
+  try {
+    const res = await fetch("/api/history");
+    if (!res.ok) return;
+    const entries = await res.json();
+    $("#historyList").innerHTML = entries.length
+      ? entries.map(renderHistoryRow).join("")
+      : `<div class="history-empty">暂无操作记录</div>`;
+  } catch { /* 面板为辅助功能，失败不阻断 */ }
+}
+
 // ── 事件处理 ──
 function handleEvent(event) {
   if (event.type === "step-start") {
@@ -301,11 +353,11 @@ function handleEvent(event) {
   }
   else if (event.type === "step-ok") { updateStep(event.stepId, "ok", event.rollback); }
   else if (event.type === "step-fail") { updateStep(event.stepId, "fail", event.rollback, event.error); }
-  else if (event.type === "summary") { fixActive = false; showSummary(event); }
+  else if (event.type === "summary") { fixActive = false; showSummary(event); loadHistory(); }
   else if (event.type === "recheck") { showScoreDelta(event.before, event.after); }
   else if (event.type === "detect-start") { buildDetectTable(); }
   else if (event.type === "detect-ok") { fillDetectRow(event.signal); }
-  else if (event.type === "detect-done") { showDetectDone(event.response); }
+  else if (event.type === "detect-done") { showDetectDone(event.response); loadHistory(); }
   else if (event.type === "phase") {
     // 阶段提示（如 IP 情报获取中）
     if (!document.getElementById("detectCard").classList.contains("visible")) {
@@ -413,6 +465,7 @@ function render(data) {
 }
 
 loadStatus();
+loadHistory();
 startCheck();
 </script>
 </body>
