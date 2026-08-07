@@ -6,10 +6,12 @@ import { runDetection } from "./detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION } from "./detection/regions.js";
 import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
-import { createBackup, restoreBackup, getPersistStatus, setEnvVar, loadBackup } from "./platform/windows.js";
+import { getPersistStatus } from "./platform/windows.js";
+import { persistOnFlow, persistOffFlow } from "./fix/flow.js";
 import { runWithInjectedEnv, runDesktop } from "./run/injector.js";
 import { startGuiServer } from "./gui/server.js";
 import { exec } from "node:child_process";
+import type { StreamEvent } from "./events/types.js";
 
 
 const program = new Command();
@@ -46,43 +48,60 @@ persistCmd
   .command("on")
   .description("开启用户级持久化")
   .option("--region <region>", "目标地区", DEFAULT_REGION)
-  .action((options) => {
+  .action(async (options) => {
     const target = getTargetRegion(options.region);
-    const envKeys = ["TZ", "LANG", "LC_ALL"];
-
-    const hadBackup = loadBackup() !== null;
-    createBackup(envKeys);
-
-    if (hadBackup) {
-      console.log("📋 已有原始备份（不会覆盖），直接更新环境变量...");
-    } else {
-      console.log("📋 已备份当前原始设置...");
-    }
-
-    console.log("正在设置环境变量...");
-    setEnvVar("TZ", target.timezone);
-    setEnvVar("LANG", target.lang);
-    setEnvVar("LC_ALL", target.lcAll);
-
-    console.log(`✅ 持久化已开启，目标地区: ${target.name}`);
-    console.log("   新终端将自动使用安全环境，日常办公不受影响");
-    console.log(chalk.dim("   提示: 原始值已安全保存，persist off 时会完整恢复"));
+    await persistOnFlow(
+      { regionCode: options.region, targetTimezone: target.timezone, targetLang: target.lang, targetLcAll: target.lcAll },
+      (event: StreamEvent) => {
+        if (event.type === "step-start") {
+          const change = event.oldValue !== undefined ? `: ${event.oldValue} → ${event.newValue}` : "";
+          console.log(chalk.dim(`▶ ${event.name}${change}`));
+        }
+        if (event.type === "step-ok") {
+          console.log(chalk.green(`  ✓ 完成${event.rollback ? " (回滚)" : ""}`));
+        }
+        if (event.type === "step-fail") {
+          console.log(chalk.red(`  ✗ 失败${event.rollback ? " (回滚)" : ""}: ${event.error}`));
+        }
+        if (event.type === "summary") {
+          if (event.fatal) {
+            console.log(chalk.red.bold("══ 致命错误，需手动检查 HKCU\\Environment ══"));
+          } else {
+            const parts = [`${event.ok} 成功`];
+            if (event.fail > 0) parts.push(`${event.fail} 失败`);
+            if (event.rolledBack) parts.push("已回滚");
+            console.log(chalk.dim(`══ ${parts.join(" · ")} ══`));
+          }
+          console.log(chalk.dim("运行 `cc-fix check` 验证效果"));
+        }
+      },
+    );
   });
 
 persistCmd
   .command("off")
   .description("关闭用户级持久化，恢复原始环境")
-  .action(() => {
-    const status = getPersistStatus();
-
-    if (!status.enabled || !status.backup) {
-      console.log("持久化未开启");
-      return;
-    }
-
-    console.log("正在恢复原始设置...");
-    restoreBackup(status.backup);
-    console.log("✅ 持久化已关闭，环境变量已恢复");
+  .action(async () => {
+    await persistOffFlow((event: StreamEvent) => {
+      if (event.type === "step-start") {
+        const change = event.oldValue !== undefined ? `: ${event.oldValue} → ${event.newValue}` : "";
+        console.log(chalk.dim(`▶ ${event.name}${change}`));
+      }
+      if (event.type === "step-ok") {
+        console.log(chalk.green(`  ✓ 完成`));
+      }
+      if (event.type === "step-fail") {
+        console.log(chalk.red(`  ✗ 失败: ${event.error}`));
+      }
+      if (event.type === "summary") {
+        if (event.fatal) {
+          console.log(chalk.red.bold("══ 致命错误，需手动检查 HKCU\\Environment ══"));
+        } else {
+          console.log(chalk.dim(`══ ${event.ok} 成功 ══`));
+        }
+        console.log(chalk.dim("运行 `cc-fix check` 验证效果"));
+      }
+    });
   });
 
 persistCmd

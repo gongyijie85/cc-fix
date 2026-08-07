@@ -54,6 +54,48 @@
   .status-dot.on { background: var(--green); } .status-dot.off { background: var(--muted); }
   .toast { position: fixed; bottom: 24px; right: 24px; background: var(--green); color: #000; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 500; opacity: 0; transition: opacity .3s; pointer-events: none; }
   .toast.show { opacity: 1; }
+
+  /* ── 修复流卡片 ── */
+  .fix-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; display: none; }
+  .fix-card.visible { display: block; }
+  .fix-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
+  .step-row { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .step-row:last-child { border-bottom: none; }
+  .step-circle { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; margin-top: 2px; }
+  .step-circle.pending { border: 2px solid var(--muted); }
+  .step-circle.running { border: 2px solid var(--accent); animation: pulse 1s ease-in-out infinite; }
+  .step-circle.ok { background: var(--green); color: #000; }
+  .step-circle.fail { background: var(--red); color: #fff; }
+  .step-circle.rollback { background: var(--orange); color: #000; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+  .step-body { flex: 1; min-width: 0; }
+  .step-name { font-size: 14px; font-weight: 500; }
+  .step-change { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .step-change b { color: var(--text); font-weight: 600; }
+  .step-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 9999px; white-space: nowrap; margin-top: 3px; }
+  .badge-ok { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge-fail { background: rgba(239,68,68,.15); color: var(--red); }
+  .badge-rollback { background: rgba(249,115,22,.15); color: var(--orange); }
+  .err-box { background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.3); border-radius: 6px; padding: 6px 10px; margin-top: 6px; font-family: monospace; font-size: 12px; color: var(--red); }
+  .sum-bar { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 13px; }
+  .sum-bar .count { padding: 2px 8px; border-radius: 9999px; font-weight: 600; font-size: 12px; }
+  .sum-ok { background: rgba(34,197,94,.15); color: var(--green); }
+  .sum-fail { background: rgba(239,68,68,.15); color: var(--red); }
+  .sum-rollback { background: rgba(249,115,22,.15); color: var(--orange); }
+  .score-delta { margin-left: auto; font-weight: 700; font-size: 15px; color: var(--green); }
+
+  /* ── 检测流面板 ── */
+  .detect-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; display: none; }
+  .detect-card.visible { display: block; }
+  .detect-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+  .detect-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .detect-row:last-child { border-bottom: none; }
+  .detect-label { width: 140px; color: var(--muted); flex-shrink: 0; }
+  .detect-value { flex: 1; }
+  .detect-status { width: 60px; text-align: right; }
+  .detect-pending { color: var(--muted); font-style: italic; }
+  .detect-flash { animation: flash .6s ease; }
+  @keyframes flash { 0% { background: rgba(99,102,241,.2); } 100% { background: transparent; } }
 </style>
 </head>
 <body>
@@ -66,37 +108,263 @@
     <div class="status-dot" id="statusDot"></div>
     <span id="statusText">检测中...</span>
   </div>
+
+  <!-- 修复流卡片 -->
+  <div class="fix-card" id="fixCard">
+    <h3 id="fixTitle">修复进行中…</h3>
+    <div id="stepList"></div>
+    <div class="sum-bar" id="sumBar" style="display:none"></div>
+  </div>
+
+  <!-- 检测流卡片 -->
+  <div class="detect-card" id="detectCard">
+    <h3 id="detectTitle">检测进行中…</h3>
+    <div id="detectList"></div>
+  </div>
+
   <div id="content"><div class="loading"><div class="spinner"></div><p>正在检测环境...</p></div></div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
 const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const riskLabel = { low: "安全", medium: "中风险", high: "高风险", critical: "极高风险" };
 const scoreClass = (s) => s >= 71 ? "score-critical" : s >= 51 ? "score-high" : s >= 21 ? "score-medium" : "score-low";
 
+// ── 检测信号占位表（12 行） ──
+const DETECT_SIGNALS = [
+  { id: "timezone", label: "时区" },
+  { id: "language", label: "语言" },
+  { id: "locale", label: "Locale" },
+  { id: "consistency", label: "一致性" },
+  { id: "fonts", label: "字体" },
+  { id: "dns", label: "DNS" },
+  { id: "base-url", label: "Base URL" },
+  { id: "proxy-env", label: "代理环境" },
+  { id: "win-region", label: "Windows 区域" },
+  { id: "utc-offset", label: "UTC 偏移" },
+  { id: "ip-datacenter", label: "数据中心 IP" },
+  { id: "ip-multi-source", label: "多源不一致" },
+];
+
+let fixActive = false; // 修复流是否进行中（防止每个 step-start 重复初始化卡片）
+
+// ── Toast ──
 function showToast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("show");
   setTimeout(() => t.classList.remove("show"), 2000);
 }
 
+// ── 按钮禁用 ──
+function setButtonsDisabled(d) {
+  ["btnOn", "btnOff", "btnRefresh"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = d;
+  });
+}
+
+// ── 修复流卡片 ──
+function ensureFixCard() {
+  const card = $("#fixCard");
+  card.classList.add("visible");
+  $("#fixTitle").textContent = "修复进行中…";
+  $("#stepList").innerHTML = "";
+  $("#sumBar").style.display = "none";
+  $("#sumBar").innerHTML = "";
+}
+
+function addStepRow(event) {
+  const list = $("#stepList");
+  const changeHtml = event.oldValue !== undefined
+    ? `<div class="step-change">${esc(event.oldValue)} → <b>${esc(event.newValue)}</b></div>`
+    : "";
+  const rollbackClass = event.rollback ? " rollback" : "";
+  list.insertAdjacentHTML("beforeend", `
+    <div class="step-row" id="step-${esc(event.stepId)}">
+      <div class="step-circle running${rollbackClass}" id="circle-${esc(event.stepId)}">…</div>
+      <div class="step-body">
+        <div class="step-name">${esc(event.name)}</div>
+        ${changeHtml}
+      </div>
+    </div>`);
+}
+
+function updateStep(stepId, status, rollback, error) {
+  const circle = document.getElementById(`circle-${stepId}`);
+  const row = document.getElementById(`step-${stepId}`);
+  if (!circle || !row) return;
+
+  const isRollback = rollback || circle.classList.contains("rollback");
+  circle.classList.remove("running");
+
+  if (status === "ok") {
+    circle.className = `step-circle ok${isRollback ? " rollback" : ""}`;
+    circle.textContent = "✓";
+    const badge = document.createElement("span");
+    badge.className = `step-badge ${isRollback ? "badge-rollback" : "badge-ok"}`;
+    badge.textContent = isRollback ? "已回滚" : "成功";
+    const body = row.querySelector(".step-body");
+    body.appendChild(badge);
+  } else {
+    circle.className = "step-circle fail";
+    circle.textContent = "✗";
+    const badge = document.createElement("span");
+    badge.className = "step-badge badge-fail";
+    badge.textContent = "失败";
+    const body = row.querySelector(".step-body");
+    body.appendChild(badge);
+    if (error) {
+      const errBox = document.createElement("div");
+      errBox.className = "err-box";
+      errBox.textContent = error;
+      body.appendChild(errBox);
+    }
+  }
+}
+
+function showSummary(event) {
+  const bar = $("#sumBar");
+  bar.style.display = "flex";
+  let html = `<span class="count sum-ok">${event.ok} 成功</span>`;
+  if (event.fail > 0) html += `<span class="count sum-fail">${event.fail} 失败</span>`;
+  if (event.rolledBack) html += `<span class="count sum-rollback">已回滚</span>`;
+  bar.innerHTML = html;
+
+  const title = $("#fixTitle");
+  if (event.fatal) {
+    title.textContent = "修复失败，需手动检查";
+    title.style.color = "var(--red)";
+  } else if (event.rolledBack) {
+    title.textContent = "修复失败，已恢复原状";
+    title.style.color = "var(--orange)";
+  } else {
+    title.textContent = "修复完成";
+    title.style.color = "var(--green)";
+  }
+
+  setButtonsDisabled(false);
+
+  // 成功后自动复测（评分对比由服务端 recheck 事件推送）
+  if (event.fail === 0) {
+    setTimeout(() => startCheck(), 500);
+  }
+}
+
+function showScoreDelta(before, after) {
+  const bar = $("#sumBar");
+  bar.insertAdjacentHTML("beforeend",
+    `<span class="score-delta">${before} → ${after}</span>`);
+}
+
+// ── 检测流面板 ──
+function buildDetectTable() {
+  const card = $("#detectCard");
+  card.classList.add("visible");
+  $("#detectTitle").textContent = "检测进行中…";
+  const list = $("#detectList");
+  list.innerHTML = "";
+  for (const sig of DETECT_SIGNALS) {
+    list.insertAdjacentHTML("beforeend", `
+      <div class="detect-row" id="detect-${sig.id}">
+        <div class="detect-label">${sig.label}</div>
+        <div class="detect-value detect-pending" id="dv-${sig.id}">检测中…</div>
+        <div class="detect-status" id="ds-${sig.id}"></div>
+      </div>`);
+  }
+}
+
+function fillDetectRow(signal) {
+  const valEl = document.getElementById(`dv-${signal.id}`);
+  const statusEl = document.getElementById(`ds-${signal.id}`);
+  const row = document.getElementById(`detect-${signal.id}`);
+  if (!valEl || !statusEl || !row) return;
+
+  valEl.textContent = signal.value || "N/A";
+  valEl.classList.remove("detect-pending");
+  statusEl.innerHTML = `<span class="risk-badge risk-${signal.risk}">${riskLabel[signal.risk]}</span>`;
+  row.classList.add("detect-flash");
+}
+
+function showDetectDone(response) {
+  $("#detectTitle").textContent = "检测完成";
+  setTimeout(() => {
+    $("#detectCard").classList.remove("visible");
+  }, 1500);
+  render(response);
+}
+
+// ── 事件处理 ──
+function handleEvent(event) {
+  if (event.type === "step-start") {
+    if (!fixActive) { ensureFixCard(); fixActive = true; }
+    addStepRow(event);
+  }
+  else if (event.type === "step-ok") { updateStep(event.stepId, "ok", event.rollback); }
+  else if (event.type === "step-fail") { updateStep(event.stepId, "fail", event.rollback, event.error); }
+  else if (event.type === "summary") { fixActive = false; showSummary(event); }
+  else if (event.type === "recheck") { showScoreDelta(event.before, event.after); }
+  else if (event.type === "detect-start") { buildDetectTable(); }
+  else if (event.type === "detect-ok") { fillDetectRow(event.signal); }
+  else if (event.type === "detect-done") { showDetectDone(event.response); }
+  else if (event.type === "phase") {
+    // 阶段提示（如 IP 情报获取中）
+    if (!document.getElementById("detectCard").classList.contains("visible")) {
+      buildDetectTable();
+    }
+  }
+}
+
+// ── SSE 连接 ──
+const evtSource = new EventSource("/api/events");
+evtSource.onmessage = (e) => {
+  try { handleEvent(JSON.parse(e.data)); } catch (err) { console.error("事件处理错误:", err); }
+};
+evtSource.onerror = () => { /* EventSource 自动重连 */ };
+
+// ── 操作按钮 ──
+async function persistOn() {
+  setButtonsDisabled(true);
+  const res = await fetch("/api/fix/on", { method: "POST" });
+  if (!res.ok) {
+    setButtonsDisabled(false);
+    showToast("已有操作进行中，请稍候");
+  }
+  // 事件流驱动 UI 更新
+}
+
+async function persistOff() {
+  setButtonsDisabled(true);
+  const res = await fetch("/api/fix/off", { method: "POST" });
+  if (!res.ok) {
+    setButtonsDisabled(false);
+    showToast("已有操作进行中，请稍候");
+  }
+}
+
+function startCheck() {
+  $("#detectCard").classList.add("visible");
+  fetch("/api/check/start", { method: "POST" }).then(res => {
+    if (!res.ok) {
+      $("#detectCard").classList.remove("visible");
+      showToast("已有操作进行中，请稍候");
+    }
+  });
+}
+
+function refresh() {
+  $("#content").innerHTML = '<div class="loading"><div class="spinner"></div><p>正在检测...</p></div>';
+  startCheck();
+}
+
+// ── 原有渲染逻辑 ──
 async function loadStatus() {
   try {
     const res = await fetch("/api/status");
     const status = await res.json();
     const dot = $("#statusDot"), txt = $("#statusText");
-    if (status.enabled) { dot.className = "status-dot on"; txt.textContent = `持久化已开启 — 目标: ${status.region || "auto"}`; }
+    if (status.enabled) { dot.className = "status-dot on"; txt.textContent = "持久化已开启"; }
     else { dot.className = "status-dot off"; txt.textContent = "持久化未开启"; }
   } catch {}
-}
-
-async function loadCheck() {
-  try {
-    const res = await fetch("/api/check");
-    const data = await res.json();
-    render(data);
-  } catch (e) {
-    $("#content").innerHTML = `<div class="loading"><p>检测失败: ${e.message}</p></div>`;
-  }
 }
 
 function render(data) {
@@ -129,9 +397,9 @@ function render(data) {
   html += `</tbody></table></div>`;
 
   html += `<div class="actions">
-    <button class="btn btn-on" onclick="persistOn()">✅ 一键修复 (Persist On)</button>
-    <button class="btn btn-off" onclick="persistOff()">❌ 恢复原始 (Persist Off)</button>
-    <button class="btn btn-refresh" onclick="refresh()">🔄 重新检测</button>
+    <button class="btn btn-on" id="btnOn" onclick="persistOn()">✅ 一键修复 (Persist On)</button>
+    <button class="btn btn-off" id="btnOff" onclick="persistOff()">❌ 恢复原始 (Persist Off)</button>
+    <button class="btn btn-refresh" id="btnRefresh" onclick="refresh()">🔄 重新检测</button>
   </div>`;
 
   if (recommendations.length > 0) {
@@ -141,25 +409,11 @@ function render(data) {
   }
 
   $("#content").innerHTML = html;
+  loadStatus();
 }
-
-async function persistOn() {
-  const res = await fetch("/api/persist/on", { method: "POST" });
-  const data = await res.json();
-  if (data.success) { showToast("✅ 已开启安全环境: " + data.region); loadStatus(); loadCheck(); }
-}
-
-async function persistOff() {
-  const res = await fetch("/api/persist/off", { method: "POST" });
-  const data = await res.json();
-  if (data.success) { showToast("✅ 已恢复原始环境"); loadStatus(); loadCheck(); }
-  else { showToast("❌ " + data.error); }
-}
-
-function refresh() { $("#content").innerHTML = '<div class="loading"><div class="spinner"></div><p>正在检测...</p></div>'; loadCheck(); }
 
 loadStatus();
-loadCheck();
+startCheck();
 </script>
 </body>
 </html>

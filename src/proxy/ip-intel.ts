@@ -34,6 +34,7 @@ type RawIpData = {
 type IpApiResult = {
   ip?: string;
   country?: string;
+  countryCode?: string;
   regionName?: string;
   city?: string;
   org?: string;
@@ -59,7 +60,8 @@ async function fetchFromIpApi(): Promise<RawIpData | null> {
     if (data.status === "fail") return null;
     return {
       ip: data.ip ?? null,
-      country: data.country ?? null,
+      // 统一用 ISO 国家码（ip-api 的 country 是本地化全名，与 ipinfo 的 ISO 码无法直接对比）
+      country: data.countryCode ?? null,
       region: data.regionName ?? null,
       city: data.city ?? null,
       asn: data.as?.split(" ")[0] ?? null,

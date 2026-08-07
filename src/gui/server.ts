@@ -1,4 +1,4 @@
-// Web UI 服务模块 — 本地 HTTP 服务器 + API 路由
+// Web UI 服务模块 — SSE 常驻通道 + 触发端点
 
 import http from "node:http";
 // @ts-ignore - HTML file imported as text via tsup loader
@@ -6,12 +6,9 @@ import htmlContent from "./index.html";
 import { runDetection } from "../detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION } from "../detection/regions.js";
 import { fetchIpIntelligence } from "../proxy/ip-intel.js";
-import {
-  createBackup,
-  restoreBackup,
-  getPersistStatus,
-  setEnvVar,
-} from "../platform/windows.js";
+import { getPersistStatus } from "../platform/windows.js";
+import { persistOnFlow, persistOffFlow } from "../fix/flow.js";
+import type { StreamEvent } from "../events/types.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
@@ -26,11 +23,101 @@ async function serveHtml(res: http.ServerResponse) {
   res.end(htmlContent);
 }
 
-async function handleCheck(res: http.ServerResponse) {
+// ── SSE 常驻通道 ──
+
+const clients = new Set<http.ServerResponse>();
+
+function broadcast(event: StreamEvent) {
+  const data = `data: ${JSON.stringify(event)}\n\n`;
+  for (const res of clients) {
+    if (res.writableEnded || res.destroyed) {
+      clients.delete(res);
+      continue;
+    }
+    res.write(data);
+  }
+}
+
+// ── 全局锁 ──
+
+let busy = false;
+
+function tryAcquireLock(res: http.ServerResponse): boolean {
+  if (busy) {
+    sendJson(res, { error: "操作进行中" }, 409);
+    return false;
+  }
+  busy = true;
+  return true;
+}
+
+function releaseLock() {
+  busy = false;
+}
+
+// ── 评分对比（recheck）状态 ──
+
+let lastDetectScore: number | null = null;
+let pendingRecheck: number | null = null;
+
+// 包装事件消费：透传广播并维护 recheck 状态
+function fixEventConsumer(e: StreamEvent) {
+  broadcast(e);
+  if (e.type === "summary" && e.fail === 0 && !e.fatal && lastDetectScore !== null) {
+    pendingRecheck = lastDetectScore;
+  }
+}
+
+function checkEventConsumer(e: StreamEvent) {
+  broadcast(e);
+  if (e.type === "detect-done") {
+    lastDetectScore = e.response.score;
+    if (pendingRecheck !== null) {
+      broadcast({ type: "recheck", before: pendingRecheck, after: e.response.score });
+      pendingRecheck = null;
+    }
+  }
+}
+
+// ── 触发端点处理 ──
+
+async function handleFixOn(res: http.ServerResponse) {
+  if (!tryAcquireLock(res)) return;
+  res.writeHead(202); res.end();
+
   const target = getTargetRegion(DEFAULT_REGION);
-  const ipIntel = await fetchIpIntelligence();
-  const response = await runDetection("auto", target.timezone, target.lang, ipIntel);
-  sendJson(res, response);
+  try {
+    await persistOnFlow(
+      { regionCode: "auto", targetTimezone: target.timezone, targetLang: target.lang, targetLcAll: target.lcAll },
+      fixEventConsumer,
+    );
+  } finally {
+    releaseLock();
+  }
+}
+
+async function handleFixOff(res: http.ServerResponse) {
+  if (!tryAcquireLock(res)) return;
+  res.writeHead(202); res.end();
+
+  try {
+    await persistOffFlow(fixEventConsumer);
+  } finally {
+    releaseLock();
+  }
+}
+
+async function handleCheckStart(res: http.ServerResponse) {
+  if (!tryAcquireLock(res)) return;
+  res.writeHead(202); res.end();
+
+  const target = getTargetRegion(DEFAULT_REGION);
+  try {
+    const ipIntel = await fetchIpIntelligence();
+    await runDetection("auto", target.timezone, target.lang, ipIntel, checkEventConsumer);
+  } finally {
+    releaseLock();
+  }
 }
 
 async function handleStatus(res: http.ServerResponse) {
@@ -38,43 +125,47 @@ async function handleStatus(res: http.ServerResponse) {
   sendJson(res, status);
 }
 
-async function handlePersistOn(res: http.ServerResponse) {
-  const target = getTargetRegion(DEFAULT_REGION);
-  const envKeys = ["TZ", "LANG", "LC_ALL"];
-  createBackup(envKeys);
-  setEnvVar("TZ", target.timezone);
-  setEnvVar("LANG", target.lang);
-  setEnvVar("LC_ALL", target.lcAll);
-  sendJson(res, { success: true, region: target.name });
-}
-
-async function handlePersistOff(res: http.ServerResponse) {
-  const status = getPersistStatus();
-  if (!status.enabled || !status.backup) {
-    sendJson(res, { success: false, error: "持久化未开启" }, 400);
-    return;
-  }
-  restoreBackup(status.backup);
-  sendJson(res, { success: true });
-}
+// ── 服务器 ──
 
 export function startGuiServer(port = 3456): Promise<http.Server> {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
     const method = req.method?.toUpperCase() || "GET";
 
+    // CORS preflight
+    if (method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      });
+      res.end();
+      return;
+    }
+
     try {
-      // 路由
       if (method === "GET" && url.pathname === "/") {
         await serveHtml(res);
-      } else if (method === "GET" && url.pathname === "/api/check") {
-        await handleCheck(res);
+      } else if (method === "GET" && url.pathname === "/api/events") {
+        // SSE 常驻通道
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.write("\n");
+        clients.add(res);
+        res.on("error", () => clients.delete(res));
+        req.on("close", () => clients.delete(res));
       } else if (method === "GET" && url.pathname === "/api/status") {
         await handleStatus(res);
-      } else if (method === "POST" && url.pathname === "/api/persist/on") {
-        await handlePersistOn(res);
-      } else if (method === "POST" && url.pathname === "/api/persist/off") {
-        await handlePersistOff(res);
+      } else if (method === "POST" && url.pathname === "/api/fix/on") {
+        await handleFixOn(res);
+      } else if (method === "POST" && url.pathname === "/api/fix/off") {
+        await handleFixOff(res);
+      } else if (method === "POST" && url.pathname === "/api/check/start") {
+        await handleCheckStart(res);
       } else {
         res.writeHead(404);
         res.end("Not found");

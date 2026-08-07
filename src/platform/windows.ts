@@ -8,7 +8,7 @@ const APPDATA = process.env.APPDATA || path.join(process.env.HOME || "", ".confi
 const CC_FIX_DIR = path.join(APPDATA, "cc-fix");
 const BACKUP_FILE = path.join(CC_FIX_DIR, "persist-backup.json");
 
-type BackupData = {
+export type BackupData = {
   timestamp: string;
   previous: Record<string, string | null>;
 };
