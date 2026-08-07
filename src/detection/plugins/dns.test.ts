@@ -45,8 +45,20 @@ describe("dnsPlugin", () => {
     expect(result.value).toContain("Cloudflare");
   });
 
-  it("returns medium risk for poison/fake 198.18.x addresses", async () => {
+  it("returns low risk for Clash fake-ip 198.18.x (proxy takeover)", async () => {
     mockLookup.__setState(async () => ({ address: "198.18.0.16", family: 4 }));
+
+    const result = await dnsPlugin.run({
+      targetTimezone: "America/New_York",
+      targetLang: "en",
+    });
+    expect(result.risk).toBe("low");
+    expect(result.contribution).toBe(0);
+    expect(result.value).toContain("fake-ip");
+  });
+
+  it("returns medium risk for other private ranges", async () => {
+    mockLookup.__setState(async () => ({ address: "10.0.0.1", family: 4 }));
 
     const result = await dnsPlugin.run({
       targetTimezone: "America/New_York",

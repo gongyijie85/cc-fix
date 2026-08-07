@@ -17,16 +17,21 @@ function isCloudflareIp(ip: string): boolean {
   return false;
 }
 
-/** 私网 / CGNAT / 测试网 / 代理假 IP — 视为污染或异常解析 */
-function isSuspiciousPrivateOrFakeIp(ip: string): boolean {
+/** Clash / mihomo fake-ip 默认网段 198.18.0.0/16（正常接管，不是污染） */
+function isClashFakeIp(ip: string): boolean {
+  return /^198\.18\./.test(ip);
+}
+
+/** 私网 / CGNAT — 真异常（非 Clash fake-ip） */
+function isSuspiciousPrivateIp(ip: string): boolean {
   if (ip === "127.0.0.1" || ip.startsWith("127.")) return true;
   if (ip.startsWith("10.")) return true;
   if (/^192\.168\./.test(ip)) return true;
   if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
-  // RFC 2544 / 部分代理软件使用的 198.18.0.0/15 假地址
-  if (/^198\.1[89]\./.test(ip)) return true;
   // CGNAT 100.64.0.0/10
   if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip)) return true;
+  // 198.19.x 等非 Clash 常见假网段仍标可疑
+  if (/^198\.19\./.test(ip)) return true;
   return false;
 }
 
@@ -39,8 +44,22 @@ export const dnsPlugin: DetectionPlugin = {
       const result = await dnsLookup("api.anthropic.com");
       const ip = result.address;
 
-      // 假地址 / 私网：DNS 污染或本地劫持嫌疑
-      if (isSuspiciousPrivateOrFakeIp(ip)) {
+      // Clash fake-ip：解析进 198.18.0.0/16 表示域名已由代理接管（Merlin Clash / mihomo 正常行为）
+      if (isClashFakeIp(ip)) {
+        return {
+          id: "dns",
+          label: "DNS 配置",
+          value: `api.anthropic.com → ${ip}（Clash fake-ip，代理已接管）`,
+          score: 0,
+          weight: 8,
+          contribution: 0,
+          source: "network",
+          risk: "low",
+        };
+      }
+
+      // 其它私网：DNS 污染或本地劫持嫌疑
+      if (isSuspiciousPrivateIp(ip)) {
         return {
           id: "dns",
           label: "DNS 配置",
