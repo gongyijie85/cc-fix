@@ -18,6 +18,8 @@ Claude Code 环境安全检测与修复 CLI 工具（Windows 优先）。检测�
 | 阶段（phase） | 非步骤式的耗时过程（如 IP 情报获取） | |
 | 汇总（summary） | 修复流的终结事件，含成败计数与 fatal / rolledBack 标志 | |
 | 回滚（rollback） | persist on 失败后把已改键恢复为备份值；带 `rollback: true` 标记的步骤 | persist off 不是回滚，是"恢复原始" |
+| 一键切换 | GUI 中对 persist on 的用户化称呼：切换到目标地区安全环境 | 不是独立于 persist 的新概念 |
+| 一键还原日常配置 | GUI 中对 persist off 的用户化称呼：按备份恢复环境变量与系统时区 | 不是"撤销"，备份删除后不可重复还原 |
 | 常驻通道 | `GET /api/events` 的持久 SSE 连接（EventSource） | |
 | 触发端点 | 只启动动作、返回 202/409 的 POST 端点（`/api/fix/on` 等） | |
 | 备份（backup） | `%APPDATA%/cc-fix/persist-backup.json`，存最原始的环境变量值与系统时区（`previousSystemTimezone`，旧版备份可能缺失），不覆盖 | |
