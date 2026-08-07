@@ -3,7 +3,7 @@
 import type { DetectionPlugin, DetectionContext } from "../plugin.js";
 import type { SignalResult } from "../types.js";
 
-// 目标时区到预期 UTC 偏移（分钟）的映射
+// 目标时区到预期 UTC 偏移（分钟，带符号：西为负，如纽约冬令时 -300）的映射
 const EXPECTED_OFFSETS: Record<string, number> = {
   "America/New_York": -300,
   "America/Los_Angeles": -480,
@@ -20,7 +20,7 @@ const EXPECTED_OFFSETS: Record<string, number> = {
 };
 
 function formatUtcOffset(offsetMinutes: number): string {
-  const sign = offsetMinutes <= 0 ? "+" : "-";
+  const sign = offsetMinutes < 0 ? "-" : "+";
   const abs = Math.abs(offsetMinutes);
   const h = String(Math.floor(abs / 60)).padStart(2, "0");
   const m = String(abs % 60).padStart(2, "0");
@@ -32,7 +32,8 @@ export const utcOffsetPlugin: DetectionPlugin = {
   label: "UTC 偏移",
   weight: 4,
   run: async (context: DetectionContext): Promise<SignalResult> => {
-    const actualOffset = new Date().getTimezoneOffset(); // 分钟，正数表示 UTC 之前
+    // getTimezoneOffset 的符号与 UTC 偏移相反（西为正），取反得到带符号偏移
+    const actualOffset = -new Date().getTimezoneOffset();
     const expectedOffset = EXPECTED_OFFSETS[context.targetTimezone];
     const offsetStr = formatUtcOffset(actualOffset);
 
