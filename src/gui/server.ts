@@ -4,7 +4,7 @@ import http from "node:http";
 // @ts-ignore - HTML file imported as text via tsup loader
 import htmlContent from "./index.html";
 import { runDetection } from "../detection/runner.js";
-import { getTargetRegion, DEFAULT_REGION } from "../detection/regions.js";
+import { getTargetRegion, DEFAULT_REGION, TARGET_REGIONS } from "../detection/regions.js";
 import { fetchIpIntelligence } from "../proxy/ip-intel.js";
 import { getPersistStatus } from "../platform/windows.js";
 import { persistOnFlow, persistOffFlow } from "../fix/flow.js";
@@ -91,14 +91,16 @@ function checkEventConsumer(e: StreamEvent) {
 
 // ── 触发端点处理 ──
 
-async function handleFixOn(res: http.ServerResponse) {
+async function handleFixOn(res: http.ServerResponse, url: URL) {
   if (!tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
-  const target = getTargetRegion(DEFAULT_REGION);
+  // 非法/缺省 region 由 getTargetRegion 回落到 DEFAULT_REGION（与 CLI 同一事实源）
+  const regionCode = url.searchParams.get("region") || DEFAULT_REGION;
+  const target = getTargetRegion(regionCode);
   try {
     await persistOnFlow(
-      { regionCode: "auto", targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
+      { regionCode: target.code, targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
       fixEventConsumer("persist-on"),
     );
   } finally {
@@ -139,6 +141,13 @@ async function handleHistory(res: http.ServerResponse) {
   sendJson(res, readHistory(10));
 }
 
+function handleRegions(res: http.ServerResponse) {
+  sendJson(res, {
+    default: DEFAULT_REGION,
+    regions: Object.values(TARGET_REGIONS).map(r => ({ code: r.code, name: r.name })),
+  });
+}
+
 // ── 服务器 ──
 
 export function startGuiServer(port = 3456): Promise<http.Server> {
@@ -176,8 +185,10 @@ export function startGuiServer(port = 3456): Promise<http.Server> {
         await handleStatus(res);
       } else if (method === "GET" && url.pathname === "/api/history") {
         await handleHistory(res);
+      } else if (method === "GET" && url.pathname === "/api/regions") {
+        handleRegions(res);
       } else if (method === "POST" && url.pathname === "/api/fix/on") {
-        await handleFixOn(res);
+        await handleFixOn(res, url);
       } else if (method === "POST" && url.pathname === "/api/fix/off") {
         await handleFixOff(res);
       } else if (method === "POST" && url.pathname === "/api/check/start") {

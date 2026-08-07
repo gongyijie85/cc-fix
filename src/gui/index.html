@@ -109,6 +109,13 @@
   .history-result.ok { color: var(--green); }
   .history-result.fail { color: var(--red); }
   .history-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+  /* 地区选择器 */
+  .region-select { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; }
+  .region-select label { color: var(--muted); }
+  .region-select select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
+  .region-select select:disabled { opacity: .5; cursor: not-allowed; }
+  .region-hint { color: var(--yellow); font-size: 12px; display: none; }
 </style>
 </head>
 <body>
@@ -176,7 +183,7 @@ function showToast(msg) {
 
 // ── 按钮禁用 ──
 function setButtonsDisabled(d) {
-  ["btnOn", "btnOff", "btnRefresh"].forEach(id => {
+  ["btnOn", "btnOff", "btnRefresh", "regionSelect"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = d;
   });
@@ -376,7 +383,8 @@ evtSource.onerror = () => { /* EventSource 自动重连 */ };
 // ── 操作按钮 ──
 async function persistOn() {
   setButtonsDisabled(true);
-  const res = await fetch("/api/fix/on", { method: "POST" });
+  const region = document.getElementById("regionSelect")?.value || "us";
+  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}`, { method: "POST" });
   if (!res.ok) {
     setButtonsDisabled(false);
     showToast("已有操作进行中，请稍候");
@@ -409,6 +417,21 @@ function refresh() {
 }
 
 // ── 原有渲染逻辑 ──
+const REGION_LABELS = { us: "🇺🇸 美国", eu: "🇪🇺 欧洲", jp: "🇯🇵 日本", sg: "🇸🇬 新加坡" };
+
+// 地区选项来自服务端（与 CLI --region 同一事实源）；失败时保留静态 us 项
+async function loadRegions() {
+  const sel = document.getElementById("regionSelect");
+  if (!sel) return;
+  try {
+    const res = await fetch("/api/regions");
+    if (!res.ok) return;
+    const data = await res.json();
+    sel.innerHTML = data.regions.map(r => `<option value="${esc(r.code)}">${REGION_LABELS[r.code] || esc(r.code)}</option>`).join("");
+    sel.value = data.default;
+  } catch { /* 回落静态选项 */ }
+}
+
 async function loadStatus() {
   try {
     const res = await fetch("/api/status");
@@ -416,6 +439,11 @@ async function loadStatus() {
     const dot = $("#statusDot"), txt = $("#statusText");
     if (status.enabled) { dot.className = "status-dot on"; txt.textContent = "持久化已开启"; }
     else { dot.className = "status-dot off"; txt.textContent = "持久化未开启"; }
+    // persist on 期间禁止切换地区
+    const sel = document.getElementById("regionSelect");
+    const hint = document.getElementById("regionHint");
+    if (sel) sel.disabled = status.enabled;
+    if (hint) hint.style.display = status.enabled ? "" : "none";
   } catch {}
 }
 
@@ -448,6 +476,12 @@ function render(data) {
   }
   html += `</tbody></table></div>`;
 
+  html += `<div class="region-select">
+    <label for="regionSelect">🌍 目标地区</label>
+    <select id="regionSelect"><option value="us">🇺🇸 美国</option></select>
+    <span class="region-hint" id="regionHint">请先还原日常配置再切换地区</span>
+  </div>`;
+
   html += `<div class="actions">
     <button class="btn btn-on" id="btnOn" onclick="persistOn()">✅ 一键修复 (Persist On)</button>
     <button class="btn btn-off" id="btnOff" onclick="persistOff()">❌ 恢复原始 (Persist Off)</button>
@@ -461,6 +495,7 @@ function render(data) {
   }
 
   $("#content").innerHTML = html;
+  loadRegions();
   loadStatus();
 }
 
