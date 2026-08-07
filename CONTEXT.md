@@ -11,7 +11,7 @@ Claude Code 环境安全检测与修复 CLI 工具（Windows 优先）。检测�
 | 检测信号（signal） | 单个检测插件的输出，含 id/label/value/risk/weight/contribution | 不叫"检测项结果" |
 | 插件（plugin） | 实现 `DetectionPlugin` 接口的单个检测维度 | 不叫"检测器" |
 | 风险评分（score） | 0-100，信号加权归一化后的总分 | 不叫"分数" |
-| 持久化（persist） | 通过用户级环境变量（TZ/LANG/LC_ALL）+ 系统时区（tzutil）切换环境，`persist on/off` 管理 | 不叫"修复"本身 |
+| 持久化（persist） | 通过用户级环境变量（TZ/LANG/LC_ALL）+ 系统时区（tzutil）+ 浏览器策略（Chrome/Edge HKCU）切换环境，`persist on/off` 管理 | 不叫"修复"本身 |
 | 修复流（fix flow） | 一次 persist on/off 的步骤化执行过程，以事件流呈现 | |
 | 步骤（step） | 修复流中的原子操作：备份 / 设置单键 / 切换系统时区 / 恢复单键 / 恢复系统时区 / 删备份 | |
 | 事件（event） | 编排层推送的不可变消息，联合类型 `StreamEvent`（见 `src/events/types.ts`） | |
@@ -25,6 +25,8 @@ Claude Code 环境安全检测与修复 CLI 工具（Windows 优先）。检测�
 | 备份（backup） | `%APPDATA%/cc-fix/persist-backup.json`，存最原始的环境变量值与系统时区（`previousSystemTimezone`，旧版备份可能缺失），不覆盖 | |
 | 操作日志（history） | `%APPDATA%/cc-fix/history.jsonl` 追加式记录每次 on/off/check，回答"我上次干了什么" | 与备份分工：快照负责可恢复，日志负责可追溯（ADR-0002） |
 | 目标地区（target region） | us/eu/jp/sg 四档，`TARGET_REGIONS` 为 CLI 与 GUI 的同一事实源，非法值回落 us | GUI 下拉框选择不记忆 |
+| 浏览器策略（browser policy） | Chrome/Edge 原生策略注册表项（HKCU\Software\Policies\…）：`AcceptLanguage`（跟随目标地区）与 WebRTC 防泄漏策略，persist on 写入、off 还原 | 不叫"浏览器插件"；不改系统语言列表（ADR-0003） |
+| 策略快照 | 备份快照中的 `previousBrowserPolicies`：写策略前的原值，含"不存在"（还原时删除） | 与备份同源同一文件，同一"保留最原始值"语义 |
 
 ## 统一事件协议
 
