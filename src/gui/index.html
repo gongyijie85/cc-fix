@@ -39,7 +39,8 @@
   .contrib { font-weight: 600; font-size: 13px; }
   .contrib-zero { color: var(--green); } .contrib-nonzero { color: var(--red); }
   .actions { display: flex; gap: 12px; margin-bottom: 24px; }
-  .btn { flex: 1; padding: 12px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .2s; }
+  .btn { flex: 1; padding: 12px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .2s; line-height: 1.4; }
+  .btn small { display: block; font-size: 11px; font-weight: 400; opacity: .75; margin-top: 2px; }
   .btn:hover { opacity: .85; } .btn:disabled { opacity: .5; cursor: not-allowed; }
   .btn-on { background: var(--green); color: #000; } .btn-off { background: var(--red); color: #fff; }
   .btn-refresh { background: var(--accent); color: #fff; }
@@ -483,8 +484,8 @@ function render(data) {
   </div>`;
 
   html += `<div class="actions">
-    <button class="btn btn-on" id="btnOn" onclick="persistOn()">✅ 一键修复 (Persist On)</button>
-    <button class="btn btn-off" id="btnOff" onclick="persistOff()">❌ 恢复原始 (Persist Off)</button>
+    <button class="btn btn-on" id="btnOn" onclick="persistOn()">🛡️ 一键切换到安全环境<small>persist on</small></button>
+    <button class="btn btn-off" id="btnOff" onclick="persistOff()">🏠 一键还原日常配置<small>persist off</small></button>
     <button class="btn btn-refresh" id="btnRefresh" onclick="refresh()">🔄 重新检测</button>
   </div>`;
 

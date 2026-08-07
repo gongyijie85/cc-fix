@@ -36,6 +36,39 @@ Write-Host ""
 
 npm install -g cc-fix 2>&1 | ForEach-Object { Write-Host "  $_" }
 
+# 生成桌面快捷方式（直达 cc-fix gui 面板）
+# 优先全局命令；无全局命令时回退到仓库本地构建产物
+function New-CcFixShortcut {
+    try {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        $localEntry = Join-Path $repoRoot "dist\index.js"
+
+        $globalCmd = Get-Command cc-fix -ErrorAction SilentlyContinue
+        if ($globalCmd) {
+            $targetPath = "cmd.exe"
+            $arguments = "/c cc-fix gui"
+        } elseif (Test-Path $localEntry) {
+            $targetPath = "cmd.exe"
+            $arguments = "/c node `"$localEntry`" gui"
+        } else {
+            Write-Host "  [!] 未找到 cc-fix 可执行入口，跳过快捷方式" -ForegroundColor Yellow
+            return
+        }
+
+        $desktop = [Environment]::GetFolderPath("Desktop")
+        $lnk = Join-Path $desktop "CC-Fix 面板.lnk"
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($lnk)
+        $shortcut.TargetPath = $targetPath
+        $shortcut.Arguments = $arguments
+        $shortcut.Description = "CC-Fix 环境安全检测面板"
+        $shortcut.Save()
+        Write-Host "  [OK] 桌面快捷方式已创建：CC-Fix 面板" -ForegroundColor Green
+    } catch {
+        Write-Host "  [!] 桌面快捷方式创建失败：$_" -ForegroundColor Yellow
+    }
+}
+
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     Write-Host "  ========================================" -ForegroundColor Green
@@ -44,11 +77,12 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     Write-Host "  使用方法：" -ForegroundColor White
     Write-Host "    cc-fix check          检测环境风险" -ForegroundColor Yellow
-    Write-Host "    cc-fix persist on     一键修复环境" -ForegroundColor Yellow
+    Write-Host "    cc-fix persist on     一键切换到安全环境" -ForegroundColor Yellow
     Write-Host "    cc-fix proxy check    检测出口 IP" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  提示：先运行 cc-fix check 查看当前风险" -ForegroundColor Gray
+    Write-Host "  提示：双击桌面“CC-Fix 面板”快捷方式可直接打开可视化面板" -ForegroundColor Gray
     Write-Host ""
+    New-CcFixShortcut
 } else {
     Write-Host ""
     Write-Host "  [!] 安装失败，尝试使用 npx 直接运行..." -ForegroundColor Yellow
@@ -56,6 +90,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "  你可以直接用以下命令运行（无需安装）：" -ForegroundColor White
     Write-Host "    npx cc-fix check" -ForegroundColor Yellow
     Write-Host ""
+    New-CcFixShortcut
 }
 
 Write-Host "  按任意键退出..." -ForegroundColor Gray
