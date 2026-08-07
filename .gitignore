@@ -40,3 +40,4 @@ persist-backup.json
 /e2e-*-result.txt
 .wayfinder/temp/map-*-body.md
 .wayfinder/temp/map-*-close-body.md
+.gstack/

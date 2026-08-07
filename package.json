@@ -30,6 +30,9 @@
     "dist",
     "scripts/prepare-hooks.mjs"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20"
   },
