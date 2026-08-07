@@ -27,11 +27,10 @@
 - [中优插件优先级](tickets/05-medium-priority-plugins.md) — 实现 6 个中优插件：字体(10)/DNS(8)/BASE_URL(8)/代理(6)/Win区域(4)/UTC偏移(4)，总权重 125 归一化
 - [IP情报增强](tickets/06-ip-intelligence-enhancement.md) — 多源对比(+15)+数据中心ASN判断(+13)，硬编码云厂商ASN清单
 - [插件实现规格](tickets/07-plugin-implementation-spec.md) — 6 个插件全部无新增依赖，用 node:dns/child_process/fs 实现
+- [Phase 2 实现完成] — 10 个插件全部接入 runner + 全部附带单测（47 个用例通过）；修复 ip-api/ipinfo 国家码格式不一致导致多源对比永远失败的 bug（统一用 ISO 码）
 
 ## Not yet specified
 
-- **中优检测插件实现**：DNS / 字体 / 代理配置 / BASE_URL / Windows 区域格式 / UTC 偏移 — 哪些先做？权重如何分配？
-- **IP 情报增强**：多源对比（checkcc.org 的 +15 分项）、住宅/数据中心判断（+13 分项）
 - **npm 发布**：尚未登录 npm，需要发布流程
 - **macOS/Linux 平台适配**：PlatformAdapter 接口已预留，但 Phase 2 是否实现？
 

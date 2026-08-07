@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<!-- PROTOTYPE — 一次性原型，用完即弃（Ticket #2: 修复步骤流 UI 原型）
+     三个修复步骤流变体，底部浮条或 ?variant=A|B|C 切换。全部使用 mock 事件，无真实后端。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>PROTOTYPE — 修复步骤流</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e4e4e7; --muted: #71717a; --accent: #6366f1;
+    --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 24px 24px 90px; }
+  .container { max-width: 860px; margin: 0 auto; }
+  .proto-banner { background: rgba(234,179,8,.12); border: 1px dashed var(--yellow); color: var(--yellow); font-size: 12px; padding: 6px 12px; border-radius: 6px; margin-bottom: 16px; }
+  header { text-align: center; margin-bottom: 20px; }
+  header h1 { font-size: 22px; } header p { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
+  .card h3 { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .actions { display: flex; gap: 12px; margin-bottom: 16px; }
+  .btn { flex: 1; padding: 11px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-on { background: var(--green); color: #000; } .btn-off { background: var(--red); color: #fff; } .btn-refresh { background: var(--accent); color: #fff; }
+  /* ---- 原型控制条 ---- */
+  .proto-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .proto-btn { padding: 7px 14px; font-size: 13px; border-radius: 6px; border: 1px solid var(--accent); background: transparent; color: var(--accent); cursor: pointer; }
+  .proto-btn:hover { background: rgba(99,102,241,.15); }
+  /* ---- 浮条 ---- */
+  #switcher { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; background: #fff; color: #111; padding: 10px 20px; border-radius: 9999px; box-shadow: 0 8px 30px rgba(0,0,0,.5); font-size: 14px; font-weight: 600; z-index: 99; }
+  #switcher button { border: none; background: none; font-size: 16px; cursor: pointer; padding: 2px 6px; }
+  /* ---- 通用状态色 ---- */
+  .ok { color: var(--green); } .fail { color: var(--red); } .run { color: var(--accent); } .roll { color: var(--orange); } .dim { color: var(--muted); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 12px; font-weight: 600; }
+  .badge-ok { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge-fail { background: rgba(239,68,68,.15); color: var(--red); }
+  .badge-roll { background: rgba(249,115,22,.15); color: var(--orange); }
+  /* ============ 变体 A：终端日志流 ============ */
+  #vA .term { background: #05080a; border: 1px solid #1c2a24; border-radius: 10px; padding: 14px 16px; height: 320px; overflow-y: auto; font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; line-height: 1.9; }
+  #vA .term .ts { color: #3f5c50; margin-right: 8px; }
+  #vA .summary-line { color: var(--yellow); font-weight: 700; }
+  /* ============ 变体 B：步骤清单卡片 ============ */
+  #vB .step-row { display: flex; align-items: center; gap: 12px; padding: 10px 8px; border-bottom: 1px solid var(--border); }
+  #vB .step-row:last-child { border-bottom: none; }
+  #vB .circle { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; background: var(--border); color: var(--muted); }
+  #vB .circle.run { background: rgba(99,102,241,.2); color: var(--accent); animation: pulse 1s infinite; }
+  #vB .circle.ok { background: rgba(34,197,94,.18); color: var(--green); }
+  #vB .circle.fail { background: rgba(239,68,68,.18); color: var(--red); }
+  #vB .circle.roll { background: rgba(249,115,22,.18); color: var(--orange); }
+  @keyframes pulse { 50% { opacity: .5; } }
+  #vB .step-name { font-size: 14px; flex-shrink: 0; }
+  #vB .change { font-size: 12px; color: var(--muted); font-family: Consolas, monospace; }
+  #vB .change b { color: var(--text); font-weight: 600; }
+  #vB .step-status { margin-left: auto; font-size: 12px; }
+  #vB .err-box { background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.3); color: var(--red); font-size: 12px; padding: 6px 10px; border-radius: 6px; margin: 4px 0 4px 46px; font-family: Consolas, monospace; }
+  #vB .sum-bar { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 13px; }
+  #vB .score-delta { margin-left: auto; font-weight: 700; font-size: 15px; }
+  /* ============ 变体 C：分屏环境状态 ============ */
+  #vC .split { display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px; }
+  #vC .mini-step { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 7px 4px; color: var(--muted); }
+  #vC .mini-step .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+  #vC .mini-step.run { color: var(--text); } #vC .mini-step.run .dot { background: var(--accent); animation: pulse 1s infinite; }
+  #vC .mini-step.ok { color: var(--text); } #vC .mini-step.ok .dot { background: var(--green); }
+  #vC .mini-step.fail { color: var(--red); } #vC .mini-step.fail .dot { background: var(--red); }
+  #vC .mini-step.roll { color: var(--orange); } #vC .mini-step.roll .dot { background: var(--orange); }
+  #vC .env-row { display: flex; justify-content: space-between; padding: 9px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  #vC .env-row:last-child { border-bottom: none; }
+  #vC .env-key { color: var(--muted); font-family: Consolas, monospace; }
+  #vC .env-val { font-family: Consolas, monospace; transition: all .3s; }
+  #vC .env-val.flash { color: var(--green); text-shadow: 0 0 12px rgba(34,197,94,.8); }
+  #vC .env-val.flash-roll { color: var(--orange); text-shadow: 0 0 12px rgba(249,115,22,.8); }
+  #vC .gauge { text-align: center; padding: 12px 0 4px; }
+  #vC .gauge .num { font-size: 42px; font-weight: 700; }
+  #vC .gauge .lbl { font-size: 12px; color: var(--muted); }
+  /* ---- 检测表格（A/B/C 共用结构） ---- */
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 8px 10px; font-size: 13px; border-bottom: 1px solid var(--border); text-align: left; }
+  th { font-size: 11px; color: var(--muted); font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  .ph { color: var(--muted); animation: pulse 1.2s infinite; }
+  .risk-badge { padding: 2px 8px; border-radius: 9999px; font-size: 11px; }
+  .risk-low { background: rgba(34,197,94,.15); color: var(--green); }
+  .risk-high { background: rgba(239,68,68,.15); color: var(--red); }
+  .risk-medium { background: rgba(234,179,8,.15); color: var(--yellow); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="proto-banner">⚠ PROTOTYPE — 一次性原型（Ticket #2），全部为 mock 数据。用下方按钮播放场景，底部浮条切换变体（←/→ 键也可）。</div>
+  <header>
+    <h1>🛡️ CC-Fix 环境安全检测</h1>
+    <p>修复过程可视化 · 三种形态对比</p>
+  </header>
+
+  <div class="proto-controls">
+    <button class="proto-btn" onclick="play('fixOk')">▶ 播放：修复成功</button>
+    <button class="proto-btn" onclick="play('fixFail')">▶ 播放：修复失败 + 回滚</button>
+    <button class="proto-btn" onclick="play('detect')">▶ 播放：检测增量流</button>
+    <button class="proto-btn" onclick="resetAll()">⏹ 重置</button>
+  </div>
+
+  <!-- 操作区（修复中禁用，三个变体共用这一行为设定） -->
+  <div class="actions">
+    <button class="btn btn-on" id="btnOn">✅ 一键修复 (Persist On)</button>
+    <button class="btn btn-off" id="btnOff">❌ 恢复原始 (Persist Off)</button>
+    <button class="btn btn-refresh" id="btnRefresh">🔄 重新检测</button>
+  </div>
+
+  <!-- ==================== 变体 A：终端日志流 ==================== -->
+  <div id="vA" style="display:none">
+    <div class="card">
+      <h3>修复控制台 <span class="dim">— 按时间追加的日志流</span></h3>
+      <div class="term" id="termBox"><div class="dim">等待操作…</div></div>
+    </div>
+    <div class="card">
+      <h3>检测信号</h3>
+      <table><tbody id="tblA"></tbody></table>
+    </div>
+  </div>
+
+  <!-- ==================== 变体 B：步骤清单卡片 ==================== -->
+  <div id="vB" style="display:none">
+    <div class="card" id="fixCardB" style="display:none">
+      <h3 id="fixTitleB">修复进行中…</h3>
+      <div id="stepListB"></div>
+      <div class="sum-bar" id="sumBarB" style="display:none"></div>
+    </div>
+    <div class="card">
+      <h3>检测信号</h3>
+      <table><tbody id="tblB"></tbody></table>
+    </div>
+  </div>
+
+  <!-- ==================== 变体 C：分屏环境状态 ==================== -->
+  <div id="vC" style="display:none">
+    <div class="split">
+      <div class="card">
+        <h3>修复步骤</h3>
+        <div id="stepListC"><div class="dim" style="font-size:13px">等待操作…</div></div>
+      </div>
+      <div class="card">
+        <h3>环境实时状态</h3>
+        <div id="envPanelC">
+          <div class="env-row"><span class="env-key">TZ</span><span class="env-val" data-k="TZ">—</span></div>
+          <div class="env-row"><span class="env-key">LANG</span><span class="env-val" data-k="LANG">—</span></div>
+          <div class="env-row"><span class="env-key">LC_ALL</span><span class="env-val" data-k="LC_ALL">—</span></div>
+        </div>
+        <div class="gauge"><div class="num dim" id="gaugeC">—</div><div class="lbl">风险评分</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>检测信号</h3>
+      <table><tbody id="tblC"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div id="switcher">
+  <button onclick="cycle(-1)">◀</button>
+  <span id="switcherLabel"></span>
+  <button onclick="cycle(1)">▶</button>
+</div>
+
+<script>
+/* ================= mock 事件脚本 ================= */
+const SCRIPTS = {
+  fixOk: [
+    { t: "step-start", id: "backup", name: "创建环境变量备份" },
+    { t: "step-ok",    id: "backup" },
+    { t: "step-start", id: "tz",   name: "设置时区 TZ",        old: "(未设置)", next: "America/Los_Angeles" },
+    { t: "step-ok",    id: "tz",   env: ["TZ", "America/Los_Angeles"] },
+    { t: "step-start", id: "lang", name: "设置语言 LANG",      old: "zh_CN.UTF-8", next: "en_US.UTF-8" },
+    { t: "step-ok",    id: "lang", env: ["LANG", "en_US.UTF-8"] },
+    { t: "step-start", id: "lc",   name: "设置 LC_ALL",        old: "(未设置)", next: "en_US.UTF-8" },
+    { t: "step-ok",    id: "lc",   env: ["LC_ALL", "en_US.UTF-8"] },
+    { t: "summary",    ok: 4, fail: 0, rolledBack: false },
+    { t: "recheck",    before: 62, after: 8 },
+  ],
+  fixFail: [
+    { t: "step-start", id: "backup", name: "创建环境变量备份" },
+    { t: "step-ok",    id: "backup" },
+    { t: "step-start", id: "tz",   name: "设置时区 TZ",   old: "(未设置)", next: "America/Los_Angeles" },
+    { t: "step-ok",    id: "tz",   env: ["TZ", "America/Los_Angeles"] },
+    { t: "step-start", id: "lang", name: "设置语言 LANG", old: "zh_CN.UTF-8", next: "en_US.UTF-8" },
+    { t: "step-fail",  id: "lang", error: "setx 退出码 1: 拒绝访问 (ERROR_ACCESS_DENIED)" },
+    { t: "step-start", id: "rb-tz", name: "回滚：恢复 TZ", old: "America/Los_Angeles", next: "(未设置)", rollback: true },
+    { t: "step-ok",    id: "rb-tz", env: ["TZ", "(未设置)"], rollback: true },
+    { t: "summary",    ok: 1, fail: 1, rolledBack: true },
+  ],
+  detect: [
+    { t: "detect-start" },
+    ...["时区","系统语言","Locale 一致性","BASE_URL 域名","系统字体","DNS 解析","代理环境","UTC 偏移"]
+      .map((label, i) => ({ t: "detect-ok", i, label, value: ["America/Los_Angeles","en_US.UTF-8","一致","api.anthropic.com","未发现中文字体","US 一致","已配置","-480 匹配"][i], risk: ["low","low","low","low","low","low","medium","low"][i], contrib: [0,0,0,0,0,0,6,0][i] })),
+    { t: "detect-done", score: 8 },
+  ],
+};
+let timer = null;
+function play(name) {
+  stop(); resetAll(); setButtonsDisabled(true);
+  const events = [...SCRIPTS[name]]; let i = 0;
+  timer = setInterval(() => {
+    if (i >= events.length) { stop(); setButtonsDisabled(false); return; }
+    dispatch(events[i++]);
+  }, 650);
+}
+function stop() { if (timer) clearInterval(timer), timer = null; }
+function setButtonsDisabled(d) { ["btnOn","btnOff","btnRefresh"].forEach(id => document.getElementById(id).disabled = d); }
+
+/* ================= 共享：检测表 ================= */
+const ROWS = ["时区","系统语言","Locale 一致性","BASE_URL 域名","系统字体","DNS 解析","代理环境","UTC 偏移"];
+function buildDetectTable(tbodyId) {
+  const tb = document.getElementById(tbodyId);
+  tb.innerHTML = ROWS.map((r, i) => `<tr id="${tbodyId}-r${i}"><td>${r}</td><td class="ph">检测中…</td><td></td><td></td></tr>`).join("");
+}
+function fillDetectRow(tbodyId, e) {
+  const tr = document.getElementById(`${tbodyId}-r${e.i}`);
+  if (!tr) return;
+  const riskCls = e.risk === "low" ? "risk-low" : e.risk === "medium" ? "risk-medium" : "risk-high";
+  tr.innerHTML = `<td>${e.label}</td><td style="color:var(--muted)">${e.value}</td><td><span class="risk-badge ${riskCls}">${e.risk === "low" ? "安全" : "风险"}</span></td><td class="${e.contrib ? "fail" : "ok"}">+${e.contrib}</td>`;
+}
+
+/* ================= 变体 A：终端日志流 ==================== */
+const termBox = document.getElementById("termBox");
+function ts() { return new Date().toTimeString().slice(0, 8); }
+function tlog(html) {
+  if (termBox.querySelector(".dim")) termBox.innerHTML = "";
+  termBox.insertAdjacentHTML("beforeend", `<div><span class="ts">[${ts()}]</span>${html}</div>`);
+  termBox.scrollTop = termBox.scrollHeight;
+}
+function onA(e) {
+  if (e.t === "step-start") tlog(`<span class="run">▶</span> ${e.name}${e.old ? ` <span class="dim">${e.old} → ${e.next}</span>` : ""}…`);
+  if (e.t === "step-ok")    tlog(e.rollback ? `<span class="roll">↩</span> ${e.name} <span class="dim">${e.old} → ${e.next}</span>` : `<span class="ok">✓</span> ${e.name}`);
+  if (e.t === "step-fail")  tlog(`<span class="fail">✗</span> ${e.name} <span class="fail">— ${e.error}</span>`);
+  if (e.t === "summary")    tlog(`<span class="summary-line">══ 汇总: ${e.ok} 成功 · ${e.fail} 失败${e.rolledBack ? " · 已自动回滚" : ""} ══</span>`);
+  if (e.t === "recheck")    tlog(`<span class="summary-line">══ 复测评分: ${e.before} → ${e.after} ══</span>`);
+  if (e.t === "detect-start") { buildDetectTable("tblA"); tlog(`<span class="run">▶</span> 开始检测 ${ROWS.length} 个信号…`); }
+  if (e.t === "detect-ok") fillDetectRow("tblA", e);
+  if (e.t === "detect-done") tlog(`<span class="ok">✓</span> 检测完成 · 评分 <b>${e.score}</b>`);
+}
+function resetA() { termBox.innerHTML = '<div class="dim">等待操作…</div>'; buildDetectTable("tblA"); fillStatic("tblA"); }
+
+/* ================= 变体 B：步骤清单卡片 ==================== */
+const stepListB = document.getElementById("stepListB"), fixCardB = document.getElementById("fixCardB");
+let bIdx = 0;
+function ensureFixCardB() { fixCardB.style.display = ""; document.getElementById("sumBarB").style.display = "none"; }
+function onB(e) {
+  if (e.t === "step-start") {
+    ensureFixCardB();
+    stepListB.insertAdjacentHTML("beforeend",
+      `<div class="step-row" id="b-${e.id}"><div class="circle run">●</div><div><div class="step-name">${e.name}</div>${e.old ? `<div class="change">${e.old} → <b>${e.next}</b></div>` : ""}</div><div class="step-status run">进行中…</div></div>`);
+    bIdx++;
+  }
+  if (e.t === "step-ok") {
+    const row = document.getElementById(`b-${e.id}`); if (!row) return;
+    row.querySelector(".circle").className = "circle " + (e.rollback ? "roll" : "ok");
+    row.querySelector(".circle").textContent = e.rollback ? "↩" : "✓";
+    row.querySelector(".step-status").outerHTML = `<div class="step-status"><span class="badge ${e.rollback ? "badge-roll" : "badge-ok"}">${e.rollback ? "已回滚" : "成功"}</span></div>`;
+  }
+  if (e.t === "step-fail") {
+    const row = document.getElementById(`b-${e.id}`); if (!row) return;
+    row.querySelector(".circle").className = "circle fail"; row.querySelector(".circle").textContent = "✗";
+    row.querySelector(".step-status").outerHTML = `<div class="step-status"><span class="badge badge-fail">失败</span></div>`;
+    row.insertAdjacentHTML("afterend", `<div class="err-box" id="b-err-${e.id}">${e.error}</div>`);
+  }
+  if (e.t === "summary") {
+    const bar = document.getElementById("sumBarB"); bar.style.display = "flex";
+    bar.innerHTML = `<span class="badge badge-ok">✓ ${e.ok} 成功</span>${e.fail ? `<span class="badge badge-fail">✗ ${e.fail} 失败</span>` : ""}${e.rolledBack ? '<span class="badge badge-roll">↩ 已回滚</span>' : ""}`;
+    document.getElementById("fixTitleB").textContent = e.fail ? "修复失败，已恢复原状" : "修复完成";
+  }
+  if (e.t === "recheck") document.getElementById("sumBarB").insertAdjacentHTML("beforeend", `<span class="score-delta ok">评分 ${e.before} → ${e.after}</span>`);
+  if (e.t === "detect-start") buildDetectTable("tblB");
+  if (e.t === "detect-ok") fillDetectRow("tblB", e);
+}
+function resetB() { fixCardB.style.display = "none"; stepListB.innerHTML = ""; bIdx = 0; document.getElementById("fixTitleB").textContent = "修复进行中…"; buildDetectTable("tblB"); fillStatic("tblB"); }
+
+/* ================= 变体 C：分屏环境状态 ==================== */
+const stepListC = document.getElementById("stepListC");
+function onC(e) {
+  if (e.t === "step-start") {
+    if (stepListC.querySelector(".dim")) stepListC.innerHTML = "";
+    stepListC.insertAdjacentHTML("beforeend", `<div class="mini-step run" id="c-${e.id}"><div class="dot"></div>${e.name}</div>`);
+  }
+  if (e.t === "step-ok") {
+    const row = document.getElementById(`c-${e.id}`); if (row) row.className = "mini-step " + (e.rollback ? "roll" : "ok");
+    if (e.env) {
+      const cell = document.querySelector(`#envPanelC [data-k="${e.env[0]}"]`);
+      if (cell) { cell.textContent = e.env[1]; cell.classList.remove("flash","flash-roll"); void cell.offsetWidth; cell.classList.add(e.rollback ? "flash-roll" : "flash"); }
+    }
+  }
+  if (e.t === "step-fail") {
+    const row = document.getElementById(`c-${e.id}`);
+    if (row) { row.className = "mini-step fail"; row.insertAdjacentHTML("beforeend", ` <span style="font-size:11px">— ${e.error}</span>`); }
+  }
+  if (e.t === "summary") {
+    stepListC.insertAdjacentHTML("beforeend", `<div style="margin-top:8px;font-size:12px" class="${e.fail ? "fail" : "ok"}">══ ${e.ok} 成功 · ${e.fail} 失败${e.rolledBack ? " · 已回滚" : ""} ══</div>`);
+  }
+  if (e.t === "recheck") {
+    const g = document.getElementById("gaugeC");
+    g.classList.remove("dim"); g.className = "num " + (e.after <= 20 ? "ok" : "fail");
+    g.textContent = `${e.before} → ${e.after}`;
+  }
+  if (e.t === "detect-start") buildDetectTable("tblC");
+  if (e.t === "detect-ok") fillDetectRow("tblC", e);
+  if (e.t === "detect-done") { const g = document.getElementById("gaugeC"); g.className = "num ok"; g.textContent = e.score; }
+}
+function resetC() {
+  stepListC.innerHTML = '<div class="dim" style="font-size:13px">等待操作…</div>';
+  document.querySelectorAll("#envPanelC .env-val").forEach(c => { c.textContent = "—"; c.classList.remove("flash","flash-roll"); });
+  const g = document.getElementById("gaugeC"); g.className = "num dim"; g.textContent = "—";
+  buildDetectTable("tblC"); fillStatic("tblC");
+}
+
+/* ================= 调度与切换 ==================== */
+function dispatch(e) { onA(e); onB(e); onC(e); }
+function resetAll() { stop(); setButtonsDisabled(false); resetA(); resetB(); resetC(); }
+function fillStatic(tbId) { /* 初始态：展示占位灰行 */ }
+
+const VARIANTS = { A: "终端日志流", B: "步骤清单卡片", C: "分屏环境状态" };
+let current = new URLSearchParams(location.search).get("variant") || "A";
+if (!VARIANTS[current]) current = "A";
+function show() {
+  for (const k of Object.keys(VARIANTS)) document.getElementById("v" + k).style.display = k === current ? "" : "none";
+  document.getElementById("switcherLabel").textContent = `${current} — ${VARIANTS[current]}`;
+}
+function cycle(d) {
+  const keys = Object.keys(VARIANTS);
+  current = keys[(keys.indexOf(current) + d + keys.length) % keys.length];
+  try { history.replaceState(null, "", location.pathname + "?variant=" + current); } catch (_) {}
+  show();
+}
+document.addEventListener("keydown", ev => {
+  if (["INPUT","TEXTAREA"].includes(document.activeElement?.tagName)) return;
+  if (ev.key === "ArrowLeft") cycle(-1);
+  if (ev.key === "ArrowRight") cycle(1);
+});
+resetAll(); show();
+</script>
+</body>
+</html>
