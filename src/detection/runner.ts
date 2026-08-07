@@ -14,6 +14,7 @@ import { baseUrlPlugin } from "./plugins/base-url.js";
 import { proxyPlugin } from "./plugins/proxy.js";
 import { winRegionPlugin } from "./plugins/win-region.js";
 import { utcOffsetPlugin } from "./plugins/utc-offset.js";
+import { browserPolicyPlugin } from "./plugins/browser-policy.js";
 
 export async function runDetection(
   regionCode: RegionCode,
@@ -28,7 +29,7 @@ export async function runDetection(
   if (onEvent) onEvent({ type: "phase", label: "正在获取 IP 情报…" });
   if (onEvent) onEvent({ type: "detect-start" });
 
-  // 10 个检测插件：4 高优(Phase 1) + 6 中优(Phase 2)
+  // 11 个检测插件：4 高优(Phase 1) + 6 中优(Phase 2) + 浏览器策略(ADR-0003)
   const plugins: DetectionPlugin[] = [
     // Phase 1 — 高优
     timezonePlugin,
@@ -42,6 +43,8 @@ export async function runDetection(
     proxyPlugin,
     winRegionPlugin,
     utcOffsetPlugin,
+    // ADR-0003 — 浏览器策略就位信号
+    browserPolicyPlugin,
   ];
 
   // 逐个故障隔离：单个插件失败时发射降级事件，不阻断其余插件

@@ -98,7 +98,7 @@
 
 ### 检测模块
 
-10 个检测维度（Phase 1: 4 高优 + Phase 2: 6 中优），总权重 125，评分归一化到 100：
+11 个检测维度（Phase 1: 4 高优 + Phase 2: 6 中优 + 浏览器策略），总权重 130，评分归一化到 100：
 
 **高优先级（已实现）**：
 - 系统时区（权重 25）— Claude Code 已知主动检测
@@ -113,6 +113,7 @@
 - 代理环境（权重 6）— 检查 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY 是否配置
 - Windows 区域格式（权重 4）— 注册表 HKCU\Control Panel\International 的 LocaleName
 - UTC 偏移（权重 4）— 验证 TZ 环境变量是否生效
+- 浏览器策略（权重 5）— Chrome/Edge HKCU 的 AcceptLanguage 与 WebRTC 防泄漏四槽位是否就位（ADR-0003），与 persist 写入共用同一事实源
 
 **IP 情报增强（Phase 2）**：
 - 多源对比：并行查询 ip-api.com + ipinfo.io，对比 country/ASN 一致性（不一致 +15 分）
@@ -187,7 +188,7 @@ run 命令:
 cc-fix/
 ├── src/
 │   ├── index.ts              # CLI 入口
-│   ├── detection/            # 检测模块（10 个插件 + 评分引擎）
+│   ├── detection/            # 检测模块（11 个插件 + 评分引擎）
 │   │   ├── types.ts
 │   │   ├── scoring.ts
 │   │   ├── runner.ts

@@ -64,6 +64,9 @@ export function generateRecommendations(signals: SignalResult[], score: number):
       case "utc-offset":
         recommendations.push("UTC 偏移与目标时区不一致，运行 `cc-fix persist on` 修复");
         break;
+      case "browser-policy":
+        recommendations.push("浏览器策略未就位（AcceptLanguage/WebRTC 防泄漏），运行 `cc-fix persist on` 写入");
+        break;
     }
   }
 

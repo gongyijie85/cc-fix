@@ -10,3 +10,4 @@ export { baseUrlPlugin } from "./base-url.js";
 export { proxyPlugin } from "./proxy.js";
 export { winRegionPlugin } from "./win-region.js";
 export { utcOffsetPlugin } from "./utc-offset.js";
+export { browserPolicyPlugin } from "./browser-policy.js";

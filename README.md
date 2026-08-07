@@ -303,7 +303,7 @@ cc-fix proxy check
 
 ```
 cc-fix
-├── detection/     检测模块（18 个插件，加权评分）
+├── detection/     检测模块（11 个插件，加权评分）
 ├── platform/      平台抽象层（Windows setx / 备份恢复）
 ├── proxy/         出口 IP 检测（ipinfo.io）
 ├── run/           进程级环境变量注入
