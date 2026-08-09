@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CC-Fix Desktop Prototype",
+  "version": "0.0.0",
+  "identifier": "io.github.cc-fix.desktop-prototype",
+  "build": {
+    "frontendDist": "../static"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

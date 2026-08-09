@@ -1,0 +1,21 @@
+[package]
+name = "cc-fix-desktop-prototype"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+strip = true
+lto = "thin"
