@@ -113,19 +113,32 @@ persistCmd
   .description("查看持久化状态")
   .action(() => {
     const status = getPersistStatus();
+    const modeLabel = status.mode === "secure" ? "安全模式 (secure)" : "日常模式 (daily)";
 
     console.log("\n持久化状态:");
-    console.log(`  已开启: ${status.enabled ? "是" : "否"}`);
+    console.log(`  模式: ${status.mode === "secure" ? chalk.green(modeLabel) : chalk.dim(modeLabel)}`);
+    console.log(`  可还原备份: ${status.enabled ? "有" : "无"}`);
 
+    if (status.activeRegion) {
+      console.log(`  目标地区: ${status.activeRegion}`);
+    }
     if (status.backup) {
       console.log(`  备份时间: ${status.backup.timestamp}`);
+      if (status.backup.schemaVersion) {
+        console.log(`  备份版本: v${status.backup.schemaVersion}`);
+      }
     }
 
     console.log("\n当前环境变量（用户级）:");
     for (const [key, value] of Object.entries(status.current)) {
       console.log(`  ${key}: ${value || "(未设置)"}`);
     }
-    console.log();
+
+    console.log("\n系统区域:");
+    console.log(`  时区: ${status.systemTimezone || "(未知)"}`);
+    console.log(`  区域格式: ${status.localeName || "(未知)"}`);
+
+    console.log(chalk.dim("\n切换: cc-fix persist on [--region us]  /  cc-fix persist off\n"));
   });
 
 // run 命令

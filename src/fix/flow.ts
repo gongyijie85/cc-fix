@@ -16,6 +16,7 @@ import {
   patchBackupLocaleName,
   patchBackupUserLanguages,
   patchBackupUserCulture,
+  patchBackupActiveRegion,
   getWindowsLocaleName,
   setWindowsLocaleName,
   localeNameFromLang,
@@ -24,6 +25,8 @@ import {
   restoreUserLanguageList,
   getUserCulture,
   setUserCulture,
+  acquirePersistLock,
+  releasePersistLock,
   type BackupData,
 } from "../platform/windows.js";
 import {
@@ -55,13 +58,33 @@ export async function persistOnFlow(
   opts: PersistOnOptions,
   onEvent: EventConsumer,
 ): Promise<void> {
+  try {
+    acquirePersistLock();
+  } catch (err) {
+    onEvent({ type: "step-fail", stepId: "lock", error: String(err) });
+    onEvent({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
+    return;
+  }
+
+  try {
+    await persistOnFlowBody(opts, onEvent);
+  } finally {
+    releasePersistLock();
+  }
+}
+
+async function persistOnFlowBody(
+  opts: PersistOnOptions,
+  onEvent: EventConsumer,
+): Promise<void> {
   const envKeys = ["TZ", "LANG", "LC_ALL"];
 
-  // 步骤 1：备份
+  // 步骤 1：备份（已有备份时不覆盖，保留最原始日常配置）
   onEvent({ type: "step-start", stepId: "backup", name: "创建环境变量备份" });
   let backup: BackupData;
   try {
     backup = createBackup(envKeys);
+    patchBackupActiveRegion(opts.regionCode);
     onEvent({ type: "step-ok", stepId: "backup" });
   } catch (err) {
     onEvent({ type: "step-fail", stepId: "backup", error: String(err) });
@@ -122,7 +145,7 @@ export async function persistOnFlow(
     }
   }
 
-  // 步骤 2-N：逐个设置环境变量
+  // 步骤 2-N：逐个设置环境变量（已是目标值则跳过，保证重复 on 流畅）
   const steps = [
     { key: "TZ",     value: opts.targetTimezone, stepId: "tz",   name: "设置时区 TZ" },
     { key: "LANG",   value: opts.targetLang,     stepId: "lang", name: "设置语言 LANG" },
@@ -130,9 +153,17 @@ export async function persistOnFlow(
   ];
 
   const changedKeys: string[] = [];
+  let okCount = 0;
+  let failCount = 0;
 
   for (const step of steps) {
-    const oldValue = getEnvVar(step.key) ?? "(未设置)";
+    const current = getEnvVar(step.key);
+    if (current === step.value) {
+      // 已对齐：计成功但不写入
+      okCount++;
+      continue;
+    }
+    const oldValue = current ?? "(未设置)";
     onEvent({
       type: "step-start",
       stepId: step.stepId,
@@ -143,6 +174,7 @@ export async function persistOnFlow(
     try {
       setEnvVar(step.key, step.value);
       changedKeys.push(step.key);
+      okCount++;
       onEvent({ type: "step-ok", stepId: step.stepId });
     } catch (err) {
       onEvent({ type: "step-fail", stepId: step.stepId, error: String(err) });
@@ -158,14 +190,12 @@ export async function persistOnFlow(
     }
   }
 
-  let okCount = steps.length;
-  let failCount = 0;
-
   // 步骤 N+1：写入浏览器策略（Chrome/Edge HKCU，需重启浏览器生效，ADR-0003）
+  // 比较「当前值 vs 目标值」，而非备份快照，保证重复 on 幂等且能补写漂移
   const targets = targetPolicies(opts.targetLang);
   const slotsToWrite = POLICY_SLOTS.filter(slot => {
     const key = slotKey(slot);
-    return backup.previousBrowserPolicies?.[key] !== targets[key];
+    return getPolicy(slot.browser, slot.name) !== targets[key];
   });
 
   if (slotsToWrite.length > 0) {
@@ -357,6 +387,22 @@ export async function persistOnFlow(
 // ── persist off ──
 
 export async function persistOffFlow(onEvent: EventConsumer): Promise<void> {
+  try {
+    acquirePersistLock();
+  } catch (err) {
+    onEvent({ type: "step-fail", stepId: "lock", error: String(err) });
+    onEvent({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
+    return;
+  }
+
+  try {
+    await persistOffFlowBody(onEvent);
+  } finally {
+    releasePersistLock();
+  }
+}
+
+async function persistOffFlowBody(onEvent: EventConsumer): Promise<void> {
   const status = getPersistStatus();
   if (!status.enabled || !status.backup) {
     onEvent({ type: "step-fail", stepId: "check", error: "持久化未开启" });
@@ -369,8 +415,15 @@ export async function persistOffFlow(onEvent: EventConsumer): Promise<void> {
   let okCount = 0;
 
   for (const key of keys) {
-    const oldValue = getEnvVar(key) ?? "(未设置)";
-    const newValue = backup.previous[key] ?? "(删除)";
+    const current = getEnvVar(key);
+    const target = backup.previous[key];
+    // 已是备份值：跳过写入，减少 setx 噪音
+    if (current === target || (target === null && current === null)) {
+      okCount++;
+      continue;
+    }
+    const oldValue = current ?? "(未设置)";
+    const newValue = target ?? "(删除)";
     onEvent({
       type: "step-start",
       stepId: `restore-${key}`,
@@ -379,10 +432,10 @@ export async function persistOffFlow(onEvent: EventConsumer): Promise<void> {
       newValue,
     });
     try {
-      if (backup.previous[key] === null) {
+      if (target === null) {
         deleteEnvVar(key);
       } else {
-        setEnvVar(key, backup.previous[key]!);
+        setEnvVar(key, target);
       }
       okCount++;
       onEvent({ type: "step-ok", stepId: `restore-${key}` });

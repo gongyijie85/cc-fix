@@ -17,6 +17,9 @@ vi.mock("../platform/windows.js", () => ({
   patchBackupLocaleName: vi.fn(),
   patchBackupUserLanguages: vi.fn(),
   patchBackupUserCulture: vi.fn(),
+  patchBackupActiveRegion: vi.fn(),
+  acquirePersistLock: vi.fn(),
+  releasePersistLock: vi.fn(),
   getWindowsLocaleName: vi.fn(),
   setWindowsLocaleName: vi.fn(),
   getUserLanguageTags: vi.fn(),
@@ -52,6 +55,9 @@ import {
   patchBackupSystemTimezone,
   patchBackupBrowserPolicies,
   patchBackupLocaleName,
+  patchBackupActiveRegion,
+  acquirePersistLock,
+  releasePersistLock,
   getWindowsLocaleName,
   setWindowsLocaleName,
   getUserLanguageTags,
@@ -77,6 +83,9 @@ const mockedSetSystemTimezone = vi.mocked(setSystemTimezone);
 const mockedPatchBackupSystemTimezone = vi.mocked(patchBackupSystemTimezone);
 const mockedPatchBackupBrowserPolicies = vi.mocked(patchBackupBrowserPolicies);
 const mockedPatchBackupLocaleName = vi.mocked(patchBackupLocaleName);
+const mockedPatchBackupActiveRegion = vi.mocked(patchBackupActiveRegion);
+const mockedAcquirePersistLock = vi.mocked(acquirePersistLock);
+const mockedReleasePersistLock = vi.mocked(releasePersistLock);
 const mockedGetWindowsLocaleName = vi.mocked(getWindowsLocaleName);
 const mockedSetWindowsLocaleName = vi.mocked(setWindowsLocaleName);
 const mockedGetUserLanguageTags = vi.mocked(getUserLanguageTags);
@@ -98,6 +107,10 @@ function collectEvents() {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  // 默认：互斥锁成功
+  mockedAcquirePersistLock.mockImplementation(() => {});
+  mockedReleasePersistLock.mockImplementation(() => {});
+  mockedPatchBackupActiveRegion.mockImplementation(() => {});
   // 默认：getEnvVar 返回 null（变量未设置）
   mockedGetEnvVar.mockReturnValue(null);
   mockedSetEnvVar.mockImplementation(() => {});
@@ -275,8 +288,8 @@ describe("persistOnFlow", () => {
     });
   });
 
-  it("快照中已是规范值的槽位：跳过写入，无 browser-policy 步骤", async () => {
-    const canonical = {
+  it("当前策略已是规范值：跳过写入，无 browser-policy 步骤", async () => {
+    const canonical: Record<string, string> = {
       "chrome/AcceptLanguage": "en-US,en",
       "chrome/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied_udp",
       "chrome/ApplicationLocaleValue": "en-US",
@@ -288,7 +301,18 @@ describe("persistOnFlow", () => {
       timestamp: "2024-01-01T00:00:00Z",
       previous: { TZ: null, LANG: null, LC_ALL: null },
       previousSystemTimezone: "China Standard Time",
-      previousBrowserPolicies: canonical,
+      previousBrowserPolicies: {
+        "chrome/AcceptLanguage": null,
+        "chrome/DefaultWebRtcIPHandlingPolicy": null,
+        "chrome/ApplicationLocaleValue": null,
+        "edge/AcceptLanguage": null,
+        "edge/DefaultWebRtcIPHandlingPolicy": null,
+        "edge/ApplicationLocaleValue": null,
+      },
+    });
+    // 幂等：比较当前注册表值 vs 目标，与备份快照无关
+    mockedGetPolicy.mockImplementation((browser, name) => {
+      return canonical[`${browser}/${name}`] ?? null;
     });
 
     const onEvent = collectEvents();
@@ -303,6 +327,69 @@ describe("persistOnFlow", () => {
     // 3 env + locale + lang-list + culture + sys-tz
     expect(summary.ok).toBe(7);
     expect(mockedSetWindowsLocaleName).toHaveBeenCalledWith("en-US");
+  });
+
+  it("环境变量已是目标值：跳过 setx，仍记录 activeRegion", async () => {
+    mockedCreateBackup.mockReturnValue({
+      timestamp: "2024-01-01T00:00:00Z",
+      previous: { TZ: null, LANG: null, LC_ALL: null },
+      previousSystemTimezone: "China Standard Time",
+      previousLocaleName: "zh-SG",
+    });
+    mockedGetEnvVar.mockImplementation((key: string) => {
+      const vals: Record<string, string> = {
+        TZ: "America/New_York",
+        LANG: "en_US.UTF-8",
+        LC_ALL: "en_US.UTF-8",
+      };
+      return vals[key] ?? null;
+    });
+    mockedGetSystemTimezone.mockReturnValue("Eastern Standard Time");
+    mockedGetWindowsLocaleName.mockReturnValue("en-US");
+    mockedGetUserLanguageTags.mockReturnValue(["en-US"]);
+    mockedGetUserCulture.mockReturnValue("en-US");
+    mockedGetPolicy.mockImplementation((browser, name) => {
+      const canonical: Record<string, string> = {
+        "chrome/AcceptLanguage": "en-US,en",
+        "chrome/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied_udp",
+        "chrome/ApplicationLocaleValue": "en-US",
+        "edge/AcceptLanguage": "en-US,en",
+        "edge/DefaultWebRtcIPHandlingPolicy": "disable_non_proxied_udp",
+        "edge/ApplicationLocaleValue": "en-US",
+      };
+      return canonical[`${browser}/${name}`] ?? null;
+    });
+
+    const onEvent = collectEvents();
+    await persistOnFlow(opts, onEvent);
+
+    expect(mockedSetEnvVar).not.toHaveBeenCalled();
+    expect(mockedSetPolicy).not.toHaveBeenCalled();
+    expect(mockedSetSystemTimezone).not.toHaveBeenCalled();
+    expect(mockedSetWindowsLocaleName).not.toHaveBeenCalled();
+    expect(mockedPatchBackupActiveRegion).toHaveBeenCalledWith("us");
+    expect(mockedAcquirePersistLock).toHaveBeenCalled();
+    expect(mockedReleasePersistLock).toHaveBeenCalled();
+
+    const types = events.map(e => e.type);
+    expect(types).toEqual(["step-start", "step-ok", "summary"]); // backup + summary only
+  });
+
+  it("互斥锁被占用：立即 fatal，不改系统", async () => {
+    mockedAcquirePersistLock.mockImplementation(() => {
+      throw new Error("另一进程正在执行 persist on/off，请稍后再试");
+    });
+
+    const onEvent = collectEvents();
+    await persistOnFlow(opts, onEvent);
+
+    expect(mockedCreateBackup).not.toHaveBeenCalled();
+    expect(mockedSetEnvVar).not.toHaveBeenCalled();
+    expect(mockedReleasePersistLock).not.toHaveBeenCalled(); // 未拿到锁不释放
+
+    const summary = events.find(e => e.type === "summary") as Extract<StreamEvent, { type: "summary" }>;
+    expect(summary.fatal).toBe(true);
+    expect(summary.fail).toBe(1);
   });
 
   it("浏览器策略写入失败：还原已写策略 + 回滚环境变量", async () => {

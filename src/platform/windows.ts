@@ -9,8 +9,15 @@ const APPDATA = process.env.APPDATA || path.join(process.env.HOME || "", ".confi
 const CC_FIX_DIR = path.join(APPDATA, "cc-fix");
 const BACKUP_FILE = path.join(CC_FIX_DIR, "persist-backup.json");
 
+/** 备份 schema：v3 = 含 activeRegion / 语言列表 / Culture */
+export const BACKUP_SCHEMA_VERSION = 3;
+
 export type BackupData = {
   timestamp: string;
+  /** 备份格式版本；旧文件可能缺失 */
+  schemaVersion?: number;
+  /** 安全模式目标地区（首次 on 写入，之后不覆盖） */
+  activeRegion?: string;
   previous: Record<string, string | null>;
   /** persist on 前的 Windows 系统时区（tzutil ID），旧备份可能缺失 */
   previousSystemTimezone?: string | null;
@@ -23,6 +30,24 @@ export type BackupData = {
   /** persist on 前的用户 Culture（Get-Culture），旧备份可能缺失 */
   previousUserCulture?: string | null;
 };
+
+/** 原子写入备份 JSON（先写临时文件再替换，降低半写风险） */
+function writeBackupAtomic(backup: BackupData): void {
+  ensureDir();
+  const tmp = path.join(CC_FIX_DIR, `.persist-backup.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(backup, null, 2), "utf-8");
+  try {
+    fs.renameSync(tmp, BACKUP_FILE);
+  } catch {
+    // Windows 上目标已存在时 rename 可能失败：回退为覆盖拷贝
+    fs.copyFileSync(tmp, BACKUP_FILE);
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // 忽略临时文件清理失败
+    }
+  }
+}
 
 export function ensureDir(): void {
   if (!fs.existsSync(CC_FIX_DIR)) {
@@ -94,6 +119,7 @@ export function createBackup(envKeys: string[]): BackupData {
 
   const backup: BackupData = {
     timestamp: new Date().toISOString(),
+    schemaVersion: BACKUP_SCHEMA_VERSION,
     previous,
     previousSystemTimezone,
     previousBrowserPolicies,
@@ -102,8 +128,51 @@ export function createBackup(envKeys: string[]): BackupData {
     previousUserCulture,
   };
 
-  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+  writeBackupAtomic(backup);
   return backup;
+}
+
+/** 首次 on 时记录目标地区；已有则不改（保持「最原始日常配置」语义） */
+export function patchBackupActiveRegion(regionCode: string): void {
+  const backup = loadBackup();
+  if (!backup) return;
+  if (backup.activeRegion) return;
+  backup.activeRegion = regionCode;
+  backup.schemaVersion = BACKUP_SCHEMA_VERSION;
+  writeBackupAtomic(backup);
+}
+
+// ── 进程互斥锁：防止 on/off 并发导致半切换 ──
+
+const LOCK_FILE = path.join(CC_FIX_DIR, "persist.lock");
+const LOCK_STALE_MS = 5 * 60 * 1000;
+
+export function acquirePersistLock(): void {
+  ensureDir();
+  if (fs.existsSync(LOCK_FILE)) {
+    const age = Date.now() - fs.statSync(LOCK_FILE).mtimeMs;
+    if (age < LOCK_STALE_MS) {
+      throw new Error("另一进程正在执行 persist on/off，请稍后再试");
+    }
+    try {
+      fs.unlinkSync(LOCK_FILE);
+    } catch {
+      // 过期锁删失败仍尝试覆盖
+    }
+  }
+  fs.writeFileSync(
+    LOCK_FILE,
+    JSON.stringify({ pid: process.pid, at: new Date().toISOString() }),
+    "utf-8",
+  );
+}
+
+export function releasePersistLock(): void {
+  try {
+    if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+  } catch {
+    // 忽略
+  }
 }
 
 export function loadBackup(): BackupData | null {
@@ -138,7 +207,7 @@ export function patchBackupSystemTimezone(winTimezoneId: string): void {
   const backup = loadBackup();
   if (!backup || backup.previousSystemTimezone !== undefined) return;
   backup.previousSystemTimezone = winTimezoneId;
-  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+  writeBackupAtomic(backup);
 }
 
 // 为旧备份补写浏览器策略快照字段（不改写已有字段）
@@ -146,7 +215,7 @@ export function patchBackupBrowserPolicies(snapshot: BrowserPolicySnapshot): voi
   const backup = loadBackup();
   if (!backup || backup.previousBrowserPolicies !== undefined) return;
   backup.previousBrowserPolicies = snapshot;
-  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+  writeBackupAtomic(backup);
 }
 
 // 为旧备份补写区域格式字段（不改写已有字段）
@@ -154,7 +223,7 @@ export function patchBackupLocaleName(localeName: string | null): void {
   const backup = loadBackup();
   if (!backup || backup.previousLocaleName !== undefined) return;
   backup.previousLocaleName = localeName;
-  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+  writeBackupAtomic(backup);
 }
 
 // ── Windows 区域格式（HKCU\Control Panel\International\LocaleName）──
@@ -238,14 +307,14 @@ export function patchBackupUserLanguages(tags: string[] | null): void {
   const backup = loadBackup();
   if (!backup || backup.previousUserLanguages !== undefined) return;
   backup.previousUserLanguages = tags;
-  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+  writeBackupAtomic(backup);
 }
 
 export function patchBackupUserCulture(culture: string | null): void {
   const backup = loadBackup();
   if (!backup || backup.previousUserCulture !== undefined) return;
   backup.previousUserCulture = culture;
-  fs.writeFileSync(BACKUP_FILE, JSON.stringify(backup, null, 2), "utf-8");
+  writeBackupAtomic(backup);
 }
 
 export function deleteEnvVar(key: string): void {
@@ -288,11 +357,25 @@ export function isPersisted(): boolean {
   return fs.existsSync(BACKUP_FILE);
 }
 
-export function getPersistStatus(): {
+export type PersistMode = "secure" | "daily";
+
+export type PersistStatus = {
+  /** 是否存在可还原的日常备份（即是否处于安全模式） */
   enabled: boolean;
+  /** secure = 已 on；daily = 未 on / 已 off */
+  mode: PersistMode;
+  /** 安全模式目标地区 */
+  activeRegion: string | null;
   backup: BackupData | null;
+  /** 用户级环境变量当前值 */
   current: Record<string, string | null>;
-} {
+  /** 当前 Windows 系统时区（tzutil），读取失败为 null */
+  systemTimezone: string | null;
+  /** 当前区域格式 LocaleName，读取失败为 null */
+  localeName: string | null;
+};
+
+export function getPersistStatus(): PersistStatus {
   const backup = loadBackup();
   const envKeys = ["TZ", "LANG", "LC_ALL"];
   const current: Record<string, string | null> = {};
@@ -301,9 +384,27 @@ export function getPersistStatus(): {
     current[key] = getEnvVar(key);
   }
 
+  let systemTimezone: string | null = null;
+  try {
+    systemTimezone = getSystemTimezone();
+  } catch {
+    systemTimezone = null;
+  }
+
+  let localeName: string | null = null;
+  try {
+    localeName = getWindowsLocaleName();
+  } catch {
+    localeName = null;
+  }
+
   return {
     enabled: backup !== null,
+    mode: backup !== null ? "secure" : "daily",
+    activeRegion: backup?.activeRegion ?? null,
     backup,
     current,
+    systemTimezone,
+    localeName,
   };
 }

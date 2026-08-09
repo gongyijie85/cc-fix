@@ -13,7 +13,8 @@ pnpm build
 Write-Host "==> dry-run pack" -ForegroundColor Cyan
 npm pack --dry-run
 
-Write-Host "==> publish 0.1.0 public" -ForegroundColor Cyan
+$version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+Write-Host "==> publish $version public" -ForegroundColor Cyan
 npm publish --access public
 
 Write-Host "==> verify" -ForegroundColor Cyan
