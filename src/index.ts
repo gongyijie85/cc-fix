@@ -13,6 +13,7 @@ import { runWithInjectedEnv, runDesktop } from "./run/injector.js";
 import { startGuiServer } from "./gui/server.js";
 import { exec } from "node:child_process";
 import type { StreamEvent } from "./events/types.js";
+import { version } from "./version.js";
 
 
 const program = new Command();
@@ -20,7 +21,7 @@ const program = new Command();
 program
   .name("cc-fix")
   .description("Claude Code 环境安全检测与修复 CLI 工具")
-  .version("0.1.0");
+  .version(version);
 
 // check 命令
 program

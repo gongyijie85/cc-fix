@@ -1,6 +1,6 @@
 {
   "name": "cc-fix",
-  "version": "0.1.1",
+  "version": "0.2.0-rc.1",
   "description": "Claude Code 环境安全检测与修复 CLI 工具",
   "type": "module",
   "bin": {
@@ -13,7 +13,10 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:version": "node scripts/check-version-consistency.mjs",
+    "check:toolchain": "node scripts/validate-toolchain-lock.mjs",
+    "release:validate": "pnpm check:version && pnpm check:toolchain"
   },
   "keywords": [
     "claude",

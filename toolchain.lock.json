@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "releasePolicy": {
+    "unresolvedFields": "fail"
+  },
+  "tools": {
+    "node": {
+      "version": "24.18.1",
+      "source": "https://nodejs.org/dist/v24.18.1/node-v24.18.1-win-x64.zip",
+      "sha256": null,
+      "unresolved": {
+        "fields": ["sha256"],
+        "bootstrap": "Record the digest from the official Node.js SHASUMS256.txt before a release build."
+      }
+    },
+    "rust": {
+      "version": null,
+      "source": "https://static.rust-lang.org/dist/channel-rust-stable.toml",
+      "sha256": null,
+      "unresolved": {
+        "fields": ["version", "sha256"],
+        "bootstrap": "Resolve the stable toolchain to an exact rustc version and pin its official manifest digest."
+      }
+    },
+    "tauri": {
+      "version": "2.11.5",
+      "source": "https://crates.io/api/v1/crates/tauri/2.11.5/download",
+      "sha256": null,
+      "unresolved": {
+        "fields": ["sha256"],
+        "bootstrap": "Record the registry package checksum from the generated Cargo.lock before a release build."
+      }
+    },
+    "innoSetup": {
+      "version": null,
+      "source": "https://jrsoftware.org/isdl.php",
+      "sha256": null,
+      "unresolved": {
+        "fields": ["version", "source", "sha256"],
+        "bootstrap": "Select an exact Inno Setup 6.7.x installer URL and record its SHA-256 before a release build."
+      }
+    },
+    "webView2": {
+      "version": null,
+      "source": "https://developer.microsoft.com/en-us/microsoft-edge/webview2/",
+      "sha256": null,
+      "unresolved": {
+        "fields": ["version", "source", "sha256"],
+        "bootstrap": "Select an exact x64 Evergreen Standalone Installer URL and record its version and SHA-256 before a release build."
+      }
+    }
+  }
+}
