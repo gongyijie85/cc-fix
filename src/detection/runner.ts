@@ -1,7 +1,7 @@
 // 检测运行器 — 协调插件执行并汇总结果
 
 import type { DetectionPlugin, DetectionContext } from "./plugin.js";
-import type { SignalResult, CheckResponse, IpIntelligence, RegionCode } from "./types.js";
+import type { SignalResult, CheckResponse, IpIntelligence, AccessRegionCode } from "./types.js";
 import type { EventConsumer } from "../events/types.js";
 import { buildCheckResponse } from "./scoring.js";
 import { timezonePlugin } from "./plugins/timezone.js";
@@ -17,7 +17,7 @@ import { utcOffsetPlugin } from "./plugins/utc-offset.js";
 import { browserPolicyPlugin } from "./plugins/browser-policy.js";
 
 export async function runDetection(
-  regionCode: RegionCode,
+  regionCode: AccessRegionCode,
   targetTimezone: string,
   targetLang: string,
   ipIntel: IpIntelligence | null,

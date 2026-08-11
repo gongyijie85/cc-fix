@@ -1,6 +1,12 @@
 // 评分引擎 — 根据检测信号计算风险评分
 
-import type { SignalResult, CheckResponse, AccessStatus, IpIntelligence, RegionCode } from "./types.js";
+import type {
+  SignalResult,
+  CheckResponse,
+  AccessStatus,
+  IpIntelligence,
+  AccessRegionCode,
+} from "./types.js";
 
 export function calculateScore(signals: SignalResult[]): number {
   const totalWeight = signals.reduce((sum, s) => sum + s.weight, 0);
@@ -141,7 +147,7 @@ export function generateRecommendations(signals: SignalResult[], score: number):
 export function buildCheckResponse(
   signals: SignalResult[],
   ipIntel: IpIntelligence | null,
-  region: RegionCode
+  region: AccessRegionCode
 ): CheckResponse {
   const score = calculateScore(signals);
   const riskLevel = getRiskLevel(score);

@@ -1,8 +1,8 @@
 // CC-Fix 核心类型定义
 
-import type { RegionCode as TargetRegionCode } from "../domain/region.js";
+import type { RegionCode } from "../domain/region.js";
 
-export type RegionCode = "auto" | "cn" | "ru" | "ir";
+export type AccessRegionCode = "auto" | "cn" | "ru" | "ir";
 export type AccessStatus = "supported" | "possibly_supported" | "restricted" | "unsupported" | "unknown";
 export type SignalSource = "system" | "network" | "combined";
 
@@ -25,7 +25,7 @@ export type SignalResult = {
 };
 
 export type RegionProfile = {
-  code: Exclude<RegionCode, "auto">;
+  code: Exclude<AccessRegionCode, "auto">;
   name: string;
   shortName: string;
   countries: string[];
@@ -54,8 +54,8 @@ export type CheckResponse = {
   score: number;
   riskLevel: "low" | "medium" | "high" | "critical";
   status: AccessStatus;
-  region: RegionCode;
-  matchedRegion: Exclude<RegionCode, "auto"> | null;
+  region: AccessRegionCode;
+  matchedRegion: Exclude<AccessRegionCode, "auto"> | null;
   signals: SignalResult[];
   ipIntelligence: IpIntelligence | null;
   recommendations: string[];
@@ -63,13 +63,13 @@ export type CheckResponse = {
 
 export type PersistState = {
   enabled: boolean;
-  region: RegionCode;
+  region: AccessRegionCode;
   envVars: Record<string, string | null>;
   backupFile: string | null;
 };
 
 export type TargetRegion = {
-  code: TargetRegionCode;
+  code: RegionCode;
   name: string;
   timezone: string;
   /** 对应的 Windows tzutil 时区 ID，用于同步切换系统时区（浏览器指纹） */
