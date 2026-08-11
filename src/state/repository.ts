@@ -1,8 +1,10 @@
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { canonicalJson, CheckedEnvelopeError, type JsonValue } from './checksum.js';
 import {
   deleteCheckedFile,
+  checkedPayloadIdentity,
   DurableFileError,
   nodeDurableFileSystem,
   readCheckedFile,
@@ -13,6 +15,19 @@ import {
   type DurableWriteResult,
   type GenerationFailure,
 } from './durable-file.js';
+import {
+  CapabilityError,
+  isMutationCoordinatorCapability,
+  isRestoreReservation,
+  isVerifiedRestoreAuthorityCapability,
+  type MutationAuditOperation,
+  type MutationCoordinatorCapability,
+  type MutationLockContext,
+  type RestoreReservation,
+  type VerifiedRestoreAuthorityCapability,
+  type VerifiedRestoreProof,
+  type VerifiedRestoreSnapshot,
+} from './internal/capabilities.js';
 import { statePaths } from './paths.js';
 import {
   cloneImmutable,
@@ -43,6 +58,8 @@ export type RepositoryErrorCode =
   | 'RESTORE_PROOF_INVALID'
   | 'RESTORE_VERIFIER_REQUIRED'
   | 'LOCK_REQUIRED'
+  | 'LOCK_REENTRY'
+  | 'BACKUP_IDENTITY_MISMATCH'
   | 'DELETE_FAILED'
   | 'IO_FAILED';
 
@@ -86,52 +103,37 @@ export type BackupReadResult =
       currentFailure?: GenerationFailure;
     };
 
-export type MutationOperation = 'state.initialize' | 'state.commit' | 'backup.create' | 'backup.delete';
+export type { RestoreReservation, VerifiedRestoreProof, VerifiedRestoreSnapshot };
 
-export type MutationScope = Readonly<{
-  stateRoot: string;
-  filePath: string;
-  operation: MutationOperation;
-}>;
+export type VerifiedBackupDeleteResult = DurableDeleteResult &
+  (
+    | { reservationState: 'finalized' }
+    | { reservationState: 'reconcile_required'; reservation: RestoreReservation }
+  );
 
-export interface MutationCoordinator {
-  runExclusive<T>(scope: MutationScope, action: () => Promise<T>): Promise<T>;
-}
-
-declare const verifiedRestoreProofBrand: unique symbol;
-export type VerifiedRestoreProof = { readonly [verifiedRestoreProofBrand]: never };
-
-export type VerifiedRestoreSnapshot = Readonly<{
-  snapshotId: string;
-  payloadFingerprint: string;
-  generation: 'current' | 'previous';
-}>;
-
-export type VerifiedRestoreDecision =
-  | { kind: 'accepted' }
-  | { kind: 'rejected'; reason: 'invalid' | 'replayed' | 'snapshot_mismatch' };
-
-export interface VerifiedRestoreAuthority {
-  consumeVerifiedRestore(
-    proof: VerifiedRestoreProof,
-    snapshot: VerifiedRestoreSnapshot,
-  ): Promise<VerifiedRestoreDecision>;
-}
+export type RestoreDeletionReconcileResult =
+  | { kind: 'finalized' }
+  | { kind: 'preserved_retryable' };
 
 export type RepositoryOptions = {
   root: string;
   filesystem?: DurableFileSystem;
   requiredBoundarySafety?: BoundarySafetyCapability;
   now?: () => string;
-  mutationCoordinator?: MutationCoordinator;
-  verifiedRestoreAuthority?: VerifiedRestoreAuthority;
+  mutationCoordinator?: MutationCoordinatorCapability;
+  verifiedRestoreAuthority?: VerifiedRestoreAuthorityCapability;
 };
 
 const mutationQueues = new Map<string, Promise<void>>();
+const heldMutationScopes = new AsyncLocalStorage<ReadonlySet<string>>();
 
 function mutationKey(path: string): string {
   const absolute = resolve(path);
   return process.platform === 'win32' ? absolute.toLocaleLowerCase('en-US') : absolute;
+}
+
+function scopeLockKey(root: string, filePath: string): string {
+  return `${mutationKey(root)}\0${mutationKey(filePath)}`;
 }
 
 /** Serializes mutations across all repository instances in this process. T07 supplies cross-process locking. */
@@ -214,8 +216,8 @@ abstract class RepositoryBase {
   protected readonly requiredBoundarySafety: BoundarySafetyCapability | undefined;
   protected readonly now: () => string;
   protected readonly root: string;
-  protected readonly mutationCoordinator: MutationCoordinator | undefined;
-  protected readonly verifiedRestoreAuthority: VerifiedRestoreAuthority | undefined;
+  protected readonly mutationCoordinator: MutationCoordinatorCapability | undefined;
+  protected readonly verifiedRestoreAuthority: VerifiedRestoreAuthorityCapability | undefined;
 
   constructor(options: RepositoryOptions) {
     this.root = options.root;
@@ -223,23 +225,52 @@ abstract class RepositoryBase {
     this.filesystem = options.filesystem ?? nodeDurableFileSystem;
     this.requiredBoundarySafety = options.requiredBoundarySafety;
     this.now = options.now ?? (() => new Date().toISOString());
-    this.mutationCoordinator = options.mutationCoordinator;
-    this.verifiedRestoreAuthority = options.verifiedRestoreAuthority;
+    this.mutationCoordinator = isMutationCoordinatorCapability(options.mutationCoordinator)
+      ? options.mutationCoordinator
+      : undefined;
+    this.verifiedRestoreAuthority = isVerifiedRestoreAuthorityCapability(options.verifiedRestoreAuthority)
+      ? options.verifiedRestoreAuthority
+      : undefined;
   }
 
   protected mutate<T>(
-    operation: MutationOperation,
+    operation: MutationAuditOperation,
     filePath: string,
-    action: () => Promise<T>,
+    action: (lock: MutationLockContext) => Promise<T>,
   ): Promise<T> {
     if (this.mutationCoordinator === undefined) {
       throw new RepositoryError('LOCK_REQUIRED', 'A mutation coordinator is required');
     }
-    const scope = Object.freeze({ stateRoot: this.root, filePath, operation });
-    return this.mutationCoordinator.runExclusive(
-      scope,
-      () => withProcessMutationLock(mutationKey(filePath), action),
-    );
+    const request = Object.freeze({
+      lockKey: scopeLockKey(this.root, filePath),
+      stateRoot: this.root,
+      filePath,
+      operation,
+    });
+    return (async () => {
+      if (heldMutationScopes.getStore()?.has(request.lockKey) === true) {
+        throw new RepositoryError('LOCK_REENTRY', 'Mutation lock reentry is not permitted');
+      }
+      let lock: MutationLockContext;
+      try {
+        lock = await this.mutationCoordinator!.acquire(request);
+      } catch (error) {
+        if (error instanceof CapabilityError && error.code === 'LOCK_REENTRY') {
+          throw new RepositoryError('LOCK_REENTRY', 'Mutation lock reentry is not permitted', { cause: error });
+        }
+        throw new RepositoryError('LOCK_REQUIRED', 'Mutation lock acquisition failed', { cause: error });
+      }
+      try {
+        const held = new Set(heldMutationScopes.getStore() ?? []);
+        held.add(request.lockKey);
+        return await heldMutationScopes.run(
+          held,
+          () => withProcessMutationLock(request.lockKey, () => action(lock)),
+        );
+      } finally {
+        await lock.release();
+      }
+    })();
   }
 }
 
@@ -434,7 +465,7 @@ export class BackupRepository extends RepositoryBase {
 
   async deleteAfterVerifiedRestore(
     proof: VerifiedRestoreProof,
-  ): Promise<DurableDeleteResult> {
+  ): Promise<VerifiedBackupDeleteResult> {
     if (this.verifiedRestoreAuthority === undefined) {
       throw new RepositoryError(
         'RESTORE_VERIFIER_REQUIRED',
@@ -442,46 +473,103 @@ export class BackupRepository extends RepositoryBase {
       );
     }
     const verifiedRestoreAuthority = this.verifiedRestoreAuthority;
-    return this.mutate('backup.delete', this.paths.backup, async () => {
+    return this.mutate('backup.delete', this.paths.backup, async (lock) => {
       const existing = await this.readInternal();
       if (existing.kind === 'missing') {
         throw new RepositoryError('BACKUP_MISSING', 'Immutable backup is missing');
       }
-      let decision: VerifiedRestoreDecision;
+      const identity = checkedPayloadIdentity(asJson(existing.value));
+      const verifiedSnapshot: VerifiedRestoreSnapshot = Object.freeze({ ...identity });
+      let reservation: RestoreReservation | undefined;
       try {
-        decision = await verifiedRestoreAuthority.consumeVerifiedRestore(
-          proof,
-          Object.freeze({
-            snapshotId: existing.value.snapshotId,
-            payloadFingerprint: backupSnapshotFingerprint(existing.value),
-            generation: existing.source,
-          }),
-        );
+        reservation = await verifiedRestoreAuthority.reserve(lock, proof, verifiedSnapshot);
       } catch (error) {
         throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore proof verification failed', {
           cause: error,
         });
       }
-      if (decision.kind !== 'accepted') {
-        throw new RepositoryError('RESTORE_PROOF_INVALID', `Restore proof rejected: ${decision.reason}`);
+      if (reservation === undefined) {
+        throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore proof rejected');
       }
+      let deletion: DurableDeleteResult;
       try {
-        const deletion = await deleteCheckedFile({
+        deletion = await deleteCheckedFile({
           stateRoot: this.root,
           filePath: this.paths.backup,
           schema: BACKUP_SCHEMA,
           filesystem: this.filesystem,
           requiredBoundarySafety: this.requiredBoundarySafety,
           validatePayload: validateBackupPayload,
+          expectedIdentity: identity,
         });
-        return {
-          committed: deletion.committed,
-          possiblyDeleted: deletion.possiblyDeleted,
-          boundarySafety: deletion.boundarySafety,
-          directoryDurability: deletion.directoryDurability,
-        };
       } catch (error) {
+        try {
+          await verifiedRestoreAuthority.abort(lock, reservation);
+        } catch (abortError) {
+          throw new RepositoryError('DELETE_FAILED', 'Deletion failed and reservation abort failed', {
+            cause: new AggregateError([error, abortError]),
+          });
+        }
         throw new RepositoryError('DELETE_FAILED', 'Verified backup deletion failed', { cause: error });
+      }
+      if (deletion.committed && !deletion.possiblyDeleted) {
+        try {
+          await verifiedRestoreAuthority.finalize(lock, reservation);
+        } catch {
+          return {
+            ...deletion,
+            reservationState: 'reconcile_required',
+            reservation,
+          };
+        }
+        return { ...deletion, reservationState: 'finalized' };
+      }
+      return {
+        ...deletion,
+        reservationState: 'reconcile_required',
+        reservation,
+      };
+    });
+  }
+
+  async reconcileVerifiedRestoreDeletion(
+    reservation: RestoreReservation,
+  ): Promise<RestoreDeletionReconcileResult> {
+    if (this.verifiedRestoreAuthority === undefined) {
+      throw new RepositoryError(
+        'RESTORE_VERIFIER_REQUIRED',
+        'A verified restore authority is required to reconcile backup deletion',
+      );
+    }
+    if (!isRestoreReservation(reservation)) {
+      throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore reservation is invalid');
+    }
+    const authority = this.verifiedRestoreAuthority;
+    return this.mutate('backup.reconcile_delete', this.paths.backup, async (lock) => {
+      const existing = await this.readInternal();
+      try {
+        if (existing.kind === 'missing') {
+          await authority.finalize(lock, reservation);
+          return { kind: 'finalized' };
+        }
+        const identity = checkedPayloadIdentity(asJson(existing.value));
+        if (
+          identity.snapshotId !== reservation.snapshot.snapshotId ||
+          identity.payloadFingerprint !== reservation.snapshot.payloadFingerprint ||
+          identity.generationIdentity !== reservation.snapshot.generationIdentity
+        ) {
+          throw new RepositoryError(
+            'BACKUP_IDENTITY_MISMATCH',
+            'Backup identity changed while deletion required reconciliation',
+          );
+        }
+        await authority.abort(lock, reservation);
+        return { kind: 'preserved_retryable' };
+      } catch (error) {
+        if (error instanceof RepositoryError) throw error;
+        throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore reservation reconciliation failed', {
+          cause: error,
+        });
       }
     });
   }

@@ -8,9 +8,10 @@ import {
   type FileHandle,
 } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   CheckedEnvelopeError,
+  canonicalJson,
   createCheckedEnvelope,
   decodeCheckedEnvelope,
   serializeCheckedEnvelope,
@@ -151,6 +152,43 @@ export interface ReadCheckedFileOptions<T extends JsonValue> extends CheckedFile
 
 export interface DeleteCheckedFileOptions<T extends JsonValue> extends CheckedFileOptions {
   validatePayload?: (payload: JsonValue) => payload is T;
+  expectedIdentity: CheckedPayloadIdentity;
+}
+
+export type CheckedPayloadIdentity = Readonly<{
+  snapshotId: string;
+  payloadFingerprint: string;
+  generationIdentity: string;
+}>;
+
+export function checkedPayloadIdentity(payload: JsonValue): CheckedPayloadIdentity {
+  if (
+    typeof payload !== 'object' ||
+    payload === null ||
+    Array.isArray(payload) ||
+    typeof payload.snapshotId !== 'string'
+  ) {
+    throw new DurableFileError('INVALID_PAYLOAD', 'Checked deletion payload requires a snapshot id');
+  }
+  const payloadFingerprint = createHash('sha256').update(canonicalJson(payload)).digest('hex');
+  return Object.freeze({
+    snapshotId: payload.snapshotId,
+    payloadFingerprint,
+    generationIdentity: `${payload.snapshotId}:${payloadFingerprint}`,
+  });
+}
+
+function assertExpectedIdentity(payload: JsonValue, expected: CheckedPayloadIdentity): void {
+  const actual = checkedPayloadIdentity(payload);
+  if (
+    actual.snapshotId !== expected.snapshotId ||
+    actual.payloadFingerprint !== expected.payloadFingerprint ||
+    actual.generationIdentity !== expected.generationIdentity
+  ) {
+    throw new DurableFileError('DELETE_FAILED', 'Checked deletion identity changed', {
+      possiblyCommitted: false,
+    });
+  }
 }
 
 export interface GenerationFailure {
@@ -706,6 +744,7 @@ export async function deleteCheckedFile<T extends JsonValue>(
       boundarySafety: filesystem.boundarySafety,
     };
   }
+  assertExpectedIdentity(readable.payload, options.expectedIdentity);
 
   let directoryDurability: DirectoryDurability;
   try {
@@ -721,6 +760,13 @@ export async function deleteCheckedFile<T extends JsonValue>(
       { cause: error, possiblyCommitted: false },
     );
   }
+  const prepared = await readCheckedFile(options);
+  if (prepared.kind === 'missing') {
+    throw new DurableFileError('DELETE_FAILED', 'Redundant checked generations disappeared', {
+      possiblyCommitted: false,
+    });
+  }
+  assertExpectedIdentity(prepared.payload, options.expectedIdentity);
   try {
     const currentBoundary = await validateSafeTarget(
       options.stateRoot,
@@ -728,6 +774,13 @@ export async function deleteCheckedFile<T extends JsonValue>(
       filesystem,
     );
     await assertBoundaryStable(currentBoundary, filesystem);
+    const beforeCurrent = await readCheckedFile(options);
+    if (beforeCurrent.kind === 'missing') {
+      throw new DurableFileError('DELETE_FAILED', 'Checked deletion identity disappeared', {
+        possiblyCommitted: false,
+      });
+    }
+    assertExpectedIdentity(beforeCurrent.payload, options.expectedIdentity);
     try {
       await filesystem.unlink(options.filePath);
     } catch (error) {
@@ -749,6 +802,13 @@ export async function deleteCheckedFile<T extends JsonValue>(
   try {
     previousBoundary = await validateSafeTarget(options.stateRoot, previousPath, filesystem);
     await assertBoundaryStable(previousBoundary, filesystem);
+    const beforePrevious = await readCheckedFile(options);
+    if (beforePrevious.kind === 'missing') {
+      throw new DurableFileError('DELETE_FAILED', 'Final checked generation disappeared', {
+        possiblyCommitted: false,
+      });
+    }
+    assertExpectedIdentity(beforePrevious.payload, options.expectedIdentity);
   } catch (error) {
     throw new DurableFileError('DELETE_FAILED', 'Final checked generation is still preserved', {
       cause: error,
