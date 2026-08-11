@@ -89,7 +89,8 @@ export type DurableFileErrorCode =
   | 'CORRUPT'
   | 'BOTH_INVALID'
   | 'IO'
-  | 'WRITE_FAILED';
+  | 'WRITE_FAILED'
+  | 'DELETE_FAILED';
 
 export class DurableFileError extends Error {
   readonly code: DurableFileErrorCode;
@@ -138,6 +139,10 @@ export type CheckedFileReadResult<T extends JsonValue> =
     };
 
 export interface ReadCheckedFileOptions<T extends JsonValue> extends CheckedFileOptions {
+  validatePayload?: (payload: JsonValue) => payload is T;
+}
+
+export interface DeleteCheckedFileOptions<T extends JsonValue> extends CheckedFileOptions {
   validatePayload?: (payload: JsonValue) => payload is T;
 }
 
@@ -675,6 +680,44 @@ export async function writeCheckedFile<T extends JsonValue>(
     await Promise.all(
       [...ownedTemps].map(([path, boundary]) => removeOwnedTemp(path, boundary, filesystem)),
     );
+  }
+  return { directoryDurability, boundarySafety: filesystem.boundarySafety };
+}
+
+/** Deletes only a validated checked file and its fixed predecessor generation. */
+export async function deleteCheckedFile<T extends JsonValue>(
+  options: DeleteCheckedFileOptions<T>,
+): Promise<DurableWriteResult> {
+  const filesystem = options.filesystem ?? nodeDurableFileSystem;
+  requireBoundaryCapability(options.requiredBoundarySafety, filesystem);
+  const readable = await readCheckedFile(options);
+  if (readable.kind === 'missing') {
+    return { directoryDurability: 'durable', boundarySafety: filesystem.boundarySafety };
+  }
+
+  let directoryDurability: DirectoryDurability = 'durable';
+  let unlinkAttempted = false;
+  try {
+    for (const path of [options.filePath, `${options.filePath}.prev`]) {
+      const boundary = await validateSafeTarget(options.stateRoot, path, filesystem);
+      await assertBoundaryStable(boundary, filesystem);
+      unlinkAttempted = true;
+      try {
+        await filesystem.unlink(path);
+      } catch (error) {
+        if (isMissing(error)) continue;
+        throw error;
+      }
+      await assertBoundaryStable(boundary, filesystem);
+      if ((await syncDirectoryDurably(dirname(path), filesystem)) === 'unsupported') {
+        directoryDurability = 'unsupported';
+      }
+    }
+  } catch (error) {
+    throw new DurableFileError('DELETE_FAILED', 'Durable checked-file deletion failed', {
+      cause: error,
+      possiblyCommitted: unlinkAttempted,
+    });
   }
   return { directoryDurability, boundarySafety: filesystem.boundarySafety };
 }
