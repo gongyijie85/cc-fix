@@ -128,6 +128,13 @@ export interface DurableWriteResult {
   boundarySafety: BoundarySafetyCapability;
 }
 
+export interface DurableDeleteResult extends DurableWriteResult {
+  /** True once both generations are observed absent or the final unlink returns successfully. */
+  committed: boolean;
+  /** True when the final unlink boundary was crossed but post-commit durability is uncertain. */
+  possiblyDeleted: boolean;
+}
+
 export type CheckedFileReadResult<T extends JsonValue> =
   | { kind: 'missing' }
   | {
@@ -687,37 +694,117 @@ export async function writeCheckedFile<T extends JsonValue>(
 /** Deletes only a validated checked file and its fixed predecessor generation. */
 export async function deleteCheckedFile<T extends JsonValue>(
   options: DeleteCheckedFileOptions<T>,
-): Promise<DurableWriteResult> {
+): Promise<DurableDeleteResult> {
   const filesystem = options.filesystem ?? nodeDurableFileSystem;
   requireBoundaryCapability(options.requiredBoundarySafety, filesystem);
   const readable = await readCheckedFile(options);
   if (readable.kind === 'missing') {
-    return { directoryDurability: 'durable', boundarySafety: filesystem.boundarySafety };
+    return {
+      committed: true,
+      possiblyDeleted: false,
+      directoryDurability: 'durable',
+      boundarySafety: filesystem.boundarySafety,
+    };
   }
 
-  let directoryDurability: DirectoryDurability = 'durable';
-  let unlinkAttempted = false;
+  let directoryDurability: DirectoryDurability;
   try {
-    for (const path of [options.filePath, `${options.filePath}.prev`]) {
-      const boundary = await validateSafeTarget(options.stateRoot, path, filesystem);
-      await assertBoundaryStable(boundary, filesystem);
-      unlinkAttempted = true;
-      try {
-        await filesystem.unlink(path);
-      } catch (error) {
-        if (isMissing(error)) continue;
-        throw error;
-      }
-      await assertBoundaryStable(boundary, filesystem);
-      if ((await syncDirectoryDurably(dirname(path), filesystem)) === 'unsupported') {
-        directoryDurability = 'unsupported';
-      }
+    const preparation = await writeCheckedFile({
+      ...options,
+      payload: readable.payload,
+    });
+    directoryDurability = preparation.directoryDurability;
+  } catch (error) {
+    throw new DurableFileError(
+      'DELETE_FAILED',
+      'Unable to establish redundant checked generations before deletion',
+      { cause: error, possiblyCommitted: false },
+    );
+  }
+  try {
+    const currentBoundary = await validateSafeTarget(
+      options.stateRoot,
+      options.filePath,
+      filesystem,
+    );
+    await assertBoundaryStable(currentBoundary, filesystem);
+    try {
+      await filesystem.unlink(options.filePath);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    await assertBoundaryStable(currentBoundary, filesystem);
+    if ((await syncDirectoryDurably(dirname(options.filePath), filesystem)) === 'unsupported') {
+      directoryDurability = 'unsupported';
     }
   } catch (error) {
     throw new DurableFileError('DELETE_FAILED', 'Durable checked-file deletion failed', {
       cause: error,
-      possiblyCommitted: unlinkAttempted,
+      possiblyCommitted: false,
     });
   }
-  return { directoryDurability, boundarySafety: filesystem.boundarySafety };
+
+  const previousPath = `${options.filePath}.prev`;
+  let previousBoundary: BoundarySnapshot;
+  try {
+    previousBoundary = await validateSafeTarget(options.stateRoot, previousPath, filesystem);
+    await assertBoundaryStable(previousBoundary, filesystem);
+  } catch (error) {
+    throw new DurableFileError('DELETE_FAILED', 'Final checked generation is still preserved', {
+      cause: error,
+      possiblyCommitted: false,
+    });
+  }
+
+  try {
+    await filesystem.unlink(previousPath);
+  } catch (error) {
+    if (!isMissing(error)) {
+      try {
+        const observed = await readCheckedFile(options);
+        if (observed.kind !== 'missing') {
+          throw new DurableFileError('DELETE_FAILED', 'Final checked generation is still preserved', {
+            cause: error,
+            possiblyCommitted: false,
+          });
+        }
+        return {
+          committed: true,
+          possiblyDeleted: true,
+          directoryDurability: 'unsupported',
+          boundarySafety: filesystem.boundarySafety,
+        };
+      } catch (observationError) {
+        if (observationError instanceof DurableFileError && observationError.code === 'DELETE_FAILED') {
+          throw observationError;
+        }
+        return {
+          committed: false,
+          possiblyDeleted: true,
+          directoryDurability: 'unsupported',
+          boundarySafety: filesystem.boundarySafety,
+        };
+      }
+    }
+  }
+
+  try {
+    await assertBoundaryStable(previousBoundary, filesystem);
+    if ((await syncDirectoryDurably(dirname(previousPath), filesystem)) === 'unsupported') {
+      directoryDurability = 'unsupported';
+    }
+  } catch {
+    return {
+      committed: true,
+      possiblyDeleted: true,
+      directoryDurability: 'unsupported',
+      boundarySafety: filesystem.boundarySafety,
+    };
+  }
+  return {
+    committed: true,
+    possiblyDeleted: false,
+    directoryDurability,
+    boundarySafety: filesystem.boundarySafety,
+  };
 }

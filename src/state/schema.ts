@@ -9,23 +9,39 @@ import { isRegionCode, type RegionCode } from '../domain/region.js';
 export const BROWSER_POLICY_SLOTS = [
   {
     id: 'chrome.accept_language',
+    browser: 'chrome',
     keyPath: 'HKCU\\Software\\Policies\\Google\\Chrome',
     valueName: 'AcceptLanguage',
   },
   {
     id: 'chrome.webrtc',
+    browser: 'chrome',
     keyPath: 'HKCU\\Software\\Policies\\Google\\Chrome',
     valueName: 'DefaultWebRtcIPHandlingPolicy',
   },
   {
+    id: 'chrome.application_locale',
+    browser: 'chrome',
+    keyPath: 'HKCU\\Software\\Policies\\Google\\Chrome',
+    valueName: 'ApplicationLocaleValue',
+  },
+  {
     id: 'edge.accept_language',
+    browser: 'edge',
     keyPath: 'HKCU\\Software\\Policies\\Microsoft\\Edge',
     valueName: 'AcceptLanguage',
   },
   {
     id: 'edge.webrtc',
+    browser: 'edge',
     keyPath: 'HKCU\\Software\\Policies\\Microsoft\\Edge',
     valueName: 'DefaultWebRtcIPHandlingPolicy',
+  },
+  {
+    id: 'edge.application_locale',
+    browser: 'edge',
+    keyPath: 'HKCU\\Software\\Policies\\Microsoft\\Edge',
+    valueName: 'ApplicationLocaleValue',
   },
 ] as const;
 
@@ -200,8 +216,10 @@ export const BACKUP_AUTHORITY_IDS = [
   'systemTimezone',
   'browser.chrome.accept_language',
   'browser.chrome.webrtc',
+  'browser.chrome.application_locale',
   'browser.edge.accept_language',
   'browser.edge.webrtc',
+  'browser.edge.application_locale',
   'localeName',
   'userLanguageList',
   'culture',

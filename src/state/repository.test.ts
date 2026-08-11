@@ -62,6 +62,16 @@ function backupSnapshot(): BackupSnapshotV4 {
   };
 }
 
+function verifiedReceipt(snapshot: BackupSnapshotV4) {
+  return {
+    schemaVersion: 1 as const,
+    snapshotId: snapshot.snapshotId,
+    restoreReceiptId: 'a8d83006-4549-4cbe-9fa7-6761fbf24a21',
+    verifiedAt: '2026-08-11T13:00:00Z',
+    completedAuthorities: [...BACKUP_AUTHORITY_IDS],
+  };
+}
+
 describe('StateRepository revisioned commits', () => {
   it('centralizes fixed basenames and rejects non-literal roots', async () => {
     const root = await makeRoot();
@@ -225,7 +235,12 @@ describe('BackupRepository immutable snapshots', () => {
         filePath: statePaths(root).backup,
         schema: 'cc-fix-backup-v4',
       }),
-    ).resolves.toEqual({ directoryDurability: 'durable', boundarySafety: 'identity-checked' });
+    ).resolves.toEqual({
+      committed: true,
+      possiblyDeleted: false,
+      directoryDurability: 'durable',
+      boundarySafety: 'identity-checked',
+    });
   });
 
   it('creates once and refuses both identical and different overwrites', async () => {
@@ -310,7 +325,11 @@ describe('BackupRepository immutable snapshots', () => {
       completedAuthorities: [...BACKUP_AUTHORITY_IDS],
     });
     expect(result.boundarySafety).toBe('identity-checked');
+    expect(result).toMatchObject({ committed: true, possiblyDeleted: false });
     await expect(repository.read()).resolves.toEqual({ kind: 'missing' });
+    await expect(
+      repository.deleteAfterVerifiedRestore(verifiedReceipt(snapshot)),
+    ).rejects.toMatchObject({ code: 'BACKUP_MISSING' });
   });
 
   it.each([1, 2])('retains a valid recoverable generation when verified deletion faults at unlink #%i', async (faultAt) => {
@@ -338,6 +357,94 @@ describe('BackupRepository immutable snapshots', () => {
       }),
     ).rejects.toMatchObject({ code: 'DELETE_FAILED' });
     expect((await repository.read()).value).toEqual(snapshot);
+  });
+
+  it('reports committed deletion when the final unlink succeeds before boundary verification fails', async () => {
+    const root = await makeRoot();
+    const snapshot = backupSnapshot();
+    let unlinkCalls = 0;
+    let finalUnlinked = false;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      unlink: async (path) => {
+        unlinkCalls += 1;
+        await nodeDurableFileSystem.unlink(path);
+        if (unlinkCalls === 2) finalUnlinked = true;
+      },
+      lstat: async (path) => {
+        const stat = await nodeDurableFileSystem.lstat(path);
+        if (finalUnlinked && path === root) {
+          return {
+            isDirectory: () => stat.isDirectory(),
+            isSymbolicLink: () => stat.isSymbolicLink(),
+            dev: stat.dev,
+            ino: stat.ino + 1n,
+          };
+        }
+        return stat;
+      },
+    };
+    const repository = new BackupRepository({ root, filesystem });
+    await repository.create(snapshot);
+    await expect(repository.deleteAfterVerifiedRestore(verifiedReceipt(snapshot))).resolves.toMatchObject({
+      committed: true,
+      possiblyDeleted: true,
+      directoryDurability: 'unsupported',
+    });
+  });
+
+  it('reports committed deletion when final directory sync fails after unlink', async () => {
+    const root = await makeRoot();
+    const snapshot = backupSnapshot();
+    let unlinkCalls = 0;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      openDirectory: async (path) => {
+        const handle = await nodeDurableFileSystem.openDirectory(path);
+        return {
+          close: () => handle.close(),
+          sync: async () => {
+            if (unlinkCalls === 2) {
+              throw Object.assign(new Error('post-commit sync failure'), { code: 'EIO' });
+            }
+            await handle.sync();
+          },
+        };
+      },
+      unlink: async (path) => {
+        unlinkCalls += 1;
+        await nodeDurableFileSystem.unlink(path);
+      },
+    };
+    const repository = new BackupRepository({ root, filesystem });
+    await repository.create(snapshot);
+    await expect(repository.deleteAfterVerifiedRestore(verifiedReceipt(snapshot))).resolves.toMatchObject({
+      committed: true,
+      possiblyDeleted: true,
+      directoryDurability: 'unsupported',
+    });
+  });
+
+  it('reports a possibly committed deletion when final unlink deletes and then throws', async () => {
+    const root = await makeRoot();
+    const snapshot = backupSnapshot();
+    let unlinkCalls = 0;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      unlink: async (path) => {
+        unlinkCalls += 1;
+        await nodeDurableFileSystem.unlink(path);
+        if (unlinkCalls === 2) throw Object.assign(new Error('post-unlink failure'), { code: 'EIO' });
+      },
+    };
+    const repository = new BackupRepository({ root, filesystem });
+    await repository.create(snapshot);
+    await expect(repository.deleteAfterVerifiedRestore(verifiedReceipt(snapshot))).resolves.toMatchObject({
+      committed: true,
+      possiblyDeleted: true,
+      directoryDurability: 'unsupported',
+    });
+    await expect(repository.read()).resolves.toEqual({ kind: 'missing' });
   });
 
   it('fails closed on an unknown new backup schema even with a valid predecessor', async () => {

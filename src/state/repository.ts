@@ -9,6 +9,7 @@ import {
   writeCheckedFile,
   type BoundarySafetyCapability,
   type DurableFileSystem,
+  type DurableDeleteResult,
   type DurableWriteResult,
   type GenerationFailure,
 } from './durable-file.js';
@@ -366,7 +367,7 @@ export class BackupRepository extends RepositoryBase {
 
   async deleteAfterVerifiedRestore(
     receipt: RestoreVerificationReceipt,
-  ): Promise<DurableWriteResult> {
+  ): Promise<DurableDeleteResult> {
     const immutableReceipt = cloneImmutable(receipt);
     if (!isRestoreVerificationReceipt(immutableReceipt)) {
       throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore receipt is incomplete or invalid');
@@ -383,17 +384,6 @@ export class BackupRepository extends RepositoryBase {
         throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore receipt predates the snapshot');
       }
       try {
-        // Establish two identical valid generations before deletion so any injected unlink fault
-        // leaves at least one checked recovery generation.
-        const preparation = await writeCheckedFile({
-          stateRoot: this.root,
-          filePath: this.paths.backup,
-          schema: BACKUP_SCHEMA,
-          filesystem: this.filesystem,
-          requiredBoundarySafety: this.requiredBoundarySafety,
-          payload: asJson(existing.value),
-          validatePayload: validateBackupPayload,
-        });
         const deletion = await deleteCheckedFile({
           stateRoot: this.root,
           filePath: this.paths.backup,
@@ -403,12 +393,10 @@ export class BackupRepository extends RepositoryBase {
           validatePayload: validateBackupPayload,
         });
         return {
+          committed: deletion.committed,
+          possiblyDeleted: deletion.possiblyDeleted,
           boundarySafety: deletion.boundarySafety,
-          directoryDurability:
-            preparation.directoryDurability === 'unsupported' ||
-            deletion.directoryDurability === 'unsupported'
-              ? 'unsupported'
-              : 'durable',
+          directoryDurability: deletion.directoryDurability,
         };
       } catch (error) {
         throw new RepositoryError('DELETE_FAILED', 'Verified backup deletion failed', { cause: error });

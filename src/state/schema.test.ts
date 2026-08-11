@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { POLICY_SLOTS, slotKey } from '../platform/browser.js';
 import {
   BACKUP_AUTHORITY_IDS,
   BROWSER_POLICY_SLOTS,
@@ -148,6 +149,14 @@ describe('ProtectionState schema v1', () => {
 });
 
 describe('BackupSnapshot schema v4', () => {
+  it('covers exactly every browser policy slot managed by the platform adapter', () => {
+    const backupSurface = BROWSER_POLICY_SLOTS.map(
+      (slot) => `${slot.browser}/${slot.valueName}`,
+    ).sort();
+    expect(backupSurface).toEqual(POLICY_SLOTS.map(slotKey).sort());
+    expect(new Set(backupSurface).size).toBe(POLICY_SLOTS.length);
+  });
+
   it('round-trips all supported registry types exactly', () => {
     const values: RegistryValue[] = [
       { registryType: 'REG_NONE', valueBase64: 'AA==' },
