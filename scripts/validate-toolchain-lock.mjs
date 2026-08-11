@@ -10,6 +10,10 @@ const lockPath = lockArgument >= 0
 const lock = JSON.parse(await readFile(lockPath, "utf8"));
 const failures = [];
 const expectedTools = ["node", "rust", "tauri", "innoSetup", "webView2"];
+const allowedRootKeys = ["schemaVersion", "releasePolicy", "tools"];
+const allowedReleasePolicyKeys = ["unresolvedFields"];
+const allowedToolKeys = ["version", "source", "sha256", "unresolved"];
+const allowedUnresolvedKeys = ["fields", "bootstrap"];
 const exactVersionPatterns = {
   node: /^24\.\d+\.\d+$/,
   rust: /^\d+\.\d+\.\d+$/,
@@ -20,6 +24,18 @@ const exactVersionPatterns = {
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isPlainObject(value) {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function validateExactKeys(value, allowedKeys, label) {
+  const unexpectedKeys = Object.keys(value).filter((key) => !allowedKeys.includes(key));
+  if (unexpectedKeys.length > 0) failures.push(`unexpected ${label} keys: ${unexpectedKeys.join(", ")}`);
 }
 
 function isExactArtifactSource(name, version, source) {
@@ -63,30 +79,60 @@ function isPlaceholderDigest(value) {
   return false;
 }
 
-const actualTools = Object.keys(lock.tools ?? {});
+const root = isPlainObject(lock) ? lock : {};
+if (!isPlainObject(lock)) failures.push("toolchain lock root must be a non-null plain object");
+validateExactKeys(root, allowedRootKeys, "root");
+if (root.schemaVersion !== 1) failures.push("schemaVersion must equal 1");
+
+const releasePolicy = isPlainObject(root.releasePolicy) ? root.releasePolicy : {};
+if (!isPlainObject(root.releasePolicy)) failures.push("releasePolicy must be a non-null plain object");
+validateExactKeys(releasePolicy, allowedReleasePolicyKeys, "releasePolicy");
+if (releasePolicy.unresolvedFields !== "fail") failures.push("releasePolicy.unresolvedFields must equal fail");
+
+const tools = isPlainObject(root.tools) ? root.tools : {};
+if (!isPlainObject(root.tools)) failures.push("tools must be a non-null plain object");
+const actualTools = Object.keys(tools);
 const missingTools = expectedTools.filter((name) => !actualTools.includes(name));
 const unexpectedTools = actualTools.filter((name) => !expectedTools.includes(name));
 if (missingTools.length > 0) failures.push(`missing tool keys: ${missingTools.join(", ")}`);
 if (unexpectedTools.length > 0) failures.push(`unexpected tool keys: ${unexpectedTools.join(", ")}`);
 
 for (const name of expectedTools) {
-  const tool = lock.tools?.[name];
-  if (!tool) continue;
+  const tool = tools[name];
+  if (!isPlainObject(tool)) {
+    if (actualTools.includes(name)) failures.push(`${name} must be a non-null plain object`);
+    continue;
+  }
+  validateExactKeys(tool, allowedToolKeys, name);
 
-  const unresolvedFields = new Set(tool.unresolved?.fields ?? []);
+  let unresolvedFields = new Set();
+  let bootstrap;
+  if (Object.hasOwn(tool, "unresolved")) {
+    if (!isPlainObject(tool.unresolved)) {
+      failures.push(`${name}.unresolved must be a non-null plain object`);
+    } else {
+      validateExactKeys(tool.unresolved, allowedUnresolvedKeys, `${name}.unresolved`);
+      if (!Array.isArray(tool.unresolved.fields)) {
+        failures.push(`${name}.unresolved.fields must be an array`);
+      } else {
+        unresolvedFields = new Set(tool.unresolved.fields);
+      }
+      bootstrap = tool.unresolved.bootstrap;
+    }
+  }
   for (const field of unresolvedFields) {
     if (!["version", "source", "sha256"].includes(field)) {
-      failures.push(`${name}.${field} is explicitly unresolved: ${tool.unresolved.bootstrap}`);
+      failures.push(`${name}.${field} is explicitly unresolved: ${bootstrap}`);
     }
   }
   for (const field of ["version", "source", "sha256"]) {
     if (unresolvedFields.has(field)) {
-      failures.push(`${name}.${field} is explicitly unresolved: ${tool.unresolved.bootstrap}`);
+      failures.push(`${name}.${field} is explicitly unresolved: ${bootstrap}`);
     } else if (typeof tool[field] !== "string" || tool[field].length === 0) {
       failures.push(`${name}.${field} is unresolved`);
     }
   }
-  if (unresolvedFields.size > 0 && (typeof tool.unresolved?.bootstrap !== "string" || tool.unresolved.bootstrap.length === 0)) {
+  if (unresolvedFields.size > 0 && (typeof bootstrap !== "string" || bootstrap.length === 0)) {
     failures.push(`${name} unresolved fields require bootstrap instructions`);
   }
 

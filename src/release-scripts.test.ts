@@ -135,6 +135,45 @@ describe("toolchain lock validator", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("unexpected tool keys");
   });
+
+  it("rejects an all-null tool map", async () => {
+    const lock = resolvedToolchainLock() as ReturnType<typeof resolvedToolchainLock> & { tools: Record<string, unknown> };
+    for (const toolName of Object.keys(lock.tools)) lock.tools[toolName] = null;
+
+    const result = await validateToolchain(lock);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("node must be a non-null plain object");
+  });
+
+  it.each([["array", []], ["string", "invalid"], ["number", 42]])("rejects a %s tool entry", async (_kind, entry) => {
+    const lock = resolvedToolchainLock() as ReturnType<typeof resolvedToolchainLock> & { tools: Record<string, unknown> };
+    lock.tools.node = entry;
+
+    const result = await validateToolchain(lock);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("node must be a non-null plain object");
+  });
+
+  it.each([
+    ["schema version", (lock: Record<string, unknown>) => { lock.schemaVersion = 2; }, "schemaVersion must equal 1"],
+    ["release policy", (lock: Record<string, unknown>) => { lock.releasePolicy = { unresolvedFields: "warn" }; }, "releasePolicy.unresolvedFields must equal fail"],
+    ["root key", (lock: Record<string, unknown>) => { lock.extra = true; }, "unexpected root keys: extra"],
+    ["release policy key", (lock: Record<string, unknown>) => { (lock.releasePolicy as Record<string, unknown>).extra = true; }, "unexpected releasePolicy keys: extra"],
+    ["tool entry key", (lock: Record<string, unknown>) => { ((lock.tools as Record<string, unknown>).node as Record<string, unknown>).extra = true; }, "unexpected node keys: extra"],
+    ["unresolved key", (lock: Record<string, unknown>) => {
+      ((lock.tools as Record<string, unknown>).node as Record<string, unknown>).unresolved = { fields: ["sha256"], bootstrap: "Resolve it.", extra: true };
+    }, "unexpected node.unresolved keys: extra"],
+  ])("rejects an invalid %s", async (_kind, mutate, expectedError) => {
+    const lock = resolvedToolchainLock() as unknown as Record<string, unknown>;
+    mutate(lock);
+
+    const result = await validateToolchain(lock);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(expectedError);
+  });
 });
 
 describe("publish helper", () => {
