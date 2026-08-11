@@ -1,5 +1,7 @@
 // CC-Fix 核心类型定义
 
+import type { RegionCode as TargetRegionCode } from "../domain/region.js";
+
 export type RegionCode = "auto" | "cn" | "ru" | "ir";
 export type AccessStatus = "supported" | "possibly_supported" | "restricted" | "unsupported" | "unknown";
 export type SignalSource = "system" | "network" | "combined";
@@ -67,7 +69,7 @@ export type PersistState = {
 };
 
 export type TargetRegion = {
-  code: string;
+  code: TargetRegionCode;
   name: string;
   timezone: string;
   /** 对应的 Windows tzutil 时区 ID，用于同步切换系统时区（浏览器指纹） */
