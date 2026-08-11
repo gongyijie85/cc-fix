@@ -23,6 +23,7 @@ const lockContexts = new WeakSet<object>();
 const coordinators = new WeakSet<object>();
 const authorities = new WeakSet<object>();
 const reservations = new WeakSet<object>();
+const reservationLockKeys = new WeakMap<object, string>();
 const issuerKey = Object.freeze({});
 
 export type MutationLockBackend = { release(): Promise<void> };
@@ -44,8 +45,8 @@ export class MutationLockContext {
 
   async release(): Promise<void> {
     if (this.#released) return;
-    this.#released = true;
     await this.#backend.release();
+    this.#released = true;
   }
 }
 
@@ -95,6 +96,7 @@ export type VerifiedRestoreAuthorityBackend = {
 
 export class RestoreReservation {
   readonly snapshot: VerifiedRestoreSnapshot;
+  readonly lockKey: string;
   #authority: VerifiedRestoreAuthorityCapability;
   #backend: RestoreReservationBackend;
 
@@ -108,7 +110,9 @@ export class RestoreReservation {
     this.#authority = authority;
     this.#backend = backend;
     this.snapshot = Object.freeze({ ...snapshot });
+    this.lockKey = authority.lockKeyForReservation(backend);
     reservations.add(this);
+    Object.freeze(this);
   }
 
   belongsTo(authority: VerifiedRestoreAuthorityCapability): boolean {
@@ -136,9 +140,9 @@ export class VerifiedRestoreAuthorityCapability {
   ): Promise<RestoreReservation | undefined> {
     if (!isMutationLockContext(lock)) throw new CapabilityError('INVALID_CAPABILITY', 'Invalid lock context');
     const result = await this.#backend.reserve(lock, proof, snapshot);
-    return result.kind === 'accepted'
-      ? new RestoreReservation(this, result.reservation, snapshot, issuerKey)
-      : undefined;
+    if (result.kind !== 'accepted') return undefined;
+    reservationLockKeys.set(result.reservation, lock.request.lockKey);
+    return new RestoreReservation(this, result.reservation, snapshot, issuerKey);
   }
 
   async abort(lock: MutationLockContext, reservation: RestoreReservation): Promise<void> {
@@ -155,8 +159,15 @@ export class VerifiedRestoreAuthorityCapability {
     if (
       !isMutationLockContext(lock) ||
       !reservations.has(reservation) ||
-      !reservation.belongsTo(this)
+      !reservation.belongsTo(this) ||
+      reservation.lockKey !== lock.request.lockKey
     ) throw new CapabilityError('INVALID_CAPABILITY', 'Invalid restore reservation');
+  }
+
+  lockKeyForReservation(backend: RestoreReservationBackend): string {
+    const lockKey = reservationLockKeys.get(backend);
+    if (lockKey === undefined) throw new CapabilityError('INVALID_CAPABILITY', 'Unbound restore reservation');
+    return lockKey;
   }
 }
 

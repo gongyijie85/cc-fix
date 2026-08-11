@@ -33,7 +33,7 @@ describe("verification command contract", () => {
     expect(packageJson.scripts.typecheck).toBeDefined();
     expect(packageJson.scripts.test).toBeDefined();
     expect(packageJson.scripts.build).toBeDefined();
-    expect(packageJson.scripts["test:coverage"]).toBe("vitest run --coverage");
+    expect(packageJson.scripts["test:coverage"]).toBe("node scripts/run-coverage.mjs");
   });
 
   it.each(notImplementedStages)("fails unavailable stage %s with its stable identifier", (stage) => {

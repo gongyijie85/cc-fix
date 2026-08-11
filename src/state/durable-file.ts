@@ -17,6 +17,7 @@ import {
   serializeCheckedEnvelope,
   type JsonValue,
 } from './checksum.js';
+import { isTrustedNativeCompareDeleteFilesystem } from './internal/native-compare-delete.js';
 
 export interface DurableFileHandle {
   writeFile(data: string): Promise<void>;
@@ -38,11 +39,13 @@ export interface DurableFileStat {
 
 export type DirectorySyncCapability = 'supported' | 'probe' | 'unsupported';
 export type BoundarySafetyCapability = 'identity-checked' | 'native-no-follow';
+export type CompareDeleteCapability = 'unsupported' | 'native-compare-delete';
 export type DirectoryDurability = 'durable' | 'unsupported';
 
 export interface DurableFileSystem {
   directorySyncCapability: DirectorySyncCapability;
   boundarySafety: BoundarySafetyCapability;
+  compareDeleteCapability: CompareDeleteCapability;
   open(path: string, flags: string): Promise<DurableFileHandle>;
   openDirectory(path: string): Promise<DurableDirectoryHandle>;
   readFile(path: string): Promise<string>;
@@ -51,6 +54,8 @@ export interface DurableFileSystem {
   /** Atomically replaces destination with a same-directory source when the platform supports it. */
   replace(source: string, destination: string): Promise<void>;
   unlink(path: string): Promise<void>;
+  /** T22 native primitive: atomically compare exact bytes and delete without a check/use gap. */
+  compareAndDelete?(path: string, expectedContents: string): Promise<'deleted' | 'missing' | 'mismatch'>;
 }
 
 function asDurableHandle(handle: FileHandle): DurableFileHandle {
@@ -70,6 +75,7 @@ export const nodeDurableFileSystem: DurableFileSystem = {
   // Node cannot make traversal checks and the later open/rename one indivisible operation.
   // T22's native helper must provide native-no-follow for an adversarial same-user race.
   boundarySafety: 'identity-checked',
+  compareDeleteCapability: 'unsupported',
   open: async (path, flags) => asDurableHandle(await open(path, flags)),
   openDirectory: async (path) => {
     const handle = await open(path, 'r');
@@ -744,6 +750,17 @@ export async function deleteCheckedFile<T extends JsonValue>(
       boundarySafety: filesystem.boundarySafety,
     };
   }
+  if (
+    filesystem.compareDeleteCapability !== 'native-compare-delete' ||
+    filesystem.compareAndDelete === undefined ||
+    !isTrustedNativeCompareDeleteFilesystem(filesystem)
+  ) {
+    throw new DurableFileError(
+      'BOUNDARY_UNSUPPORTED',
+      'Checked deletion requires an atomic native compare-and-delete adapter',
+    );
+  }
+  const compareAndDelete = filesystem.compareAndDelete.bind(filesystem);
   assertExpectedIdentity(readable.payload, options.expectedIdentity);
 
   let directoryDurability: DirectoryDurability;
@@ -781,10 +798,12 @@ export async function deleteCheckedFile<T extends JsonValue>(
       });
     }
     assertExpectedIdentity(beforeCurrent.payload, options.expectedIdentity);
-    try {
-      await filesystem.unlink(options.filePath);
-    } catch (error) {
-      if (!isMissing(error)) throw error;
+    const currentSerialized = serializeCheckedEnvelope(
+      createCheckedEnvelope(options.schema, beforeCurrent.payload),
+    );
+    const currentDelete = await compareAndDelete(options.filePath, currentSerialized);
+    if (currentDelete === 'mismatch') {
+      throw new DurableFileError('DELETE_FAILED', 'Current generation changed before atomic deletion');
     }
     await assertBoundaryStable(currentBoundary, filesystem);
     if ((await syncDirectoryDurably(dirname(options.filePath), filesystem)) === 'unsupported') {
@@ -799,6 +818,7 @@ export async function deleteCheckedFile<T extends JsonValue>(
 
   const previousPath = `${options.filePath}.prev`;
   let previousBoundary: BoundarySnapshot;
+  let previousPayload: T;
   try {
     previousBoundary = await validateSafeTarget(options.stateRoot, previousPath, filesystem);
     await assertBoundaryStable(previousBoundary, filesystem);
@@ -809,6 +829,7 @@ export async function deleteCheckedFile<T extends JsonValue>(
       });
     }
     assertExpectedIdentity(beforePrevious.payload, options.expectedIdentity);
+    previousPayload = beforePrevious.payload;
   } catch (error) {
     throw new DurableFileError('DELETE_FAILED', 'Final checked generation is still preserved', {
       cause: error,
@@ -816,36 +837,22 @@ export async function deleteCheckedFile<T extends JsonValue>(
     });
   }
 
+  const previousSerialized = serializeCheckedEnvelope(
+    createCheckedEnvelope(options.schema, previousPayload),
+  );
+  let previousDelete: 'deleted' | 'missing' | 'mismatch';
   try {
-    await filesystem.unlink(previousPath);
+    previousDelete = await compareAndDelete(previousPath, previousSerialized);
   } catch (error) {
-    if (!isMissing(error)) {
-      try {
-        const observed = await readCheckedFile(options);
-        if (observed.kind !== 'missing') {
-          throw new DurableFileError('DELETE_FAILED', 'Final checked generation is still preserved', {
-            cause: error,
-            possiblyCommitted: false,
-          });
-        }
-        return {
-          committed: true,
-          possiblyDeleted: true,
-          directoryDurability: 'unsupported',
-          boundarySafety: filesystem.boundarySafety,
-        };
-      } catch (observationError) {
-        if (observationError instanceof DurableFileError && observationError.code === 'DELETE_FAILED') {
-          throw observationError;
-        }
-        return {
-          committed: false,
-          possiblyDeleted: true,
-          directoryDurability: 'unsupported',
-          boundarySafety: filesystem.boundarySafety,
-        };
-      }
-    }
+    throw new DurableFileError('DELETE_FAILED', 'Final checked generation is still preserved', {
+      cause: error,
+      possiblyCommitted: false,
+    });
+  }
+  if (previousDelete === 'mismatch') {
+    throw new DurableFileError('DELETE_FAILED', 'Final checked generation changed before atomic deletion', {
+      possiblyCommitted: false,
+    });
   }
 
   try {

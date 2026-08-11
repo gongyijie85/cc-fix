@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -33,9 +33,11 @@ import {
   MutationLockContext,
   RestoreReservation,
   VerifiedRestoreAuthorityCapability,
+  issueMutationCoordinatorCapability,
   issueVerifiedRestoreAuthorityCapability,
   type VerifiedRestoreAuthorityCapability,
 } from './internal/capabilities.js';
+import { issueNativeCompareDeleteFilesystem } from './internal/native-compare-delete.js';
 import { statePaths } from './paths.js';
 import { InProcessTestMutationCoordinator } from './test-support/in-process-mutation-coordinator.js';
 
@@ -75,6 +77,26 @@ function backupSnapshot(): BackupSnapshotV4 {
   };
 }
 
+/** Test-only emulation; production Node intentionally cannot claim this T22 capability. */
+function nativeCompareDeleteFilesystem(base: DurableFileSystem = nodeDurableFileSystem): DurableFileSystem {
+  return issueNativeCompareDeleteFilesystem({
+    ...base,
+    compareDeleteCapability: 'native-compare-delete',
+    compareAndDelete: async (path, expectedContents) => {
+      let actual: string;
+      try {
+        actual = await base.readFile(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+        throw error;
+      }
+      if (actual !== expectedContents) return 'mismatch';
+      await base.unlink(path);
+      return 'deleted';
+    },
+  });
+}
+
 const mutationCoordinator = new InProcessTestMutationCoordinator();
 
 function stateRepository(root: string, options: Omit<RepositoryOptions, 'root'> = {}) {
@@ -93,6 +115,8 @@ class FakeVerifiedRestoreAuthority {
   private readonly bindings = new WeakMap<object, VerifiedRestoreSnapshot & { state: 'available' | 'reserved' | 'finalized' }>();
   private readonly reservationBindings = new WeakMap<object, VerifiedRestoreSnapshot & { proof: object }>();
   onReserve?: () => Promise<void>;
+  abortFailures = 0;
+  finalizeFailures = 0;
 
   constructor() {
     this.capability = issueVerifiedRestoreAuthorityCapability({
@@ -112,6 +136,10 @@ class FakeVerifiedRestoreAuthority {
         return { kind: 'accepted', reservation };
       },
       abort: async (_lock, reservation) => {
+        if (this.abortFailures > 0) {
+          this.abortFailures -= 1;
+          throw new Error('injected abort failure');
+        }
         const reserved = this.reservationBindings.get(reservation);
         if (reserved === undefined) throw new Error('invalid reservation');
         const binding = this.bindings.get(reserved.proof);
@@ -119,6 +147,10 @@ class FakeVerifiedRestoreAuthority {
         binding.state = 'available';
       },
       finalize: async (_lock, reservation) => {
+        if (this.finalizeFailures > 0) {
+          this.finalizeFailures -= 1;
+          throw new Error('injected finalize failure');
+        }
         const reserved = this.reservationBindings.get(reservation);
         if (reserved === undefined) throw new Error('invalid reservation');
         const binding = this.bindings.get(reserved.proof);
@@ -146,9 +178,10 @@ function verifiedBackupRepository(
   options: Omit<RepositoryOptions, 'root' | 'verifiedRestoreAuthority'> = {},
 ) {
   const verifier = new FakeVerifiedRestoreAuthority();
+  const filesystem = nativeCompareDeleteFilesystem(options.filesystem ?? nodeDurableFileSystem);
   return {
     verifier,
-    repository: backupRepository(root, { ...options, verifiedRestoreAuthority: verifier.capability }),
+    repository: backupRepository(root, { ...options, filesystem, verifiedRestoreAuthority: verifier.capability }),
   };
 }
 
@@ -228,6 +261,91 @@ describe('StateRepository revisioned commits', () => {
       }),
     ).rejects.toThrow('Invalid lock context');
     await expect(verifier.capability.abort(lock, {} as never)).rejects.toThrow('Invalid restore reservation');
+  });
+
+  it('retries a failed lock release and aggregates simultaneous mutation/release errors', async () => {
+    let releaseCalls = 0;
+    const retrying = issueMutationCoordinatorCapability({
+      acquire: async () => ({
+        release: async () => {
+          releaseCalls += 1;
+          if (releaseCalls === 1) throw new Error('first release failed');
+        },
+      }),
+    });
+    const request = {
+      lockKey: 'release-test', stateRoot: 'root', filePath: 'file', operation: 'state.commit' as const,
+    };
+    const lock = await retrying.acquire(request);
+    await expect(lock.release()).rejects.toThrow('first release failed');
+    await expect(lock.release()).resolves.toBeUndefined();
+    expect(releaseCalls).toBe(2);
+
+    const root = await makeRoot();
+    const failingRelease = issueMutationCoordinatorCapability({
+      acquire: async () => ({ release: async () => { throw new Error('release failed'); } }),
+    });
+    const repository = new StateRepository({ root, mutationCoordinator: failingRelease });
+    await expect(repository.commit(0, {
+      committedTarget: null,
+      preferredRegion: 'us',
+      health: 'healthy',
+      degradation: [],
+      activeTransactionId: null,
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof RepositoryError &&
+      error.code === 'IO_FAILED' &&
+      error.cause instanceof AggregateError &&
+      error.cause.errors.length === 2,
+    );
+  });
+
+  it('keeps internal capability issuers out of production imports and the public entrypoint', async () => {
+    const sourceRoot = join(process.cwd(), 'src');
+    const files: string[] = [];
+    const walk = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) await walk(path);
+        else if (entry.name.endsWith('.ts')) files.push(path);
+      }
+    };
+    await walk(sourceRoot);
+    const productionImporters: string[] = [];
+    const productionIssuerImporters: string[] = [];
+    for (const path of files) {
+      if (path.endsWith('.test.ts') || path.includes(`${join('state', 'test-support')}`)) continue;
+      const source = await readFile(path, 'utf8');
+      if (source.includes("./internal/capabilities.js") || source.includes("state/internal/capabilities")) {
+        productionImporters.push(path.slice(sourceRoot.length + 1).replaceAll('\\', '/'));
+      }
+      if (
+        !path.includes(join('state', 'internal')) &&
+        /issue(?:MutationCoordinator|VerifiedRestoreAuthority|NativeCompareDelete)Capability|issueNativeCompareDeleteFilesystem/u.test(source)
+      ) {
+        productionIssuerImporters.push(path.slice(sourceRoot.length + 1).replaceAll('\\', '/'));
+      }
+    }
+    expect(productionImporters).toEqual(['state/repository.ts']);
+    expect(productionIssuerImporters).toEqual([]);
+    expect(await readFile(join(sourceRoot, 'index.ts'), 'utf8')).not.toContain('state/internal');
+  });
+
+  it('grants queued test locks in FIFO order', async () => {
+    const coordinator = new InProcessTestMutationCoordinator();
+    const request = {
+      lockKey: 'fifo', stateRoot: 'root', filePath: 'file', operation: 'state.commit' as const,
+    };
+    const first = await coordinator.capability.acquire(request);
+    const order: number[] = [];
+    const secondPromise = coordinator.capability.acquire(request).then((lock) => { order.push(2); return lock; });
+    const thirdPromise = coordinator.capability.acquire(request).then((lock) => { order.push(3); return lock; });
+    await first.release();
+    const second = await secondPromise;
+    await second.release();
+    const third = await thirdPromise;
+    await third.release();
+    expect(order).toEqual([2, 3]);
   });
 
   it('centralizes fixed basenames and rejects non-literal roots', async () => {
@@ -580,7 +698,10 @@ describe('BackupRepository immutable snapshots', () => {
     ).rejects.toMatchObject({ code: 'RESTORE_VERIFIER_REQUIRED' });
 
     const verifier = new FakeVerifiedRestoreAuthority();
-    const repository = backupRepository(root, { verifiedRestoreAuthority: verifier.capability });
+    const repository = backupRepository(root, {
+      verifiedRestoreAuthority: verifier.capability,
+      filesystem: nativeCompareDeleteFilesystem(),
+    });
     await expect(
       repository.deleteAfterVerifiedRestore({ futureTime: '2999-01-01' } as unknown as VerifiedRestoreProof),
     ).rejects.toMatchObject({ code: 'RESTORE_PROOF_INVALID' });
@@ -623,6 +744,24 @@ describe('BackupRepository immutable snapshots', () => {
     ).rejects.toMatchObject({ code: 'RESTORE_PROOF_INVALID' });
   });
 
+  it('returns reconciliation when finalization fails and requires the same authority to finish', async () => {
+    const root = await makeRoot();
+    const { repository, verifier } = verifiedBackupRepository(root);
+    const snapshot = backupSnapshot();
+    await repository.create(snapshot);
+    verifier.finalizeFailures = 1;
+    const result = await repository.deleteAfterVerifiedRestore(verifier.issue(snapshot));
+    expect(result).toMatchObject({ committed: true, reservationState: 'reconcile_required' });
+    if (result.reservationState !== 'reconcile_required') throw new Error('expected reservation');
+    const withoutAuthority = backupRepository(root, { filesystem: nativeCompareDeleteFilesystem() });
+    await expect(
+      withoutAuthority.reconcileVerifiedRestoreDeletion(result.reservation),
+    ).rejects.toMatchObject({ code: 'RESTORE_VERIFIER_REQUIRED' });
+    await expect(repository.reconcileVerifiedRestoreDeletion(result.reservation)).resolves.toEqual({
+      kind: 'finalized',
+    });
+  });
+
   it('uses one backup lock identity for create and delete while auditing distinct operations', async () => {
     const root = await makeRoot();
     const coordinator = new InProcessTestMutationCoordinator();
@@ -631,6 +770,7 @@ describe('BackupRepository immutable snapshots', () => {
       root,
       mutationCoordinator: coordinator.capability,
       verifiedRestoreAuthority: verifier.capability,
+      filesystem: nativeCompareDeleteFilesystem(),
     });
     const snapshot = backupSnapshot();
     await repository.create(snapshot);
@@ -645,23 +785,35 @@ describe('BackupRepository immutable snapshots', () => {
   it('binds deletion to the accepted snapshot and never deletes a replacement', async () => {
     const root = await makeRoot();
     const verifier = new FakeVerifiedRestoreAuthority();
-    const repository = backupRepository(root, { verifiedRestoreAuthority: verifier.capability });
     const original = backupSnapshot();
     const replacement = {
       ...backupSnapshot(),
       snapshotId: '35d53e80-9b95-4c78-a8a8-6dc207341046',
       createdAt: '2026-08-11T12:00:01Z',
     };
+    let replaced = false;
+    const filesystem: DurableFileSystem = issueNativeCompareDeleteFilesystem({
+      ...nativeCompareDeleteFilesystem(),
+      compareAndDelete: async (path, expectedContents) => {
+        if (!replaced) {
+          replaced = true;
+          await writeFile(
+            path,
+            serializeCheckedEnvelope(createCheckedEnvelope('cc-fix-backup-v4', replacement)),
+            'utf8',
+          );
+        }
+        const actual = await nodeDurableFileSystem.readFile(path);
+        if (actual !== expectedContents) return 'mismatch';
+        await nodeDurableFileSystem.unlink(path);
+        return 'deleted';
+      },
+    });
+    const repository = backupRepository(root, {
+      verifiedRestoreAuthority: verifier.capability,
+      filesystem,
+    });
     await repository.create(original);
-    verifier.onReserve = async () => {
-      await writeCheckedFile({
-        stateRoot: root,
-        filePath: statePaths(root).backup,
-        schema: 'cc-fix-backup-v4',
-        payload: replacement as unknown as JsonValue,
-        validatePayload: (payload): payload is JsonValue => isBackupSnapshotV4(payload),
-      });
-    };
     await expect(
       repository.deleteAfterVerifiedRestore(verifier.issue(original)),
     ).rejects.toMatchObject({ code: 'DELETE_FAILED' });
@@ -674,7 +826,10 @@ describe('BackupRepository immutable snapshots', () => {
   it('rejects same-scope authority reentry promptly instead of recursively waiting', async () => {
     const root = await makeRoot();
     const verifier = new FakeVerifiedRestoreAuthority();
-    const repository = backupRepository(root, { verifiedRestoreAuthority: verifier.capability });
+    const repository = backupRepository(root, {
+      verifiedRestoreAuthority: verifier.capability,
+      filesystem: nativeCompareDeleteFilesystem(),
+    });
     const snapshot = backupSnapshot();
     await repository.create(snapshot);
     let reentryError: unknown;
@@ -710,6 +865,89 @@ describe('BackupRepository immutable snapshots', () => {
     ).rejects.toMatchObject({ code: 'DELETE_FAILED' });
     expect((await repository.read()).value).toEqual(snapshot);
     await expect(repository.deleteAfterVerifiedRestore(proof)).resolves.toMatchObject({
+      committed: true,
+      reservationState: 'finalized',
+    });
+  });
+
+  it('fails closed on Node deletion because check-to-unlink is not atomic', async () => {
+    const root = await makeRoot();
+    const verifier = new FakeVerifiedRestoreAuthority();
+    const repository = backupRepository(root, { verifiedRestoreAuthority: verifier.capability });
+    const snapshot = backupSnapshot();
+    await repository.create(snapshot);
+    const proof = verifier.issue(snapshot);
+    await expect(
+      repository.deleteAfterVerifiedRestore(proof),
+    ).rejects.toMatchObject({ code: 'DELETE_FAILED' });
+    await expect(repository.read()).resolves.toMatchObject({
+      kind: 'value', value: { snapshotId: snapshot.snapshotId },
+    });
+    const structuralSpoof: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      compareDeleteCapability: 'native-compare-delete',
+      compareAndDelete: async () => 'deleted',
+    };
+    const spoofedRepository = backupRepository(root, {
+      filesystem: structuralSpoof,
+      verifiedRestoreAuthority: verifier.capability,
+    });
+    await expect(spoofedRepository.deleteAfterVerifiedRestore(proof)).rejects.toMatchObject({
+      code: 'DELETE_FAILED',
+    });
+  });
+
+  it('exposes an abort-failed reservation, rejects cross-root reconciliation before read, then retries the same proof', async () => {
+    const rootA = await makeRoot();
+    const rootB = await makeRoot();
+    const snapshot = backupSnapshot();
+    let unlinkCalls = 0;
+    const faultFilesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      unlink: async (path) => {
+        unlinkCalls += 1;
+        if (unlinkCalls === 1) throw Object.assign(new Error('injected delete failure'), { code: 'EIO' });
+        await nodeDurableFileSystem.unlink(path);
+      },
+    };
+    const verifier = new FakeVerifiedRestoreAuthority();
+    verifier.abortFailures = 1;
+    const repositoryA = backupRepository(rootA, {
+      filesystem: nativeCompareDeleteFilesystem(faultFilesystem),
+      verifiedRestoreAuthority: verifier.capability,
+    });
+    await repositoryA.create(snapshot);
+    const proof = verifier.issue(snapshot);
+    let reservation: import('./repository.js').RestoreReservation | undefined;
+    try {
+      await repositoryA.deleteAfterVerifiedRestore(proof);
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'DELETE_FAILED', reservationState: 'reconcile_required' });
+      reservation = (error as { reservation?: import('./repository.js').RestoreReservation }).reservation;
+    }
+    expect(reservation).toBeDefined();
+
+    let crossRootReads = 0;
+    const crossRootFilesystem: DurableFileSystem = {
+      ...nativeCompareDeleteFilesystem(),
+      readFile: async (path) => {
+        crossRootReads += 1;
+        return nodeDurableFileSystem.readFile(path);
+      },
+    };
+    const repositoryB = backupRepository(rootB, {
+      filesystem: crossRootFilesystem,
+      verifiedRestoreAuthority: verifier.capability,
+    });
+    await expect(repositoryB.reconcileVerifiedRestoreDeletion(reservation!)).rejects.toMatchObject({
+      code: 'BACKUP_IDENTITY_MISMATCH',
+    });
+    expect(crossRootReads).toBe(0);
+
+    await expect(repositoryA.reconcileVerifiedRestoreDeletion(reservation!)).resolves.toEqual({
+      kind: 'preserved_retryable',
+    });
+    await expect(repositoryA.deleteAfterVerifiedRestore(proof)).resolves.toMatchObject({
       committed: true,
       reservationState: 'finalized',
     });
@@ -790,7 +1028,7 @@ describe('BackupRepository immutable snapshots', () => {
     await expect(repository.reconcileVerifiedRestoreDeletion(result.reservation)).resolves.toEqual({ kind: 'finalized' });
   });
 
-  it('reports a possibly committed deletion when final unlink deletes and then throws', async () => {
+  it('preserves the final generation when native compare-delete fails before commit', async () => {
     const root = await makeRoot();
     const snapshot = backupSnapshot();
     let unlinkCalls = 0;
@@ -798,35 +1036,17 @@ describe('BackupRepository immutable snapshots', () => {
       ...nodeDurableFileSystem,
       unlink: async (path) => {
         unlinkCalls += 1;
-        await nodeDurableFileSystem.unlink(path);
         if (unlinkCalls === 2) throw Object.assign(new Error('post-unlink failure'), { code: 'EIO' });
+        await nodeDurableFileSystem.unlink(path);
       },
     };
     const { repository, verifier } = verifiedBackupRepository(root, { filesystem });
     await repository.create(snapshot);
     const proof = verifier.issue(snapshot);
-    const result = await repository.deleteAfterVerifiedRestore(proof);
-    expect(result).toMatchObject({
-      committed: true,
-      possiblyDeleted: true,
-      directoryDurability: 'unsupported',
-      reservationState: 'reconcile_required',
+    await expect(repository.deleteAfterVerifiedRestore(proof)).rejects.toMatchObject({
+      code: 'DELETE_FAILED',
     });
-    await expect(repository.read()).resolves.toEqual({ kind: 'missing' });
-    if (result.reservationState !== 'reconcile_required') throw new Error('expected reservation');
-    await writeCheckedFile({
-      stateRoot: root,
-      filePath: statePaths(root).backup,
-      schema: 'cc-fix-backup-v4',
-      payload: snapshot as unknown as JsonValue,
-      validatePayload: (payload): payload is JsonValue => isBackupSnapshotV4(payload),
-    });
-    await expect(repository.reconcileVerifiedRestoreDeletion(result.reservation)).resolves.toEqual({
-      kind: 'preserved_retryable',
-    });
-    await expect(repository.deleteAfterVerifiedRestore(proof)).resolves.toMatchObject({
-      committed: true,
-    });
+    await expect(repository.read()).resolves.toMatchObject({ kind: 'value' });
   });
 
   it('fails closed on an unknown new backup schema even with a valid predecessor', async () => {

@@ -13,7 +13,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "node scripts/run-coverage.mjs",
     "test:integration": "node scripts/not-implemented-stage.mjs test:integration",
     "test:gui": "node scripts/not-implemented-stage.mjs test:gui",
     "test:watch": "vitest",

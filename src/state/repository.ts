@@ -74,6 +74,14 @@ export class RepositoryError extends Error {
   }
 }
 
+export class RestoreReconciliationRequiredError extends RepositoryError {
+  readonly reservationState = 'reconcile_required' as const;
+  constructor(readonly reservation: RestoreReservation, message: string, options?: ErrorOptions) {
+    super('DELETE_FAILED', message, options);
+    this.name = 'RestoreReconciliationRequiredError';
+  }
+}
+
 export type StateMutation = {
   committedTarget: ProtectionTarget | null;
   preferredRegion: RegionCode;
@@ -260,16 +268,30 @@ abstract class RepositoryBase {
         }
         throw new RepositoryError('LOCK_REQUIRED', 'Mutation lock acquisition failed', { cause: error });
       }
+      let result: T | undefined;
+      let actionError: unknown;
       try {
         const held = new Set(heldMutationScopes.getStore() ?? []);
         held.add(request.lockKey);
-        return await heldMutationScopes.run(
+        result = await heldMutationScopes.run(
           held,
           () => withProcessMutationLock(request.lockKey, () => action(lock)),
         );
-      } finally {
-        await lock.release();
+      } catch (error) {
+        actionError = error;
       }
+      try {
+        await lock.release();
+      } catch (releaseError) {
+        if (actionError !== undefined) {
+          throw new RepositoryError('IO_FAILED', 'Mutation and lock release both failed', {
+            cause: new AggregateError([actionError, releaseError]),
+          });
+        }
+        throw new RepositoryError('IO_FAILED', 'Mutation lock release failed', { cause: releaseError });
+      }
+      if (actionError !== undefined) throw actionError;
+      return result as T;
     })();
   }
 }
@@ -506,7 +528,7 @@ export class BackupRepository extends RepositoryBase {
         try {
           await verifiedRestoreAuthority.abort(lock, reservation);
         } catch (abortError) {
-          throw new RepositoryError('DELETE_FAILED', 'Deletion failed and reservation abort failed', {
+          throw new RestoreReconciliationRequiredError(reservation, 'Deletion failed and reservation abort requires reconciliation', {
             cause: new AggregateError([error, abortError]),
           });
         }
@@ -543,6 +565,12 @@ export class BackupRepository extends RepositoryBase {
     }
     if (!isRestoreReservation(reservation)) {
       throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore reservation is invalid');
+    }
+    if (reservation.lockKey !== scopeLockKey(this.root, this.paths.backup)) {
+      throw new RepositoryError(
+        'BACKUP_IDENTITY_MISMATCH',
+        'Restore reservation belongs to a different backup lock identity',
+      );
     }
     const authority = this.verifiedRestoreAuthority;
     return this.mutate('backup.reconcile_delete', this.paths.backup, async (lock) => {
