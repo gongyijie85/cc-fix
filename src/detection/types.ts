@@ -61,7 +61,7 @@ export type CheckResponse = {
   recommendations: string[];
 };
 
-export type PersistState = {
+export type LegacyPersistState = {
   enabled: boolean;
   region: AccessRegionCode;
   envVars: Record<string, string | null>;

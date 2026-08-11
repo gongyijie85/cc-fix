@@ -41,18 +41,18 @@ export class ProtectionRequestError extends Error {
   }
 }
 
-function parseProtectionLevel(level: unknown): ProtectedMode {
+function parseProtectionLevel(level: unknown, deep: boolean): ProtectedMode {
   if (level === "standard" || level === "deep") {
     return level;
   }
 
-  throw new ProtectionRequestError("INVALID_PROTECTION_LEVEL", level, false);
+  throw new ProtectionRequestError("INVALID_PROTECTION_LEVEL", level, deep);
 }
 
 export function resolveProtectionRequest(request: ProtectionRequest): ProtectionTarget {
   const deep = request.deep === true;
   const hasExplicitLevel = request.level !== undefined;
-  const explicitLevel = hasExplicitLevel ? parseProtectionLevel(request.level) : undefined;
+  const explicitLevel = hasExplicitLevel ? parseProtectionLevel(request.level, deep) : undefined;
 
   if (deep && explicitLevel === "standard") {
     throw new ProtectionRequestError("CONFLICTING_PROTECTION_LEVEL", request.level, true);

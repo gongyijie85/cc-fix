@@ -10,6 +10,7 @@ import { getPersistStatus } from "../platform/windows.js";
 import { persistOnFlow, persistOffFlow } from "../fix/flow.js";
 import { recordFixSummary, recordCheck, readHistory } from "../fix/history.js";
 import type { StreamEvent } from "../events/types.js";
+import { RegionResolutionError } from "../domain/region.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
@@ -92,12 +93,12 @@ function checkEventConsumer(e: StreamEvent) {
 // ── 触发端点处理 ──
 
 async function handleFixOn(res: http.ServerResponse, url: URL) {
+  const requestedRegion = url.searchParams.get("region");
+  const target = getTargetRegion(requestedRegion === null ? DEFAULT_REGION : requestedRegion);
+
   if (!tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
-  // 非法/缺省 region 由 getTargetRegion 回落到 DEFAULT_REGION（与 CLI 同一事实源）
-  const regionCode = url.searchParams.get("region") || DEFAULT_REGION;
-  const target = getTargetRegion(regionCode);
   try {
     await persistOnFlow(
       { regionCode: target.code, targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
@@ -198,7 +199,19 @@ export function startGuiServer(port = 3456): Promise<http.Server> {
         res.end("Not found");
       }
     } catch (err) {
+      if (err instanceof RegionResolutionError) {
+        sendJson(res, {
+          error: {
+            code: err.code,
+            source: err.source,
+            value: err.value,
+            validRegions: err.validRegions,
+          },
+        }, 400);
+        return;
+      }
       console.error("GUI 错误:", err);
+      if (res.headersSent || res.writableEnded) return;
       sendJson(res, { error: String(err) }, 500);
     }
   });

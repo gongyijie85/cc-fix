@@ -114,4 +114,25 @@ describe("resolveProtectionRequest", () => {
       });
     },
   );
+
+  it("preserves deep=true on an invalid-level error", () => {
+    let error: unknown;
+    try {
+      resolveProtectionRequest({
+        currentMode: "daily",
+        resolvedRegion: resolvedRegion("sg"),
+        level: "invalid",
+        deep: true,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ProtectionRequestError);
+    expect(error).toMatchObject({
+      code: "INVALID_PROTECTION_LEVEL",
+      level: "invalid",
+      deep: true,
+    });
+  });
 });
