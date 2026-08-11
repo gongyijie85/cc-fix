@@ -13,7 +13,16 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "node scripts/not-implemented-stage.mjs test:integration",
+    "test:gui": "node scripts/not-implemented-stage.mjs test:gui",
     "test:watch": "vitest",
+    "build:core": "node scripts/not-implemented-stage.mjs build:core",
+    "build:desktop": "node scripts/not-implemented-stage.mjs build:desktop",
+    "build:installer": "node scripts/not-implemented-stage.mjs build:installer",
+    "verify:payload": "node scripts/not-implemented-stage.mjs verify:payload",
+    "test:windows": "node scripts/not-implemented-stage.mjs test:windows",
+    "release:bundle": "node scripts/not-implemented-stage.mjs release:bundle",
     "check:version": "node scripts/check-version-consistency.mjs",
     "check:toolchain": "node scripts/validate-toolchain-lock.mjs",
     "release:validate": "pnpm check:version && pnpm check:toolchain"
@@ -56,6 +65,7 @@
     "ora": "^8.1.0"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.0",
     "typescript": "^5.6.0",
     "tsup": "^8.3.0",
     "vitest": "^2.1.0",
