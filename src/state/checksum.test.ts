@@ -96,6 +96,30 @@ describe('checked envelope', () => {
     expect(canonicalJson(value)).toBe('{"region":"us"}');
   });
 
+  it('rejects sparse arrays, explicit undefined entries, and non-index array properties', () => {
+    const sparse = new Array(2) as unknown[];
+    sparse[1] = 'value';
+    expect(() => canonicalJson(sparse)).toThrowError(
+      expect.objectContaining({ code: 'UNCANONICAL_VALUE' }),
+    );
+    expect(() => canonicalJson([undefined])).toThrowError(
+      expect.objectContaining({ code: 'UNCANONICAL_VALUE' }),
+    );
+
+    const decorated = ['value'] as string[] & { metadata?: string };
+    decorated.metadata = 'not-json-array-data';
+    expect(() => canonicalJson(decorated)).toThrowError(
+      expect.objectContaining({ code: 'UNCANONICAL_VALUE' }),
+    );
+  });
+
+  it('normalizes negative zero to canonical JSON zero', () => {
+    expect(canonicalJson(-0)).toBe('0');
+    expect(createCheckedEnvelope('number-v1', -0).checksum).toBe(
+      createCheckedEnvelope('number-v1', 0).checksum,
+    );
+  });
+
   it('rejects an empty schema, a mismatched schema, and a malformed checksum', () => {
     expect(() => createCheckedEnvelope('', { revision: 1 })).toThrowError(
       expect.objectContaining({ code: 'INVALID_ENVELOPE' }),

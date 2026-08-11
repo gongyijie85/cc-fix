@@ -36,7 +36,7 @@ function canonicalize(value: unknown, ancestors: Set<object>): string {
     if (!Number.isFinite(value)) {
       throw new CheckedEnvelopeError('UNCANONICAL_VALUE', 'Non-finite numbers are not JSON values');
     }
-    return JSON.stringify(value);
+    return Object.is(value, -0) ? '0' : JSON.stringify(value);
   }
   if (typeof value !== 'object') {
     throw new CheckedEnvelopeError(
@@ -51,7 +51,27 @@ function canonicalize(value: unknown, ancestors: Set<object>): string {
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      return `[${value.map((item) => canonicalize(item, ancestors)).join(',')}]`;
+      const ownKeys = Reflect.ownKeys(value);
+      const hasOnlyArrayIndices = ownKeys.every((key) => {
+        if (key === 'length') return true;
+        if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/u.test(key)) return false;
+        const index = Number(key);
+        return Number.isSafeInteger(index) && index >= 0 && index < value.length;
+      });
+      if (!hasOnlyArrayIndices) {
+        throw new CheckedEnvelopeError(
+          'UNCANONICAL_VALUE',
+          'JSON arrays cannot carry non-index own properties',
+        );
+      }
+      const items: string[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.prototype.hasOwnProperty.call(value, index)) {
+          throw new CheckedEnvelopeError('UNCANONICAL_VALUE', 'Sparse JSON arrays are not supported');
+        }
+        items.push(canonicalize(value[index], ancestors));
+      }
+      return `[${items.join(',')}]`;
     }
 
     const prototype = Object.getPrototypeOf(value) as object | null;

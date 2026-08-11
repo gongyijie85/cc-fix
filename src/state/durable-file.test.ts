@@ -8,6 +8,7 @@ import {
   type DurableFileSystem,
   nodeDurableFileSystem,
   readCheckedFile,
+  validateWindowsLiteralPathSyntax,
   writeCheckedFile,
 } from './durable-file.js';
 
@@ -29,6 +30,15 @@ const options = (root: string, filesystem?: DurableFileSystem) => ({
   schema: 'test-state-v1',
   filesystem,
 });
+
+function isRevisionPayload(payload: unknown): payload is { revision: number } {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    !Array.isArray(payload) &&
+    typeof (payload as { revision?: unknown }).revision === 'number'
+  );
+}
 
 describe('durable checked file reads', () => {
   it('reports a missing file distinctly from corruption', async () => {
@@ -124,6 +134,20 @@ describe('durable checked file reads', () => {
     ).rejects.toMatchObject({ code: 'CORRUPT' });
   });
 
+  it('treats a throwing read validator as corruption rather than an I/O failure', async () => {
+    const root = await makeRoot();
+    await writeCheckedFile({ ...options(root), payload: { revision: 1 } });
+
+    await expect(
+      readCheckedFile({
+        ...options(root),
+        validatePayload: (): never => {
+          throw new Error('validator bug');
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'CORRUPT' });
+  });
+
   it('classifies a non-missing filesystem read failure as IO', async () => {
     const root = await makeRoot();
     const filesystem: DurableFileSystem = {
@@ -171,14 +195,97 @@ function faultFilesystem(operation: FaultOperation, occurrence = 1): DurableFile
       hit('replace');
       await nodeDurableFileSystem.replace(source, destination);
     },
-    syncDirectory: async (directory) => {
-      hit('directorySync');
-      await nodeDurableFileSystem.syncDirectory(directory);
+    openDirectory: async (directory) => {
+      const handle = await nodeDurableFileSystem.openDirectory(directory);
+      return {
+        sync: async () => {
+          hit('directorySync');
+          await handle.sync();
+        },
+        close: () => handle.close(),
+      };
     },
   };
 }
 
 describe('durable checked file writes', () => {
+  it('rejects a schema-invalid new payload before opening a temporary file', async () => {
+    const root = await makeRoot();
+    let openCalls = 0;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      open: async (path, flags) => {
+        openCalls += 1;
+        return nodeDurableFileSystem.open(path, flags);
+      },
+    };
+
+    await expect(
+      writeCheckedFile({
+        ...options(root, filesystem),
+        payload: { revision: 'invalid' },
+        validatePayload: isRevisionPayload,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_PAYLOAD' });
+    expect(openCalls).toBe(0);
+  });
+
+  it('wraps a throwing write validator as INVALID_PAYLOAD before any temp open', async () => {
+    const root = await makeRoot();
+    let openCalls = 0;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      open: async (path, flags) => {
+        openCalls += 1;
+        return nodeDurableFileSystem.open(path, flags);
+      },
+    };
+
+    await expect(
+      writeCheckedFile({
+        ...options(root, filesystem),
+        payload: { revision: 1 },
+        validatePayload: () => {
+          throw new Error('validator bug');
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_PAYLOAD' });
+    expect(openCalls).toBe(0);
+  });
+
+  it('does not rotate a schema-invalid current over the last valid predecessor', async () => {
+    const root = await makeRoot();
+    await writeCheckedFile({
+      ...options(root),
+      payload: { revision: 1 },
+      validatePayload: isRevisionPayload,
+    });
+    await writeCheckedFile({
+      ...options(root),
+      payload: { revision: 2 },
+      validatePayload: isRevisionPayload,
+    });
+    await writeFile(
+      join(root, 'state.json'),
+      JSON.stringify(createCheckedEnvelope('test-state-v1', { revision: 'invalid' })),
+      'utf8',
+    );
+
+    await writeCheckedFile({
+      ...options(root),
+      payload: { revision: 3 },
+      validatePayload: isRevisionPayload,
+    });
+
+    await expect(
+      readCheckedFile({
+        ...options(root),
+        filePath: join(root, 'state.json.prev'),
+        validatePayload: isRevisionPayload,
+      }),
+    ).resolves.toMatchObject({ payload: { revision: 1 } });
+  });
+
   it.each<FaultOperation>(['open', 'write', 'fileSync', 'replace', 'directorySync'])(
     'leaves no invalid generation when the first write fails at %s',
     async (operation) => {
@@ -211,6 +318,240 @@ describe('durable checked file writes', () => {
     await expect(
       readCheckedFile({ ...options(root), filePath: join(root, 'state.json.prev') }),
     ).resolves.toMatchObject({ payload: { revision: 1 } });
+  });
+
+  it('reports unsupported directory durability instead of claiming a full durable write', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      directorySyncCapability: 'unsupported',
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).resolves.toMatchObject({
+      directoryDurability: 'unsupported',
+      boundarySafety: 'identity-checked',
+    });
+  });
+
+  it('does not downgrade a directory open failure to unsupported', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      openDirectory: async () => {
+        throw Object.assign(new Error('directory open denied'), { code: 'EACCES' });
+      },
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: true });
+  });
+
+  it('does not swallow a directory close failure', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      openDirectory: async (directory) => {
+        const handle = await nodeDurableFileSystem.openDirectory(directory);
+        return {
+          sync: () => handle.sync(),
+          close: async () => {
+            await handle.close();
+            throw Object.assign(new Error('directory close failed'), { code: 'EIO' });
+          },
+        };
+      },
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: true });
+  });
+
+  it('does not downgrade an unsupported-looking sync error in supported mode', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      directorySyncCapability: 'supported',
+      openDirectory: async () => ({
+        sync: async () => {
+          throw Object.assign(new Error('unexpected EINVAL'), { code: 'EINVAL' });
+        },
+        close: async () => undefined,
+      }),
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: true });
+  });
+
+  it('reports a recognized directory-sync capability probe as unsupported', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      directorySyncCapability: 'probe',
+      openDirectory: async () => ({
+        sync: async () => {
+          throw Object.assign(new Error('directory sync unsupported'), { code: 'EINVAL' });
+        },
+        close: async () => undefined,
+      }),
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).resolves.toMatchObject({ directoryDurability: 'unsupported' });
+  });
+
+  it('preserves both directory sync and close failures', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      directorySyncCapability: 'supported',
+      openDirectory: async () => ({
+        sync: async () => {
+          throw new Error('directory sync failed');
+        },
+        close: async () => {
+          throw new Error('directory close failed');
+        },
+      }),
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({
+      code: 'WRITE_FAILED',
+      possiblyCommitted: true,
+      cause: expect.any(AggregateError),
+    });
+  });
+
+  it('conservatively reports possibly committed when replace succeeds and then throws', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      replace: async (source, destination) => {
+        await nodeDurableFileSystem.replace(source, destination);
+        throw Object.assign(new Error('post-commit replace failure'), { code: 'EIO' });
+      },
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: true });
+    await expect(readCheckedFile(options(root))).resolves.toMatchObject({
+      payload: { revision: 1 },
+    });
+  });
+
+  it('removes its partial temp after a partial write failure without changing current', async () => {
+    const root = await makeRoot();
+    await writeCheckedFile({ ...options(root), payload: { revision: 1 } });
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      open: async (path, flags) => {
+        const handle = await nodeDurableFileSystem.open(path, flags);
+        return {
+          ...handle,
+          writeFile: async (data) => {
+            await handle.writeFile(data.slice(0, 8));
+            throw Object.assign(new Error('partial write'), { code: 'EIO' });
+          },
+        };
+      },
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 2 } }),
+    ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: false });
+    await expect(readCheckedFile(options(root))).resolves.toMatchObject({
+      payload: { revision: 1 },
+    });
+    expect((await readdir(root)).filter((name) => name.includes('.cc-fix-tmp-'))).toEqual([]);
+  });
+
+  it('preserves both the primary operation error and a close error', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      open: async (path, flags) => {
+        const handle = await nodeDurableFileSystem.open(path, flags);
+        return {
+          ...handle,
+          writeFile: async () => {
+            throw new Error('primary write failure');
+          },
+          close: async () => {
+            await handle.close();
+            throw new Error('secondary close failure');
+          },
+        };
+      },
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({
+      code: 'WRITE_FAILED',
+      cause: expect.any(AggregateError),
+    });
+  });
+
+  it('fails closed when the root identity changes between validation and temp open', async () => {
+    const root = await makeRoot();
+    let identityChanged = false;
+    let replaceCalls = 0;
+    let unlinkCalls = 0;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      lstat: async (path) => {
+        const stat = await nodeDurableFileSystem.lstat(path);
+        if (identityChanged && resolve(path) === resolve(root)) {
+          return {
+            isDirectory: () => stat.isDirectory(),
+            isSymbolicLink: () => stat.isSymbolicLink(),
+            dev: stat.dev,
+            ino: BigInt(stat.ino ?? 0) + 1n,
+          };
+        }
+        return stat;
+      },
+      open: async (path, flags) => {
+        const handle = await nodeDurableFileSystem.open(path, flags);
+        identityChanged = true;
+        return handle;
+      },
+      replace: async (source, destination) => {
+        replaceCalls += 1;
+        await nodeDurableFileSystem.replace(source, destination);
+      },
+      unlink: async (path) => {
+        unlinkCalls += 1;
+        await nodeDurableFileSystem.unlink(path);
+      },
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: false });
+    expect(replaceCalls).toBe(0);
+    expect(unlinkCalls).toBe(0);
+  });
+
+  it('fails closed when native no-follow safety is required from the Node adapter', async () => {
+    const root = await makeRoot();
+
+    await expect(
+      writeCheckedFile({
+        ...options(root),
+        payload: { revision: 1 },
+        requiredBoundarySafety: 'native-no-follow',
+      }),
+    ).rejects.toMatchObject({ code: 'BOUNDARY_UNSUPPORTED' });
   });
 
   it.each([
@@ -265,6 +606,34 @@ describe('durable checked file writes', () => {
 });
 
 describe('durable checked file path confinement', () => {
+  it.each([
+    '\\\\?\\C:\\state\\state.json',
+    '\\\\.\\C:\\state\\state.json',
+    '\\\\server\\share\\state.json',
+    'C:\\state\\state.json:stream',
+    'C:\\state\\trailing.\\state.json',
+    'C:\\state\\trailing \\state.json',
+    'C:\\state\\\\state.json',
+    'C:\\state\\.\\state.json',
+    'C:\\state\\CON.json',
+    'C:\\state\\LPT1',
+    'C:\\state\\CONOUT$',
+    'C:\\state\\bad?name\\state.json',
+  ])('rejects unsafe Windows literal path syntax: %s', (path) => {
+    expect(() => validateWindowsLiteralPathSyntax(path)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_PATH' }),
+    );
+  });
+
+  it('accepts a literal local-drive Windows state path with either separator', () => {
+    expect(() =>
+      validateWindowsLiteralPathSyntax('C:\\Users\\Person\\AppData\\Roaming\\cc-fix\\state.json'),
+    ).not.toThrow();
+    expect(() =>
+      validateWindowsLiteralPathSyntax('C:/Users/Person/AppData/Roaming/cc-fix/state.json'),
+    ).not.toThrow();
+  });
+
   it.each([
     ['relative root', 'state-root', resolve('state-root', 'state.json')],
     ['relative target', resolve('state-root'), 'state.json'],
@@ -338,6 +707,34 @@ describe('durable checked file path confinement', () => {
     );
 
     await expect(readCheckedFile(options(root))).rejects.toMatchObject({
+      code: 'REPARSE_BOUNDARY',
+    });
+  });
+
+  it('fails closed when boundary identity changes during a missing-file read', async () => {
+    const root = await makeRoot();
+    let identityChanged = false;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      lstat: async (path) => {
+        const stat = await nodeDurableFileSystem.lstat(path);
+        if (identityChanged && resolve(path) === resolve(root)) {
+          return {
+            isDirectory: () => stat.isDirectory(),
+            isSymbolicLink: () => stat.isSymbolicLink(),
+            dev: stat.dev,
+            ino: BigInt(stat.ino ?? 0) + 1n,
+          };
+        }
+        return stat;
+      },
+      readFile: async (path) => {
+        identityChanged = true;
+        return nodeDurableFileSystem.readFile(path);
+      },
+    };
+
+    await expect(readCheckedFile(options(root, filesystem))).rejects.toMatchObject({
       code: 'REPARSE_BOUNDARY',
     });
   });

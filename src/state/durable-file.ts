@@ -23,20 +23,33 @@ export interface DurableFileHandle {
   close(): Promise<void>;
 }
 
+export interface DurableDirectoryHandle {
+  sync(): Promise<void>;
+  close(): Promise<void>;
+}
+
 export interface DurableFileStat {
   isDirectory(): boolean;
   isSymbolicLink(): boolean;
+  dev?: number | bigint;
+  ino?: number | bigint;
 }
 
+export type DirectorySyncCapability = 'supported' | 'probe' | 'unsupported';
+export type BoundarySafetyCapability = 'identity-checked' | 'native-no-follow';
+export type DirectoryDurability = 'durable' | 'unsupported';
+
 export interface DurableFileSystem {
+  directorySyncCapability: DirectorySyncCapability;
+  boundarySafety: BoundarySafetyCapability;
   open(path: string, flags: string): Promise<DurableFileHandle>;
+  openDirectory(path: string): Promise<DurableDirectoryHandle>;
   readFile(path: string): Promise<string>;
   lstat(path: string): Promise<DurableFileStat>;
   realpath(path: string): Promise<string>;
   /** Atomically replaces destination with a same-directory source when the platform supports it. */
   replace(source: string, destination: string): Promise<void>;
   unlink(path: string): Promise<void>;
-  syncDirectory(directory: string): Promise<void>;
 }
 
 function asDurableHandle(handle: FileHandle): DurableFileHandle {
@@ -50,35 +63,27 @@ function asDurableHandle(handle: FileHandle): DurableFileHandle {
 const unsupportedDirectorySyncCodes = new Set(['EBADF', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EPERM']);
 
 export const nodeDurableFileSystem: DurableFileSystem = {
+  directorySyncCapability: process.platform === 'win32' ? 'probe' : 'supported',
+  // Node cannot make traversal checks and the later open/rename one indivisible operation.
+  // T22's native helper must provide native-no-follow for an adversarial same-user race.
+  boundarySafety: 'identity-checked',
   open: async (path, flags) => asDurableHandle(await open(path, flags)),
+  openDirectory: async (path) => {
+    const handle = await open(path, 'r');
+    return { sync: () => handle.sync(), close: () => handle.close() };
+  },
   readFile: (path) => readFile(path, 'utf8'),
   lstat,
   realpath,
   replace: rename,
   unlink,
-  syncDirectory: async (directory) => {
-    let handle: FileHandle | undefined;
-    try {
-      handle = await open(directory, 'r');
-      await handle.sync();
-    } catch (error) {
-      if (
-        process.platform === 'win32' &&
-        isNodeError(error) &&
-        unsupportedDirectorySyncCodes.has(error.code)
-      ) {
-        return;
-      }
-      throw error;
-    } finally {
-      await handle?.close();
-    }
-  },
 };
 
 export type DurableFileErrorCode =
   | 'INVALID_PATH'
   | 'REPARSE_BOUNDARY'
+  | 'BOUNDARY_UNSUPPORTED'
+  | 'INVALID_PAYLOAD'
   | 'CORRUPT'
   | 'BOTH_INVALID'
   | 'IO'
@@ -105,10 +110,19 @@ interface CheckedFileOptions {
   filePath: string;
   schema: string;
   filesystem?: DurableFileSystem;
+  requiredBoundarySafety?: BoundarySafetyCapability;
 }
 
 export interface WriteCheckedFileOptions<T extends JsonValue> extends CheckedFileOptions {
   payload: T;
+  validatePayload?: (payload: JsonValue) => boolean;
+}
+
+export interface DurableWriteResult {
+  /** `unsupported` means file sync and replace completed, but parent-directory flush was unavailable. */
+  directoryDurability: DirectoryDurability;
+  /** Node provides detectable identity-race checks, not an atomic native no-follow guarantee. */
+  boundarySafety: BoundarySafetyCapability;
 }
 
 export type CheckedFileReadResult<T extends JsonValue> =
@@ -135,6 +149,15 @@ type GenerationRead<T extends JsonValue> =
   | { kind: 'valid'; payload: T }
   | GenerationFailure;
 
+interface BoundarySnapshot {
+  rootPath: string;
+  parentPath: string;
+  rootRealPath: string;
+  parentRealPath: string;
+  rootIdentity: string;
+  parentIdentity: string;
+}
+
 function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string';
 }
@@ -143,8 +166,98 @@ function isMissing(error: unknown): boolean {
   return isNodeError(error) && error.code === 'ENOENT';
 }
 
+function requireBoundaryCapability(
+  required: BoundarySafetyCapability | undefined,
+  filesystem: DurableFileSystem,
+): void {
+  if (required === 'native-no-follow' && filesystem.boundarySafety !== 'native-no-follow') {
+    throw new DurableFileError(
+      'BOUNDARY_UNSUPPORTED',
+      'The filesystem adapter cannot provide native no-follow boundary safety',
+    );
+  }
+}
+
+async function syncDirectoryDurably(
+  directory: string,
+  filesystem: DurableFileSystem,
+): Promise<DirectoryDurability> {
+  if (filesystem.directorySyncCapability === 'unsupported') return 'unsupported';
+
+  const handle = await filesystem.openDirectory(directory);
+  let primaryError: unknown;
+  let probeError: unknown;
+  let result: DirectoryDurability = 'durable';
+  try {
+    await handle.sync();
+  } catch (error) {
+    if (
+      filesystem.directorySyncCapability === 'probe' &&
+      isNodeError(error) &&
+      unsupportedDirectorySyncCodes.has(error.code)
+    ) {
+      probeError = error;
+      result = 'unsupported';
+    } else {
+      primaryError = error;
+    }
+  }
+
+  try {
+    await handle.close();
+  } catch (closeError) {
+    const precedingError = primaryError ?? probeError;
+    if (precedingError !== undefined) {
+      throw new AggregateError(
+        [precedingError, closeError],
+        'Directory sync and directory close both failed',
+      );
+    }
+    throw closeError;
+  }
+  if (primaryError !== undefined) throw primaryError;
+  return result;
+}
+
 function hasParentSegment(path: string): boolean {
   return path.split(/[\\/]+/u).some((segment) => segment === '..');
+}
+
+const windowsReservedAlias =
+  /^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?$/iu;
+
+/** Validates Win32 literal-path syntax without resolving or touching the filesystem. */
+export function validateWindowsLiteralPathSyntax(path: string): void {
+  if (
+    !/^[A-Za-z]:[\\/]/u.test(path) ||
+    /^[\\/]{2}/u.test(path) ||
+    path.includes('\0') ||
+    path.slice(2).includes(':')
+  ) {
+    throw new DurableFileError(
+      'INVALID_PATH',
+      'Windows state paths must use a local drive and cannot use device, UNC, or ADS syntax',
+    );
+  }
+
+  const segments = path.slice(3).split(/[\\/]/u);
+  if (
+    segments.length === 0 ||
+    segments.some(
+      (segment) =>
+        segment.length === 0 ||
+        segment === '.' ||
+        segment === '..' ||
+        /[. ]$/u.test(segment) ||
+        /[<>"|?*\u0000-\u001f]/u.test(segment) ||
+        windowsReservedAlias.test(segment),
+    )
+  ) {
+    throw new DurableFileError(
+      'INVALID_PATH',
+      'Windows state paths cannot contain empty, alias, reserved, or trailing-dot/space segments',
+    );
+  }
 }
 
 function normalizedForComparison(path: string): string {
@@ -159,11 +272,49 @@ function isStrictDescendant(root: string, target: string): boolean {
   return normalizedTarget.startsWith(prefix);
 }
 
+function stableIdentity(stat: DurableFileStat): string {
+  if (stat.dev === undefined || stat.ino === undefined) {
+    throw new DurableFileError(
+      'BOUNDARY_UNSUPPORTED',
+      'The filesystem adapter does not expose stable directory identity',
+    );
+  }
+  return `${String(stat.dev)}:${String(stat.ino)}`;
+}
+
+async function assertBoundaryStable(
+  snapshot: BoundarySnapshot,
+  filesystem: DurableFileSystem,
+): Promise<void> {
+  for (const [path, expectedRealPath, expectedIdentity] of [
+    [snapshot.rootPath, snapshot.rootRealPath, snapshot.rootIdentity],
+    [snapshot.parentPath, snapshot.parentRealPath, snapshot.parentIdentity],
+  ] as const) {
+    const stat = await filesystem.lstat(path);
+    const realPath = await filesystem.realpath(path);
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isDirectory() ||
+      normalizedForComparison(realPath) !== normalizedForComparison(expectedRealPath) ||
+      stableIdentity(stat) !== expectedIdentity
+    ) {
+      throw new DurableFileError(
+        'REPARSE_BOUNDARY',
+        `State boundary identity changed during the operation: ${path}`,
+      );
+    }
+  }
+}
+
 async function validateSafeTarget(
   stateRoot: string,
   filePath: string,
   filesystem: DurableFileSystem,
-): Promise<void> {
+): Promise<BoundarySnapshot> {
+  if (process.platform === 'win32') {
+    validateWindowsLiteralPathSyntax(stateRoot);
+    validateWindowsLiteralPathSyntax(filePath);
+  }
   if (
     !isAbsolute(stateRoot) ||
     !isAbsolute(filePath) ||
@@ -216,6 +367,33 @@ async function validateSafeTarget(
         throw error;
       }
     }
+
+    const parentPath = dirname(absoluteTarget);
+    const parentStat = await filesystem.lstat(parentPath);
+    if (parentStat.isSymbolicLink()) {
+      throw new DurableFileError('REPARSE_BOUNDARY', 'The state-file parent is a reparse point');
+    }
+    if (!parentStat.isDirectory()) {
+      throw new DurableFileError('INVALID_PATH', 'The state-file parent is not a directory');
+    }
+    const realParent = await filesystem.realpath(parentPath);
+    if (
+      normalizedForComparison(realParent) !== normalizedForComparison(realRoot) &&
+      !isStrictDescendant(realRoot, realParent)
+    ) {
+      throw new DurableFileError(
+        'REPARSE_BOUNDARY',
+        'The state-file parent resolves outside the supplied state root',
+      );
+    }
+    return {
+      rootPath: absoluteRoot,
+      parentPath,
+      rootRealPath: realRoot,
+      parentRealPath: realParent,
+      rootIdentity: stableIdentity(rootStat),
+      parentIdentity: stableIdentity(parentStat),
+    };
   } catch (error) {
     if (error instanceof DurableFileError) throw error;
     throw new DurableFileError('IO', 'Unable to validate the state path boundary', { cause: error });
@@ -226,41 +404,60 @@ async function readGeneration<T extends JsonValue>(
   path: string,
   schema: string,
   filesystem: DurableFileSystem,
-  validatePayload?: (payload: JsonValue) => payload is T,
+  boundary: BoundarySnapshot,
+  validatePayload?: (payload: JsonValue) => boolean,
 ): Promise<GenerationRead<T>> {
-  let serialized: string;
+  await assertBoundaryStable(boundary, filesystem);
+  let serialized: string | undefined;
+  let readError: unknown;
   try {
     serialized = await filesystem.readFile(path);
   } catch (error) {
-    return isMissing(error)
-      ? { kind: 'missing', path, cause: error }
-      : { kind: 'io', path, cause: error };
+    readError = error;
+  }
+  await assertBoundaryStable(boundary, filesystem);
+  if (readError !== undefined) {
+    return isMissing(readError)
+      ? { kind: 'missing', path, cause: readError }
+      : { kind: 'io', path, cause: readError };
+  }
+  if (serialized === undefined) {
+    return { kind: 'io', path, cause: new Error('Filesystem returned no checked-file bytes') };
   }
 
+  let envelope;
   try {
-    const envelope = decodeCheckedEnvelope<T>(serialized, schema);
-    if (validatePayload !== undefined && !validatePayload(envelope.payload)) {
-      return { kind: 'corrupt', path, cause: new Error('Payload schema validation failed') };
-    }
-    return { kind: 'valid', payload: envelope.payload };
+    envelope = decodeCheckedEnvelope<T>(serialized, schema);
   } catch (error) {
     if (error instanceof CheckedEnvelopeError) {
       return { kind: 'corrupt', path, cause: error };
     }
     return { kind: 'io', path, cause: error };
   }
+  if (validatePayload !== undefined) {
+    try {
+      if (!validatePayload(envelope.payload)) {
+        return { kind: 'corrupt', path, cause: new Error('Payload schema validation failed') };
+      }
+    } catch (error) {
+      return { kind: 'corrupt', path, cause: error };
+    }
+  }
+  return { kind: 'valid', payload: envelope.payload };
 }
 
 export async function readCheckedFile<T extends JsonValue = JsonValue>(
   options: ReadCheckedFileOptions<T>,
 ): Promise<CheckedFileReadResult<T>> {
   const filesystem = options.filesystem ?? nodeDurableFileSystem;
-  await validateSafeTarget(options.stateRoot, options.filePath, filesystem);
+  requireBoundaryCapability(options.requiredBoundarySafety, filesystem);
+  const currentBoundary = await validateSafeTarget(options.stateRoot, options.filePath, filesystem);
 
-  const current = await readGeneration(
+  const current = await readGeneration<T>(
     options.filePath,
     options.schema,
     filesystem,
+    currentBoundary,
     options.validatePayload,
   );
   if (current.kind === 'valid') {
@@ -268,11 +465,12 @@ export async function readCheckedFile<T extends JsonValue = JsonValue>(
   }
 
   const previousPath = `${options.filePath}.prev`;
-  await validateSafeTarget(options.stateRoot, previousPath, filesystem);
-  const previous = await readGeneration(
+  const previousBoundary = await validateSafeTarget(options.stateRoot, previousPath, filesystem);
+  const previous = await readGeneration<T>(
     previousPath,
     options.schema,
     filesystem,
+    previousBoundary,
     options.validatePayload,
   );
   if (previous.kind === 'valid') {
@@ -300,8 +498,13 @@ export async function readCheckedFile<T extends JsonValue = JsonValue>(
   });
 }
 
-async function removeOwnedTemp(path: string, filesystem: DurableFileSystem): Promise<void> {
+async function removeOwnedTemp(
+  path: string,
+  boundary: BoundarySnapshot,
+  filesystem: DurableFileSystem,
+): Promise<void> {
   try {
+    await assertBoundaryStable(boundary, filesystem);
     await filesystem.unlink(path);
   } catch (error) {
     if (!isMissing(error)) {
@@ -314,36 +517,70 @@ async function prepareTemp(
   destination: string,
   serialized: string,
   filesystem: DurableFileSystem,
-  ownedTemps: Set<string>,
+  boundary: BoundarySnapshot,
+  ownedTemps: Map<string, BoundarySnapshot>,
 ): Promise<string> {
   const tempPath = `${destination}.cc-fix-tmp-${process.pid}-${randomUUID()}`;
   let handle: DurableFileHandle | undefined;
+  let primaryError: unknown;
   try {
+    await assertBoundaryStable(boundary, filesystem);
     handle = await filesystem.open(tempPath, 'wx');
-    ownedTemps.add(tempPath);
+    ownedTemps.set(tempPath, boundary);
+    await assertBoundaryStable(boundary, filesystem);
     await handle.writeFile(serialized);
     await handle.sync();
-    await handle.close();
-    handle = undefined;
-    return tempPath;
+    await assertBoundaryStable(boundary, filesystem);
   } catch (error) {
-    try {
-      await handle?.close();
-    } catch {
-      // Preserve the operation error; exact-path cleanup follows in the outer finally.
-    }
-    throw error;
+    primaryError = error;
   }
+  if (handle !== undefined) {
+    try {
+      await handle.close();
+    } catch (closeError) {
+      if (primaryError !== undefined) {
+        throw new AggregateError(
+          [primaryError, closeError],
+          'Temporary-file operation and close both failed',
+        );
+      }
+      throw closeError;
+    }
+  }
+  if (primaryError !== undefined) throw primaryError;
+  return tempPath;
 }
 
 export async function writeCheckedFile<T extends JsonValue>(
   options: WriteCheckedFileOptions<T>,
-): Promise<void> {
+): Promise<DurableWriteResult> {
   const filesystem = options.filesystem ?? nodeDurableFileSystem;
-  await validateSafeTarget(options.stateRoot, options.filePath, filesystem);
+  requireBoundaryCapability(options.requiredBoundarySafety, filesystem);
+  const currentBoundary = await validateSafeTarget(
+    options.stateRoot,
+    options.filePath,
+    filesystem,
+  );
 
-  const ownedTemps = new Set<string>();
-  let currentReplaced = false;
+  if (options.validatePayload !== undefined) {
+    try {
+      if (!options.validatePayload(options.payload)) {
+        throw new DurableFileError(
+          'INVALID_PAYLOAD',
+          'New checked-file payload failed schema validation',
+        );
+      }
+    } catch (error) {
+      if (error instanceof DurableFileError) throw error;
+      throw new DurableFileError('INVALID_PAYLOAD', 'Payload schema validator failed', {
+        cause: error,
+      });
+    }
+  }
+
+  const ownedTemps = new Map<string, BoundarySnapshot>();
+  let finalReplaceAttempted = false;
+  let directoryDurability: DirectoryDurability = 'durable';
   try {
     const nextSerialized = serializeCheckedEnvelope(
       createCheckedEnvelope(options.schema, options.payload),
@@ -352,13 +589,25 @@ export async function writeCheckedFile<T extends JsonValue>(
       options.filePath,
       nextSerialized,
       filesystem,
+      currentBoundary,
       ownedTemps,
     );
 
-    const current = await readGeneration(options.filePath, options.schema, filesystem);
+    const current = await readGeneration<T>(
+      options.filePath,
+      options.schema,
+      filesystem,
+      currentBoundary,
+      options.validatePayload,
+    );
     if (current.kind === 'io') throw current.cause;
     if (current.kind === 'valid') {
       const previousPath = `${options.filePath}.prev`;
+      const previousBoundary = await validateSafeTarget(
+        options.stateRoot,
+        previousPath,
+        filesystem,
+      );
       const previousSerialized = serializeCheckedEnvelope(
         createCheckedEnvelope(options.schema, current.payload),
       );
@@ -366,25 +615,35 @@ export async function writeCheckedFile<T extends JsonValue>(
         previousPath,
         previousSerialized,
         filesystem,
+        previousBoundary,
         ownedTemps,
       );
-      await validateSafeTarget(options.stateRoot, previousPath, filesystem);
+      await assertBoundaryStable(previousBoundary, filesystem);
       await filesystem.replace(previousTemp, previousPath);
+      await assertBoundaryStable(previousBoundary, filesystem);
       ownedTemps.delete(previousTemp);
-      await filesystem.syncDirectory(dirname(previousPath));
+      if ((await syncDirectoryDurably(dirname(previousPath), filesystem)) === 'unsupported') {
+        directoryDurability = 'unsupported';
+      }
     }
 
-    await validateSafeTarget(options.stateRoot, options.filePath, filesystem);
+    await assertBoundaryStable(currentBoundary, filesystem);
+    finalReplaceAttempted = true;
     await filesystem.replace(nextTemp, options.filePath);
+    await assertBoundaryStable(currentBoundary, filesystem);
     ownedTemps.delete(nextTemp);
-    currentReplaced = true;
-    await filesystem.syncDirectory(dirname(options.filePath));
+    if ((await syncDirectoryDurably(dirname(options.filePath), filesystem)) === 'unsupported') {
+      directoryDurability = 'unsupported';
+    }
   } catch (error) {
     throw new DurableFileError('WRITE_FAILED', 'Durable checked-file write failed', {
       cause: error,
-      possiblyCommitted: currentReplaced,
+      possiblyCommitted: finalReplaceAttempted,
     });
   } finally {
-    await Promise.all([...ownedTemps].map((path) => removeOwnedTemp(path, filesystem)));
+    await Promise.all(
+      [...ownedTemps].map(([path, boundary]) => removeOwnedTemp(path, boundary, filesystem)),
+    );
   }
+  return { directoryDurability, boundarySafety: filesystem.boundarySafety };
 }
