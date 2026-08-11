@@ -81,6 +81,28 @@ describe('StoredValue exact semantics', () => {
     expect(immutable).toEqual({ nested: { values: ['a'] } });
     expect(Object.isFrozen(immutable.nested.values)).toBe(true);
   });
+
+  it('StoredValue detaches and freezes its input value', () => {
+    const source = { values: ['daily'] };
+    const stored = storedValue(source);
+    source.values.push('changed');
+    expect(stored).toEqual({ kind: 'value', value: { values: ['daily'] } });
+    expect(Object.isFrozen(stored)).toBe(true);
+    expect(stored.kind === 'value' && Object.isFrozen(stored.value.values)).toBe(true);
+  });
+
+  it('rejects accessors without invoking them', () => {
+    let getterCalls = 0;
+    const unsafe = Object.defineProperty({}, 'secret', {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return 'value';
+      },
+    });
+    expect(() => cloneImmutable(unsafe)).toThrow('dense plain JSON');
+    expect(getterCalls).toBe(0);
+  });
 });
 
 describe('ProtectionState schema v1', () => {
@@ -145,6 +167,25 @@ describe('ProtectionState schema v1', () => {
         ],
       }),
     ).toBe(false);
+  });
+
+  it('rejects sparse or decorated degradation arrays and invokes no accessor', () => {
+    const sparse = new Array(1);
+    expect(isProtectionState({ ...validState(), degradation: sparse })).toBe(false);
+    const decorated = [] as unknown[] & { extra?: string };
+    decorated.extra = 'not-json-array';
+    expect(isProtectionState({ ...validState(), degradation: decorated })).toBe(false);
+    let getterCalls = 0;
+    const state = validState() as unknown as Record<string, unknown>;
+    Object.defineProperty(state, 'preferredRegion', {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return 'us';
+      },
+    });
+    expect(isProtectionState(state)).toBe(false);
+    expect(getterCalls).toBe(0);
   });
 });
 
@@ -213,5 +254,36 @@ describe('BackupSnapshot schema v4', () => {
       value: -1,
     });
     expect(isBackupSnapshotV4(invalidRegistry)).toBe(false);
+  });
+
+  it('rejects sparse authority, language and REG_MULTI_SZ arrays', () => {
+    const sparseAuthorities = validBackup();
+    sparseAuthorities.authoritySet = new Array(BACKUP_AUTHORITY_IDS.length) as never;
+    expect(isBackupSnapshotV4(sparseAuthorities)).toBe(false);
+
+    const sparseLanguages = validBackup() as unknown as Record<string, unknown>;
+    const languageAuthorities = sparseLanguages.authorities as Record<string, unknown>;
+    languageAuthorities.userLanguageList = { kind: 'value', value: new Array(1) };
+    expect(isBackupSnapshotV4(sparseLanguages)).toBe(false);
+
+    const sparseRegistry = validBackup() as unknown as Record<string, unknown>;
+    const registryAuthorities = sparseRegistry.authorities as Record<string, unknown>;
+    const policies = registryAuthorities.browserPolicies as Record<string, Record<string, unknown>>;
+    policies['chrome.accept_language'].value = {
+      kind: 'value',
+      value: { registryType: 'REG_MULTI_SZ', value: new Array(1) },
+    };
+    expect(isBackupSnapshotV4(sparseRegistry)).toBe(false);
+  });
+
+  it('rejects non-canonical base64 encodings', () => {
+    const backup = validBackup() as unknown as Record<string, unknown>;
+    const authorities = backup.authorities as Record<string, unknown>;
+    const policies = authorities.browserPolicies as Record<string, Record<string, unknown>>;
+    policies['chrome.webrtc'].value = {
+      kind: 'value',
+      value: { registryType: 'REG_BINARY', valueBase64: 'AB==' },
+    };
+    expect(isBackupSnapshotV4(backup)).toBe(false);
   });
 });

@@ -64,30 +64,29 @@ export type ProtectionState = {
   updatedAt: string;
 };
 
-export type StoredValue<T> = { kind: 'missing' } | { kind: 'value'; value: T };
+export type StoredValue<T extends JsonValue> = { kind: 'missing' } | { kind: 'value'; value: T };
 
-export function storedMissing<T = never>(): StoredValue<T> {
-  return { kind: 'missing' };
+export function storedMissing<T extends JsonValue = never>(): StoredValue<T> {
+  return Object.freeze({ kind: 'missing' });
 }
 
-export function storedValue<T>(value: T extends undefined ? never : T): StoredValue<T> {
-  if (value === undefined) throw new TypeError('StoredValue cannot contain undefined');
-  return { kind: 'value', value };
+export function storedValue<T extends JsonValue>(value: T): StoredValue<T> {
+  return deepFreeze({ kind: 'value', value: cloneImmutable(value) });
 }
 
-export function isStoredValue<T>(
+export function isStoredValue<T extends JsonValue>(
   input: unknown,
   validateValue: (value: unknown) => value is T,
 ): input is StoredValue<T>;
 export function isStoredValue(
   input: unknown,
   validateValue: (value: unknown) => boolean,
-): input is StoredValue<unknown>;
+): input is StoredValue<JsonValue>;
 export function isStoredValue(
   input: unknown,
   validateValue: (value: unknown) => boolean,
-): input is StoredValue<unknown> {
-  if (!isRecord(input)) return false;
+): input is StoredValue<JsonValue> {
+  if (!isSafeJsonValue(input) || !isRecord(input)) return false;
   if (input.kind === 'missing') return hasExactKeys(input, ['kind']);
   return (
     input.kind === 'value' &&
@@ -97,7 +96,7 @@ export function isStoredValue(
   );
 }
 
-export function storedValueEquals<T>(left: StoredValue<T>, right: StoredValue<T>): boolean {
+export function storedValueEquals<T extends JsonValue>(left: StoredValue<T>, right: StoredValue<T>): boolean {
   if (left.kind === 'missing' || right.kind === 'missing') return left.kind === right.kind;
   return canonicalJson(left.value as JsonValue) === canonicalJson(right.value as JsonValue);
 }
@@ -110,7 +109,37 @@ function deepFreeze<T>(value: T, seen = new Set<object>()): T {
 }
 
 export function cloneImmutable<T>(value: T): T {
+  if (!isSafeJsonValue(value)) throw new TypeError('Immutable values must be dense plain JSON');
   return deepFreeze(structuredClone(value));
+}
+
+export function isSafeJsonValue(value: unknown, ancestors = new Set<object>()): value is JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'object' || ancestors.has(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as object | null;
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) return false;
+  } else if (prototype !== Object.prototype && prototype !== null) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== 'string')) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Array.isArray(value)) {
+    const expected = ['length', ...Array.from({ length: value.length }, (_, index) => String(index))].sort();
+    if (JSON.stringify((keys as string[]).sort()) !== JSON.stringify(expected)) return false;
+  }
+  ancestors.add(value);
+  try {
+    for (const key of keys as string[]) {
+      if (key === 'length' && Array.isArray(value)) continue;
+      const descriptor = descriptors[key];
+      if (descriptor === undefined || !('value' in descriptor) || !descriptor.enumerable) return false;
+      if (!isSafeJsonValue(descriptor.value, ancestors)) return false;
+    }
+    return true;
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -170,7 +199,7 @@ function isDegradationReason(value: unknown): value is DegradationReason {
 }
 
 export function isProtectionState(value: unknown): value is ProtectionState {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  if (!isSafeJsonValue(value) || !isRecord(value) || !hasExactKeys(value, [
     'schemaVersion',
     'revision',
     'committedTarget',
@@ -253,14 +282,6 @@ export type BackupSnapshotV4 = {
   };
 };
 
-export type RestoreVerificationReceipt = {
-  schemaVersion: 1;
-  snapshotId: string;
-  restoreReceiptId: string;
-  verifiedAt: string;
-  completedAuthorities: BackupAuthorityId[];
-};
-
 function isUuid(value: unknown): value is string {
   return typeof value === 'string' &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
@@ -276,7 +297,8 @@ function isStringArrayOrNull(value: unknown): value is string[] | null {
 
 function isBase64(value: unknown): value is string {
   return typeof value === 'string' &&
-    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value);
+    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value) &&
+    Buffer.from(value, 'base64').toString('base64') === value;
 }
 
 function isRegistryValue(value: unknown): value is RegistryValue {
@@ -318,13 +340,6 @@ function isExactAuthoritySet(value: unknown): value is BackupAuthorityId[] {
     value.every((item, index) => item === BACKUP_AUTHORITY_IDS[index]);
 }
 
-function isCompleteAuthoritySet(value: unknown): value is BackupAuthorityId[] {
-  return Array.isArray(value) &&
-    value.length === BACKUP_AUTHORITY_IDS.length &&
-    value.every((item) => BACKUP_AUTHORITY_IDS.includes(item as BackupAuthorityId)) &&
-    new Set(value).size === BACKUP_AUTHORITY_IDS.length;
-}
-
 function isBrowserPolicyBackups(value: unknown): value is Record<BrowserPolicySlotId, BrowserPolicyBackup> {
   if (!isRecord(value) || !hasExactKeys(value, BROWSER_POLICY_SLOTS.map((slot) => slot.id))) return false;
   return BROWSER_POLICY_SLOTS.every((slot) => {
@@ -338,7 +353,7 @@ function isBrowserPolicyBackups(value: unknown): value is Record<BrowserPolicySl
 }
 
 export function isBackupSnapshotV4(value: unknown): value is BackupSnapshotV4 {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  if (!isSafeJsonValue(value) || !isRecord(value) || !hasExactKeys(value, [
     'schemaVersion', 'snapshotId', 'createdAt', 'complete', 'authoritySet', 'authorities',
   ])) return false;
   if (
@@ -363,16 +378,4 @@ export function isBackupSnapshotV4(value: unknown): value is BackupSnapshotV4 {
     isStoredValue(authorities.localeName, isStringOrNull) &&
     isStoredValue(authorities.userLanguageList, isStringArrayOrNull) &&
     isStoredValue(authorities.culture, isStringOrNull);
-}
-
-export function isRestoreVerificationReceipt(value: unknown): value is RestoreVerificationReceipt {
-  return isRecord(value) &&
-    hasExactKeys(value, [
-      'schemaVersion', 'snapshotId', 'restoreReceiptId', 'verifiedAt', 'completedAuthorities',
-    ]) &&
-    value.schemaVersion === 1 &&
-    isUuid(value.snapshotId) &&
-    isUuid(value.restoreReceiptId) &&
-    isStrictRfc3339(value.verifiedAt) &&
-    isCompleteAuthoritySet(value.completedAuthorities);
 }

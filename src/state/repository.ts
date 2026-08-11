@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
-import type { JsonValue } from './checksum.js';
-import { CheckedEnvelopeError } from './checksum.js';
+import { createHash } from 'node:crypto';
+import { canonicalJson, CheckedEnvelopeError, type JsonValue } from './checksum.js';
 import {
   deleteCheckedFile,
   DurableFileError,
@@ -18,11 +18,10 @@ import {
   cloneImmutable,
   isBackupSnapshotV4,
   isProtectionState,
-  isRestoreVerificationReceipt,
+  isSafeJsonValue,
   type BackupSnapshotV4,
   type DegradationReason,
   type ProtectionState,
-  type RestoreVerificationReceipt,
 } from './schema.js';
 import type { ProtectionHealth, ProtectionTarget } from '../domain/protection.js';
 import type { RegionCode } from '../domain/region.js';
@@ -42,6 +41,8 @@ export type RepositoryErrorCode =
   | 'BACKUP_MISSING'
   | 'BACKUP_CORRUPT'
   | 'RESTORE_PROOF_INVALID'
+  | 'RESTORE_VERIFIER_REQUIRED'
+  | 'LOCK_REQUIRED'
   | 'DELETE_FAILED'
   | 'IO_FAILED';
 
@@ -70,7 +71,7 @@ export type StateReadResult = {
   value: ProtectionState;
   source: 'current' | 'previous';
   degraded: boolean;
-  recoveryRequired: boolean;
+  recoveredFromPredecessor: boolean;
   currentFailure?: GenerationFailure;
 };
 
@@ -81,15 +82,49 @@ export type BackupReadResult =
       value: BackupSnapshotV4;
       source: 'current' | 'previous';
       degraded: boolean;
-      recoveryRequired: boolean;
+      recoveredFromPredecessor: boolean;
       currentFailure?: GenerationFailure;
     };
+
+export type MutationOperation = 'state.initialize' | 'state.commit' | 'backup.create' | 'backup.delete';
+
+export type MutationScope = Readonly<{
+  stateRoot: string;
+  filePath: string;
+  operation: MutationOperation;
+}>;
+
+export interface MutationCoordinator {
+  runExclusive<T>(scope: MutationScope, action: () => Promise<T>): Promise<T>;
+}
+
+declare const verifiedRestoreProofBrand: unique symbol;
+export type VerifiedRestoreProof = { readonly [verifiedRestoreProofBrand]: never };
+
+export type VerifiedRestoreSnapshot = Readonly<{
+  snapshotId: string;
+  payloadFingerprint: string;
+  generation: 'current' | 'previous';
+}>;
+
+export type VerifiedRestoreDecision =
+  | { kind: 'accepted' }
+  | { kind: 'rejected'; reason: 'invalid' | 'replayed' | 'snapshot_mismatch' };
+
+export interface VerifiedRestoreAuthority {
+  consumeVerifiedRestore(
+    proof: VerifiedRestoreProof,
+    snapshot: VerifiedRestoreSnapshot,
+  ): Promise<VerifiedRestoreDecision>;
+}
 
 export type RepositoryOptions = {
   root: string;
   filesystem?: DurableFileSystem;
   requiredBoundarySafety?: BoundarySafetyCapability;
   now?: () => string;
+  mutationCoordinator?: MutationCoordinator;
+  verifiedRestoreAuthority?: VerifiedRestoreAuthority;
 };
 
 const mutationQueues = new Map<string, Promise<void>>();
@@ -119,6 +154,13 @@ async function withProcessMutationLock<T>(key: string, action: () => Promise<T>)
 
 function asJson(value: ProtectionState | BackupSnapshotV4): JsonValue {
   return value as unknown as JsonValue;
+}
+
+export function backupSnapshotFingerprint(snapshot: BackupSnapshotV4): string {
+  if (!isBackupSnapshotV4(snapshot)) {
+    throw new RepositoryError('INVALID_BACKUP', 'Cannot fingerprint an invalid backup snapshot');
+  }
+  return createHash('sha256').update(canonicalJson(snapshot as unknown as JsonValue)).digest('hex');
 }
 
 class UnknownPayloadSchemaError extends Error {}
@@ -172,6 +214,8 @@ abstract class RepositoryBase {
   protected readonly requiredBoundarySafety: BoundarySafetyCapability | undefined;
   protected readonly now: () => string;
   protected readonly root: string;
+  protected readonly mutationCoordinator: MutationCoordinator | undefined;
+  protected readonly verifiedRestoreAuthority: VerifiedRestoreAuthority | undefined;
 
   constructor(options: RepositoryOptions) {
     this.root = options.root;
@@ -179,6 +223,23 @@ abstract class RepositoryBase {
     this.filesystem = options.filesystem ?? nodeDurableFileSystem;
     this.requiredBoundarySafety = options.requiredBoundarySafety;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.mutationCoordinator = options.mutationCoordinator;
+    this.verifiedRestoreAuthority = options.verifiedRestoreAuthority;
+  }
+
+  protected mutate<T>(
+    operation: MutationOperation,
+    filePath: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    if (this.mutationCoordinator === undefined) {
+      throw new RepositoryError('LOCK_REQUIRED', 'A mutation coordinator is required');
+    }
+    const scope = Object.freeze({ stateRoot: this.root, filePath, operation });
+    return this.mutationCoordinator.runExclusive(
+      scope,
+      () => withProcessMutationLock(mutationKey(filePath), action),
+    );
   }
 }
 
@@ -209,7 +270,7 @@ export class StateRepository extends RepositoryBase {
       value,
       source: result.source,
       degraded: result.degraded,
-      recoveryRequired: result.degraded,
+      recoveredFromPredecessor: result.degraded,
       ...(result.currentFailure === undefined ? {} : { currentFailure: result.currentFailure }),
     };
   }
@@ -235,7 +296,7 @@ export class StateRepository extends RepositoryBase {
       throw new RepositoryError('INVALID_STATE', 'Initial protection state is invalid');
     }
     const immutable = cloneImmutable(state);
-    return withProcessMutationLock(mutationKey(this.paths.state), async () => {
+    return this.mutate('state.initialize', this.paths.state, async () => {
       const existing = await this.readInternal();
       if (!('kind' in existing)) {
         throw new RepositoryError('STATE_ALREADY_EXISTS', 'Protection state already exists');
@@ -261,11 +322,14 @@ export class StateRepository extends RepositoryBase {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
       throw new RepositoryError('INVALID_STATE', 'Expected revision must be a nonnegative safe integer');
     }
-    const detachedNext = cloneImmutable(next);
-    return withProcessMutationLock(mutationKey(this.paths.state), async () => {
+    if (!isSafeJsonValue(next)) {
+      throw new RepositoryError('INVALID_STATE', 'Next protection state contains unsafe values');
+    }
+    const detachedNext = cloneImmutable(next) as StateMutation;
+    return this.mutate('state.commit', this.paths.state, async () => {
       const current = await this.readInternal();
       if ('kind' in current) throw new RepositoryError('STATE_MISSING', 'Protection state is missing');
-      if (current.recoveryRequired) {
+      if (current.recoveredFromPredecessor) {
         throw new RepositoryError(
           'RECOVERY_REQUIRED',
           'Protection state was recovered from a predecessor and cannot be committed',
@@ -273,6 +337,9 @@ export class StateRepository extends RepositoryBase {
       }
       if (current.value.revision !== expectedRevision) {
         throw new RepositoryError('REVISION_MISMATCH', 'Protection state revision does not match');
+      }
+      if (expectedRevision === Number.MAX_SAFE_INTEGER) {
+        throw new RepositoryError('INVALID_STATE', 'Protection state revision cannot be incremented');
       }
       const state: ProtectionState = {
         schemaVersion: 1,
@@ -329,7 +396,7 @@ export class BackupRepository extends RepositoryBase {
       value: cloneImmutable(result.payload as unknown as BackupSnapshotV4),
       source: result.source,
       degraded: result.degraded,
-      recoveryRequired: result.degraded,
+      recoveredFromPredecessor: result.degraded,
       ...(result.currentFailure === undefined ? {} : { currentFailure: result.currentFailure }),
     };
   }
@@ -339,11 +406,11 @@ export class BackupRepository extends RepositoryBase {
   }
 
   async create(snapshot: BackupSnapshotV4): Promise<PersistenceResult<BackupSnapshotV4>> {
-    const immutable = cloneImmutable(snapshot);
-    if (!isBackupSnapshotV4(immutable)) {
+    if (!isBackupSnapshotV4(snapshot)) {
       throw new RepositoryError('INVALID_BACKUP', 'Backup snapshot does not match schema v4');
     }
-    return withProcessMutationLock(mutationKey(this.paths.backup), async () => {
+    const immutable = cloneImmutable(snapshot);
+    return this.mutate('backup.create', this.paths.backup, async () => {
       const existing = await this.readInternal();
       if (existing.kind === 'value') {
         throw new RepositoryError('BACKUP_ALREADY_EXISTS', 'Immutable backup already exists');
@@ -366,22 +433,37 @@ export class BackupRepository extends RepositoryBase {
   }
 
   async deleteAfterVerifiedRestore(
-    receipt: RestoreVerificationReceipt,
+    proof: VerifiedRestoreProof,
   ): Promise<DurableDeleteResult> {
-    const immutableReceipt = cloneImmutable(receipt);
-    if (!isRestoreVerificationReceipt(immutableReceipt)) {
-      throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore receipt is incomplete or invalid');
+    if (this.verifiedRestoreAuthority === undefined) {
+      throw new RepositoryError(
+        'RESTORE_VERIFIER_REQUIRED',
+        'A verified restore authority is required to delete the immutable backup',
+      );
     }
-    return withProcessMutationLock(mutationKey(this.paths.backup), async () => {
+    const verifiedRestoreAuthority = this.verifiedRestoreAuthority;
+    return this.mutate('backup.delete', this.paths.backup, async () => {
       const existing = await this.readInternal();
       if (existing.kind === 'missing') {
         throw new RepositoryError('BACKUP_MISSING', 'Immutable backup is missing');
       }
-      if (existing.value.snapshotId !== immutableReceipt.snapshotId) {
-        throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore receipt snapshot does not match');
+      let decision: VerifiedRestoreDecision;
+      try {
+        decision = await verifiedRestoreAuthority.consumeVerifiedRestore(
+          proof,
+          Object.freeze({
+            snapshotId: existing.value.snapshotId,
+            payloadFingerprint: backupSnapshotFingerprint(existing.value),
+            generation: existing.source,
+          }),
+        );
+      } catch (error) {
+        throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore proof verification failed', {
+          cause: error,
+        });
       }
-      if (Date.parse(immutableReceipt.verifiedAt) < Date.parse(existing.value.createdAt)) {
-        throw new RepositoryError('RESTORE_PROOF_INVALID', 'Restore receipt predates the snapshot');
+      if (decision.kind !== 'accepted') {
+        throw new RepositoryError('RESTORE_PROOF_INVALID', `Restore proof rejected: ${decision.reason}`);
       }
       try {
         const deletion = await deleteCheckedFile({
