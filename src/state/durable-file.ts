@@ -31,8 +31,8 @@ export interface DurableDirectoryHandle {
 export interface DurableFileStat {
   isDirectory(): boolean;
   isSymbolicLink(): boolean;
-  dev?: number | bigint;
-  ino?: number | bigint;
+  dev: bigint;
+  ino: bigint;
 }
 
 export type DirectorySyncCapability = 'supported' | 'probe' | 'unsupported';
@@ -60,7 +60,9 @@ function asDurableHandle(handle: FileHandle): DurableFileHandle {
   };
 }
 
-const unsupportedDirectorySyncCodes = new Set(['EBADF', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EPERM']);
+// EPERM is observed from Node/Windows directory fsync; EINVAL is covered as an explicit
+// capability probe result. EBADF is never a capability signal because it means a bad handle.
+const unsupportedDirectorySyncCodes = new Set(['EINVAL', 'EPERM']);
 
 export const nodeDurableFileSystem: DurableFileSystem = {
   directorySyncCapability: process.platform === 'win32' ? 'probe' : 'supported',
@@ -73,7 +75,7 @@ export const nodeDurableFileSystem: DurableFileSystem = {
     return { sync: () => handle.sync(), close: () => handle.close() };
   },
   readFile: (path) => readFile(path, 'utf8'),
-  lstat,
+  lstat: (path) => lstat(path, { bigint: true }),
   realpath,
   replace: rename,
   unlink,
@@ -260,8 +262,12 @@ export function validateWindowsLiteralPathSyntax(path: string): void {
   }
 }
 
+function canonicalPath(path: string): string {
+  return resolve(path).replace(/[\\/]+$/u, '');
+}
+
 function normalizedForComparison(path: string): string {
-  const normalized = resolve(path).replace(/[\\/]+$/u, '');
+  const normalized = canonicalPath(path);
   return process.platform === 'win32' ? normalized.toLocaleLowerCase('en-US') : normalized;
 }
 
@@ -273,13 +279,42 @@ function isStrictDescendant(root: string, target: string): boolean {
 }
 
 function stableIdentity(stat: DurableFileStat): string {
-  if (stat.dev === undefined || stat.ino === undefined) {
+  if (typeof stat.dev !== 'bigint' || typeof stat.ino !== 'bigint') {
     throw new DurableFileError(
       'BOUNDARY_UNSUPPORTED',
       'The filesystem adapter does not expose stable directory identity',
     );
   }
   return `${String(stat.dev)}:${String(stat.ino)}`;
+}
+
+function isCanonicalWithinRoot(
+  realRoot: string,
+  candidate: string,
+  rootIdentity: string,
+  candidateIdentity: string,
+): boolean {
+  const canonicalRoot = canonicalPath(realRoot);
+  const canonicalCandidate = canonicalPath(candidate);
+  if (canonicalCandidate === canonicalRoot) return candidateIdentity === rootIdentity;
+  if (canonicalCandidate.startsWith(`${canonicalRoot}${sep}`)) return true;
+  return (
+    normalizedForComparison(canonicalCandidate) === normalizedForComparison(canonicalRoot) &&
+    candidateIdentity === rootIdentity
+  );
+}
+
+function isSameBoundaryPath(
+  actual: string,
+  expected: string,
+  actualIdentity: string,
+  expectedIdentity: string,
+): boolean {
+  return (
+    canonicalPath(actual) === canonicalPath(expected) ||
+    (normalizedForComparison(actual) === normalizedForComparison(expected) &&
+      actualIdentity === expectedIdentity)
+  );
 }
 
 async function assertBoundaryStable(
@@ -292,11 +327,12 @@ async function assertBoundaryStable(
   ] as const) {
     const stat = await filesystem.lstat(path);
     const realPath = await filesystem.realpath(path);
+    const actualIdentity = stableIdentity(stat);
     if (
       stat.isSymbolicLink() ||
       !stat.isDirectory() ||
-      normalizedForComparison(realPath) !== normalizedForComparison(expectedRealPath) ||
-      stableIdentity(stat) !== expectedIdentity
+      !isSameBoundaryPath(realPath, expectedRealPath, actualIdentity, expectedIdentity) ||
+      actualIdentity !== expectedIdentity
     ) {
       throw new DurableFileError(
         'REPARSE_BOUNDARY',
@@ -339,6 +375,7 @@ async function validateSafeTarget(
       throw new DurableFileError('INVALID_PATH', 'The supplied state root is not a directory');
     }
     const realRoot = await filesystem.realpath(absoluteRoot);
+    const rootIdentity = stableIdentity(rootStat);
 
     const segments = relative(absoluteRoot, absoluteTarget).split(/[\\/]+/u);
     let cursor = absoluteRoot;
@@ -353,10 +390,7 @@ async function validateSafeTarget(
           );
         }
         const realCursor = await filesystem.realpath(cursor);
-        if (
-          normalizedForComparison(realCursor) !== normalizedForComparison(realRoot) &&
-          !isStrictDescendant(realRoot, realCursor)
-        ) {
+        if (!isCanonicalWithinRoot(realRoot, realCursor, rootIdentity, stableIdentity(stat))) {
           throw new DurableFileError(
             'REPARSE_BOUNDARY',
             `State path resolves outside the supplied state root: ${cursor}`,
@@ -377,10 +411,7 @@ async function validateSafeTarget(
       throw new DurableFileError('INVALID_PATH', 'The state-file parent is not a directory');
     }
     const realParent = await filesystem.realpath(parentPath);
-    if (
-      normalizedForComparison(realParent) !== normalizedForComparison(realRoot) &&
-      !isStrictDescendant(realRoot, realParent)
-    ) {
+    if (!isCanonicalWithinRoot(realRoot, realParent, rootIdentity, stableIdentity(parentStat))) {
       throw new DurableFileError(
         'REPARSE_BOUNDARY',
         'The state-file parent resolves outside the supplied state root',
@@ -391,7 +422,7 @@ async function validateSafeTarget(
       parentPath,
       rootRealPath: realRoot,
       parentRealPath: realParent,
-      rootIdentity: stableIdentity(rootStat),
+      rootIdentity,
       parentIdentity: stableIdentity(parentStat),
     };
   } catch (error) {
@@ -507,9 +538,9 @@ async function removeOwnedTemp(
     await assertBoundaryStable(boundary, filesystem);
     await filesystem.unlink(path);
   } catch (error) {
-    if (!isMissing(error)) {
-      // Cleanup is best effort; never delete any path other than this operation's exact temp.
-    }
+    if (isMissing(error)) return;
+    // Never follow a changed boundary just to clean up. A confirmed operation-owned remnant is
+    // intentionally left as evidence; T21 diagnostics will surface such remnants to the user.
   }
 }
 

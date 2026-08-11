@@ -113,6 +113,41 @@ describe('checked envelope', () => {
     );
   });
 
+  it('rejects object accessors without invoking a stateful getter', () => {
+    let reads = 0;
+    const payload = {} as Record<string, unknown>;
+    Object.defineProperty(payload, 'revision', {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return reads;
+      },
+    });
+
+    expect(() => canonicalJson(payload)).toThrowError(
+      expect.objectContaining({ code: 'UNCANONICAL_VALUE' }),
+    );
+    expect(reads).toBe(0);
+  });
+
+  it('rejects array index accessors without invoking the getter', () => {
+    let reads = 0;
+    const payload: unknown[] = [];
+    Object.defineProperty(payload, 0, {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        reads += 1;
+        return reads;
+      },
+    });
+
+    expect(() => canonicalJson(payload)).toThrowError(
+      expect.objectContaining({ code: 'UNCANONICAL_VALUE' }),
+    );
+    expect(reads).toBe(0);
+  });
+
   it('normalizes negative zero to canonical JSON zero', () => {
     expect(canonicalJson(-0)).toBe('0');
     expect(createCheckedEnvelope('number-v1', -0).checksum).toBe(

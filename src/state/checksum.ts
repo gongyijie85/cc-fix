@@ -28,6 +28,17 @@ export class CheckedEnvelopeError extends Error {
   }
 }
 
+function readDataProperty(object: object, key: PropertyKey): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (descriptor === undefined || !('value' in descriptor)) {
+    throw new CheckedEnvelopeError(
+      'UNCANONICAL_VALUE',
+      'Canonical JSON values cannot contain getters or setters',
+    );
+  }
+  return descriptor.value;
+}
+
 function canonicalize(value: unknown, ancestors: Set<object>): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') {
     return JSON.stringify(value);
@@ -53,9 +64,13 @@ function canonicalize(value: unknown, ancestors: Set<object>): string {
     if (Array.isArray(value)) {
       const ownKeys = Reflect.ownKeys(value);
       const hasOnlyArrayIndices = ownKeys.every((key) => {
-        if (key === 'length') return true;
+        if (key === 'length') {
+          readDataProperty(value, key);
+          return true;
+        }
         if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/u.test(key)) return false;
         const index = Number(key);
+        readDataProperty(value, key);
         return Number.isSafeInteger(index) && index >= 0 && index < value.length;
       });
       if (!hasOnlyArrayIndices) {
@@ -69,7 +84,7 @@ function canonicalize(value: unknown, ancestors: Set<object>): string {
         if (!Object.prototype.hasOwnProperty.call(value, index)) {
           throw new CheckedEnvelopeError('UNCANONICAL_VALUE', 'Sparse JSON arrays are not supported');
         }
-        items.push(canonicalize(value[index], ancestors));
+        items.push(canonicalize(readDataProperty(value, String(index)), ancestors));
       }
       return `[${items.join(',')}]`;
     }
@@ -78,10 +93,18 @@ function canonicalize(value: unknown, ancestors: Set<object>): string {
     if (prototype !== Object.prototype && prototype !== null) {
       throw new CheckedEnvelopeError('UNCANONICAL_VALUE', 'Only plain JSON objects are supported');
     }
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== 'string')) {
+      throw new CheckedEnvelopeError(
+        'UNCANONICAL_VALUE',
+        'Canonical JSON objects cannot contain symbol properties',
+      );
+    }
+    return `{${(keys as string[])
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalize(record[key], ancestors)}`)
+      .map(
+        (key) => `${JSON.stringify(key)}:${canonicalize(readDataProperty(value, key), ancestors)}`,
+      )
       .join(',')}}`;
   } finally {
     ancestors.delete(value);

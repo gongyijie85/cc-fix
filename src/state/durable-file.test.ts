@@ -209,6 +209,22 @@ function faultFilesystem(operation: FaultOperation, occurrence = 1): DurableFile
 }
 
 describe('durable checked file writes', () => {
+  it('reads a successful complex write back immediately with the same payload', async () => {
+    const root = await makeRoot();
+    const payload = { revision: 1, nested: { regions: ['us', 'eu'], enabled: true } };
+
+    await writeCheckedFile({ ...options(root), payload });
+
+    await expect(readCheckedFile(options(root))).resolves.toMatchObject({ payload });
+  });
+
+  it('uses precise bigint identities from the Node filesystem adapter', async () => {
+    const root = await makeRoot();
+    const stat = await nodeDurableFileSystem.lstat(root);
+
+    expect(typeof stat.dev).toBe('bigint');
+    expect(typeof stat.ino).toBe('bigint');
+  });
   it('rejects a schema-invalid new payload before opening a temporary file', async () => {
     const root = await makeRoot();
     let openCalls = 0;
@@ -388,6 +404,24 @@ describe('durable checked file writes', () => {
     ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: true });
   });
 
+  it('does not treat EBADF as an unsupported directory-sync probe result', async () => {
+    const root = await makeRoot();
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      directorySyncCapability: 'probe',
+      openDirectory: async () => ({
+        sync: async () => {
+          throw Object.assign(new Error('bad directory handle'), { code: 'EBADF' });
+        },
+        close: async () => undefined,
+      }),
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: true });
+  });
+
   it('reports a recognized directory-sync capability probe as unsupported', async () => {
     const root = await makeRoot();
     const filesystem: DurableFileSystem = {
@@ -540,6 +574,42 @@ describe('durable checked file writes', () => {
     ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: false });
     expect(replaceCalls).toBe(0);
     expect(unlinkCalls).toBe(0);
+  });
+
+  it('detects adjacent bigint identities above the safe integer range', async () => {
+    const root = await makeRoot();
+    let identityChanged = false;
+    let replaceCalls = 0;
+    const firstIdentity = 9_007_199_254_740_992n;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      lstat: async (path) => {
+        const stat = await nodeDurableFileSystem.lstat(path);
+        if (resolve(path) === resolve(root)) {
+          return {
+            isDirectory: () => stat.isDirectory(),
+            isSymbolicLink: () => stat.isSymbolicLink(),
+            dev: 1n,
+            ino: identityChanged ? firstIdentity + 1n : firstIdentity,
+          };
+        }
+        return stat;
+      },
+      open: async (path, flags) => {
+        const handle = await nodeDurableFileSystem.open(path, flags);
+        identityChanged = true;
+        return handle;
+      },
+      replace: async (source, destination) => {
+        replaceCalls += 1;
+        await nodeDurableFileSystem.replace(source, destination);
+      },
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 1 } }),
+    ).rejects.toMatchObject({ code: 'WRITE_FAILED', possiblyCommitted: false });
+    expect(replaceCalls).toBe(0);
   });
 
   it('fails closed when native no-follow safety is required from the Node adapter', async () => {
@@ -737,6 +807,31 @@ describe('durable checked file path confinement', () => {
     await expect(readCheckedFile(options(root, filesystem))).rejects.toMatchObject({
       code: 'REPARSE_BOUNDARY',
     });
+  });
+
+  it('rejects a case-only realpath alias when it resolves to a different identity', async () => {
+    const root = await makeRoot();
+    const filePath = join(root, 'state.json');
+    await writeCheckedFile({ ...options(root), payload: { revision: 1 } });
+    const realRoot = await nodeDurableFileSystem.realpath(root);
+    const caseOnlyAlias = realRoot.toUpperCase();
+    let replaceCalls = 0;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      realpath: async (path) =>
+        resolve(path) === resolve(filePath)
+          ? caseOnlyAlias
+          : nodeDurableFileSystem.realpath(path),
+      replace: async (source, destination) => {
+        replaceCalls += 1;
+        await nodeDurableFileSystem.replace(source, destination);
+      },
+    };
+
+    await expect(
+      writeCheckedFile({ ...options(root, filesystem), payload: { revision: 2 } }),
+    ).rejects.toMatchObject({ code: 'REPARSE_BOUNDARY' });
+    expect(replaceCalls).toBe(0);
   });
 
   it('accepts an ordinary nested absolute path inside the supplied root', async () => {
