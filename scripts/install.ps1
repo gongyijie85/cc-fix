@@ -2,9 +2,17 @@
 # 使用方法：右键 → 使用 PowerShell 运行
 # 或打开 PowerShell 后粘贴执行
 
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$packageJsonPath = Join-Path $repoRoot "package.json"
+$packageVersion = if (Test-Path $packageJsonPath) {
+    (Get-Content $packageJsonPath -Raw | ConvertFrom-Json).version
+} else {
+    "当前 npm 版本"
+}
+
 Write-Host ""
 Write-Host "  ========================================" -ForegroundColor Cyan
-Write-Host "    cc-fix 一键安装工具 v0.1.0" -ForegroundColor Cyan
+Write-Host "    cc-fix 一键安装工具 ($packageVersion)" -ForegroundColor Cyan
 Write-Host "    Claude Code 环境安全检测与修复" -ForegroundColor Cyan
 Write-Host "  ========================================" -ForegroundColor Cyan
 Write-Host ""
@@ -40,7 +48,6 @@ npm install -g cc-fix 2>&1 | ForEach-Object { Write-Host "  $_" }
 # 优先全局命令；无全局命令时回退到仓库本地构建产物
 function New-CcFixShortcut {
     try {
-        $repoRoot = Split-Path -Parent $PSScriptRoot
         $localEntry = Join-Path $repoRoot "dist\index.js"
 
         $globalCmd = Get-Command cc-fix -ErrorAction SilentlyContinue

@@ -2,6 +2,12 @@
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
+Write-Host "==> release validation" -ForegroundColor Cyan
+pnpm release:validate
+if ($LASTEXITCODE -ne 0) {
+    throw "Release validation failed; publishing is blocked."
+}
+
 Write-Host "==> whoami" -ForegroundColor Cyan
 npm whoami
 

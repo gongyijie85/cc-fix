@@ -6,6 +6,7 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const packageJson = JSON.parse(await readFile(path.join(repositoryRoot, "package.json"), "utf8"));
 const versionSource = await readFile(path.join(repositoryRoot, "src", "version.ts"), "utf8");
 const cliSource = await readFile(path.join(repositoryRoot, "src", "index.ts"), "utf8");
+const installSource = await readFile(path.join(repositoryRoot, "scripts", "install.ps1"), "utf8");
 
 const failures = [];
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(packageJson.version)) {
@@ -25,7 +26,11 @@ if (!/import { version } from ["']\.\/version\.js["']/.test(cliSource) || !/\.ve
 }
 
 const declaredSemver = /(?<![\d.])\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?![\d.])/g;
-for (const [name, source] of [["src/version.ts", versionSource], ["src/index.ts", cliSource]]) {
+for (const [name, source] of [
+  ["src/version.ts", versionSource],
+  ["src/index.ts", cliSource],
+  ["scripts/install.ps1", installSource],
+]) {
   const duplicates = source.match(declaredSemver) ?? [];
   if (duplicates.length > 0) {
     failures.push(`${name} redeclares version literal(s): ${duplicates.join(", ")}`);
