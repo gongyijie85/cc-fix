@@ -30,8 +30,10 @@ pnpm-debug.log*
 # Backup files (runtime generated)
 persist-backup.json
 
-# Research snapshots (third-party reference code, not project source)
-.wayfinder/temp/check-cc/
+# Wayfinder research evidence and local worktrees (preserve locally, never package)
+.wayfinder/temp/
+.wayfinder/worktrees/
+.worktrees/
 
 # Local one-off e2e probes (screenshots / scripts; not product assets)
 /e2e-*.png
