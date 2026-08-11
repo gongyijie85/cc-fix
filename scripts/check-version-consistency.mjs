@@ -2,7 +2,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const rootArgument = process.argv.indexOf("--root");
+const repositoryRoot = rootArgument >= 0
+  ? path.resolve(process.argv[rootArgument + 1])
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await readFile(path.join(repositoryRoot, "package.json"), "utf8"));
 const versionSource = await readFile(path.join(repositoryRoot, "src", "version.ts"), "utf8");
 const cliSource = await readFile(path.join(repositoryRoot, "src", "index.ts"), "utf8");

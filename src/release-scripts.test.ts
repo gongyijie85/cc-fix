@@ -1,27 +1,188 @@
-import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
 
-const declaredSemver = /(?<![\d.])\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?![\d.])/g;
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+const temporaryDirectories: string[] = [];
+const digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-describe("legacy release scripts", () => {
-  it("derives the install banner version without redeclaring it", async () => {
-    const installSource = await readFile(new URL("../scripts/install.ps1", import.meta.url), "utf8");
+async function makeTemporaryDirectory(): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), "cc-fix-release-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
 
-    expect(installSource).toContain("package.json");
-    expect(installSource.match(declaredSemver) ?? []).toEqual([]);
+function runNodeScript(script: string, arguments_: string[] = []) {
+  return spawnSync(process.execPath, [path.join(repositoryRoot, "scripts", script), ...arguments_], {
+    encoding: "utf8",
+  });
+}
+
+function resolvedToolchainLock() {
+  return {
+    schemaVersion: 1,
+    releasePolicy: { unresolvedFields: "fail" },
+    tools: {
+      node: {
+        version: "24.18.1",
+        source: "https://nodejs.org/dist/v24.18.1/node-v24.18.1-win-x64.zip",
+        sha256: digest,
+      },
+      rust: {
+        version: "1.90.0",
+        source: "https://static.rust-lang.org/dist/2026-08-01/rust-1.90.0-x86_64-pc-windows-msvc.tar.xz",
+        sha256: digest,
+      },
+      tauri: {
+        version: "2.11.5",
+        source: "https://static.crates.io/crates/tauri/tauri-2.11.5.crate",
+        sha256: digest,
+      },
+      innoSetup: {
+        version: "6.7.0",
+        source: "https://files.jrsoftware.org/is/6/innosetup-6.7.0.exe",
+        sha256: digest,
+      },
+      webView2: {
+        version: "139.0.3405.86",
+        source: "https://download.microsoft.com/download/webview2/MicrosoftEdgeWebView2RuntimeInstallerX64-139.0.3405.86.exe",
+        sha256: digest,
+      },
+    },
+  };
+}
+
+async function validateToolchain(lock: object) {
+  const directory = await makeTemporaryDirectory();
+  const lockPath = path.join(directory, "toolchain.lock.json");
+  await writeFile(lockPath, JSON.stringify(lock), "utf8");
+  return runNodeScript("validate-toolchain-lock.mjs", ["--lock", lockPath]);
+}
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+describe("version consistency validator", () => {
+  it("fails against a temporary legacy installer version drift", async () => {
+    const fixtureRoot = await makeTemporaryDirectory();
+    await mkdir(path.join(fixtureRoot, "src"));
+    await mkdir(path.join(fixtureRoot, "scripts"));
+    await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ version: "0.2.0-rc.1" }));
+    await writeFile(path.join(fixtureRoot, "src", "version.ts"), 'import packageJson from "../package.json";\nexport const version = packageJson.version;\nexport const buildMetadata = Object.freeze({ version });\n');
+    await writeFile(path.join(fixtureRoot, "src", "index.ts"), 'import { version } from "./version.js";\nprogram.version(version);\n');
+    await writeFile(path.join(fixtureRoot, "scripts", "install.ps1"), 'Write-Host "cc-fix v0.1.0"\n');
+
+    const result = runNodeScript("check-version-consistency.mjs", ["--root", fixtureRoot]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("scripts/install.ps1 redeclares version literal(s): 0.1.0");
+  });
+});
+
+describe("toolchain lock validator", () => {
+  it("accepts a completely resolved exact lock", async () => {
+    const result = await validateToolchain(resolvedToolchainLock());
+
+    expect(result.status).toBe(0);
   });
 
-  it("validates release contracts before npm publish", async () => {
-    const publishSource = await readFile(new URL("../scripts/publish.ps1", import.meta.url), "utf8");
-    const validationPosition = publishSource.search(/^pnpm release:validate\s*$/m);
-    const validationFailureGuardPosition = publishSource.indexOf("if ($LASTEXITCODE -ne 0)");
-    const buildPosition = publishSource.search(/^pnpm build\s*$/m);
-    const publishPosition = publishSource.search(/^npm publish\b/m);
+  it.each([
+    ["node", "24"],
+    ["rust", "stable"],
+    ["tauri", "2"],
+    ["innoSetup", "6.7"],
+    ["webView2", "evergreen"],
+  ])("rejects a vague %s version", async (toolName, version) => {
+    const lock = resolvedToolchainLock();
+    lock.tools[toolName as keyof typeof lock.tools].version = version;
 
-    expect(validationPosition).toBeGreaterThanOrEqual(0);
-    expect(validationFailureGuardPosition).toBeGreaterThan(validationPosition);
-    expect(validationFailureGuardPosition).toBeLessThan(buildPosition);
-    expect(validationPosition).toBeLessThan(buildPosition);
-    expect(validationPosition).toBeLessThan(publishPosition);
+    const result = await validateToolchain(lock);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`${toolName}.version`);
+  });
+
+  it("rejects a source URL that is not tied to its tool version", async () => {
+    const lock = resolvedToolchainLock();
+    lock.tools.node.source = "https://nodejs.org/downloads/";
+
+    const result = await validateToolchain(lock);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("node.source");
+  });
+
+  it.each(["0".repeat(64), "0123456789abcdef".repeat(4)])("rejects a placeholder digest", async (sha256) => {
+    const lock = resolvedToolchainLock();
+    lock.tools.tauri.sha256 = sha256;
+
+    const result = await validateToolchain(lock);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("tauri.sha256");
+  });
+
+  it("rejects unexpected tool keys", async () => {
+    const lock = resolvedToolchainLock() as ReturnType<typeof resolvedToolchainLock> & { tools: Record<string, unknown> };
+    lock.tools.electron = { version: "1.0.0", source: "https://example.test/electron-1.0.0.zip", sha256: digest };
+
+    const result = await validateToolchain(lock);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("unexpected tool keys");
+  });
+});
+
+describe("publish helper", () => {
+  it.each([
+    "pnpm release:validate",
+    "npm whoami",
+    "pnpm typecheck",
+    "pnpm test",
+    "pnpm build",
+    "npm pack --dry-run",
+    "npm publish --access public",
+    "npm view cc-fix version",
+  ])("fails closed when `%s` fails", async (failedCommand) => {
+    const fixtureRoot = await makeTemporaryDirectory();
+    const scriptsDirectory = path.join(fixtureRoot, "scripts");
+    const binDirectory = path.join(fixtureRoot, "bin");
+    const logPath = path.join(fixtureRoot, "commands.log");
+    await mkdir(scriptsDirectory);
+    await mkdir(binDirectory);
+    await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ version: "0.2.0-rc.1" }));
+    await writeFile(path.join(scriptsDirectory, "publish.ps1"), await readFile(path.join(repositoryRoot, "scripts", "publish.ps1"), "utf8"));
+
+    const stub = '@echo off\r\n>> "%CC_FIX_COMMAND_LOG%" echo %~n0 %*\r\nif /I "%~n0 %*"=="%CC_FIX_FAIL_COMMAND%" exit /b 23\r\nexit /b 0\r\n';
+    await writeFile(path.join(binDirectory, "pnpm.cmd"), stub);
+    await writeFile(path.join(binDirectory, "npm.cmd"), stub);
+
+    const result = spawnSync("powershell", ["-NoProfile", "-File", path.join(scriptsDirectory, "publish.ps1")], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${binDirectory};${process.env.PATH ?? ""}`,
+        CC_FIX_COMMAND_LOG: logPath,
+        CC_FIX_FAIL_COMMAND: failedCommand,
+      },
+    });
+    const commands = (await readFile(logPath, "utf8")).trim().split(/\r?\n/);
+    const allCommands = [
+      "pnpm release:validate",
+      "npm whoami",
+      "pnpm typecheck",
+      "pnpm test",
+      "pnpm build",
+      "npm pack --dry-run",
+      "npm publish --access public",
+      "npm view cc-fix version",
+    ];
+
+    expect(result.status).not.toBe(0);
+    expect(commands).toEqual(allCommands.slice(0, allCommands.indexOf(failedCommand) + 1));
   });
 });

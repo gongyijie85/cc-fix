@@ -24,7 +24,7 @@
     },
     "tauri": {
       "version": "2.11.5",
-      "source": "https://crates.io/api/v1/crates/tauri/2.11.5/download",
+      "source": "https://static.crates.io/crates/tauri/tauri-2.11.5.crate",
       "sha256": null,
       "unresolved": {
         "fields": ["sha256"],
