@@ -1,5 +1,5 @@
 import type { ProtectionState } from '../state/schema.js';
-import type { TransactionJournal } from '../state/journal.js';
+import type { TransactionJournal, TransactionJournalContext } from '../state/journal.js';
 import { decideRecovery, type RecoveryDecision } from './recovery.js';
 import type { ProtectionTarget } from '../domain/protection.js';
 import type { JsonValue } from '../state/checksum.js';
@@ -14,13 +14,21 @@ export type PersistStatus = Readonly<{
   mode: 'daily' | 'standard' | 'deep';
   target: ProtectionState['committedTarget'];
   health: ProtectionState['health'];
-  transaction: RecoveryDecision;
+  transaction: RecoveryDecision | Readonly<{ kind: 'state_reconciliation'; transactionId: string }>;
 }>;
 
 /** The backup is deliberately not an input: it is a snapshot, not state. */
 export function derivePersistStatus(state: ProtectionState, journal: TransactionJournal | undefined): PersistStatus {
   const transaction = decideRecovery(journal);
-  return { mode: state.committedTarget?.mode ?? 'daily', target: state.committedTarget, health: transaction.kind === 'none' ? state.health : 'recovery_required', transaction };
+  const effectiveTransaction = transaction.kind === 'none' && state.activeTransactionId !== null
+    ? { kind: 'state_reconciliation' as const, transactionId: state.activeTransactionId }
+    : transaction;
+  return {
+    mode: state.committedTarget?.mode ?? 'daily',
+    target: state.committedTarget,
+    health: effectiveTransaction.kind === 'none' ? state.health : 'recovery_required',
+    transaction: effectiveTransaction,
+  };
 }
 
 export type ProtectTransactionResult = ExecutionResult | Readonly<{ kind: 'noop'; degraded: readonly [] }>;
@@ -37,6 +45,7 @@ export async function runProtectTransaction(input: {
   dailyValues?: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>;
   authorities: Readonly<Record<PersistStepId, ExecutableAuthority>>;
   journalRepository: TransactionJournalRepository;
+  journalContext?: TransactionJournalContext;
   createDailySnapshot?(values: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>): Promise<void>;
   stateTransaction: {
     begin(transactionId: string): Promise<void>;
@@ -57,7 +66,7 @@ export async function runProtectTransaction(input: {
     effectiveDesired[step.id] = input.dailyValues[step.id];
   }
   const snapshot = await captureJournalPlan({ steps: plan.steps, desired: effectiveDesired, authorities: input.authorities });
-  const journal = await input.journalRepository.plan('protect', snapshot);
+  const journal = await input.journalRepository.plan('protect', snapshot, input.journalContext);
   await input.stateTransaction.begin(journal.transactionId);
   const result = await executePlan({ steps: plan.steps, desired: effectiveDesired, authorities: input.authorities, journal: createJournalReporter(input.journalRepository, journal) });
   if (result.kind === 'committable' || result.kind === 'degraded') await input.stateTransaction.complete(result);

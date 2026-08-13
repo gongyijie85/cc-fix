@@ -39,6 +39,7 @@ async function fixture() {
   await stateRepository.initialize('us');
   const current = new Map<PersistStepId, StoredValue<JsonValue>>(Object.entries(dailyValues()) as Array<[PersistStepId, StoredValue<JsonValue>]>);
   const writes: PersistStepId[] = [];
+  const deletedSnapshots: string[] = [];
   const authorities = Object.fromEntries([...current.keys()].map((id) => [id, {
     read: async () => current.get(id)!,
     write: async (value: StoredValue<JsonValue>) => { writes.push(id); current.set(id, value); },
@@ -52,8 +53,9 @@ async function fixture() {
     authorities,
     now: () => '2026-08-13T00:00:00.000Z',
     snapshotId: () => '7f60ed4b-bd54-4f9e-8c4c-c628a94b02a0',
+    deleteDailySnapshot: async (snapshot) => { deletedSnapshots.push(snapshot.snapshotId); },
   });
-  return { root, stateRepository, backupRepository, current, writes, service };
+  return { root, testCoordinator, stateRepository, backupRepository, journalRepository: new TransactionJournalRepository(root, statePaths(root).journal), current, writes, deletedSnapshots, service };
 }
 
 describe('persist application service', () => {
@@ -97,5 +99,51 @@ describe('persist application service', () => {
     await subject.service.protect({ mode: 'standard', region: 'jp' });
     expect(subject.current.get('locale_name')).toEqual(dailyValues().locale_name);
     expect(subject.writes).toEqual(['locale_name', 'user_languages', 'user_culture']);
+  });
+
+  it('restores every authority, publishes daily, then invokes verified backup cleanup', async () => {
+    const subject = await fixture();
+    await subject.service.protect({ mode: 'deep', region: 'sg' });
+    subject.writes.length = 0;
+    await expect(subject.service.restore()).resolves.toEqual({ kind: 'restored' });
+    expect(subject.writes).toEqual([
+      'environment', 'system_timezone', 'browser_policies', 'locale_name', 'user_languages', 'user_culture',
+    ]);
+    expect((await subject.stateRepository.read()).value).toMatchObject({
+      committedTarget: null, activeTransactionId: null, health: 'healthy',
+    });
+    expect(subject.deletedSnapshots).toEqual(['7f60ed4b-bd54-4f9e-8c4c-c628a94b02a0']);
+  });
+
+  it('reverse-compensates a crashed protect transaction using durable journal context', async () => {
+    const subject = await fixture();
+    const daily = dailyValues();
+    const target = desiredValues({ mode: 'standard', region: 'us' });
+    let journal = await subject.journalRepository.plan('protect', [
+      { id: 'environment', original: daily.environment, desired: target.environment },
+      { id: 'system_timezone', original: daily.system_timezone, desired: target.system_timezone },
+    ], {
+      previousState: { committedTarget: null, preferredRegion: 'us', health: 'healthy', degradation: [] },
+      requestedTarget: { mode: 'standard', region: 'us' },
+    });
+    await subject.stateRepository.commit(0, {
+      committedTarget: null, preferredRegion: 'us', health: 'healthy', degradation: [], activeTransactionId: journal.transactionId,
+    });
+    journal = await subject.journalRepository.transition(journal, 'environment', 'applying');
+    subject.current.set('environment', target.environment);
+    await subject.journalRepository.transition(journal, 'environment', 'verified');
+    await expect(subject.service.recover()).resolves.toEqual({ kind: 'recovered', failed: [] });
+    expect(subject.current.get('environment')).toEqual(daily.environment);
+    expect((await subject.stateRepository.read()).value).toMatchObject({ committedTarget: null, activeTransactionId: null, health: 'healthy' });
+  });
+
+  it('does not replay a completed historical journal', async () => {
+    const subject = await fixture();
+    await subject.service.protect({ mode: 'standard', region: 'us' });
+    const before = (await subject.stateRepository.read()).value.revision;
+    subject.writes.length = 0;
+    await expect(subject.service.recover()).resolves.toEqual({ kind: 'noop', failed: [] });
+    expect(subject.writes).toEqual([]);
+    expect((await subject.stateRepository.read()).value.revision).toBe(before);
   });
 });

@@ -14,6 +14,12 @@ describe('persist status', () => {
   it('reports daily from null target even when other durable data exists', () => {
     expect(derivePersistStatus({ ...state, committedTarget: null, health: 'degraded' }, undefined)).toMatchObject({ mode: 'daily', health: 'degraded' });
   });
+  it('reports an orphaned active state transaction even when the journal is complete', () => {
+    expect(derivePersistStatus(
+      { ...state, activeTransactionId: 'tx-orphan' },
+      { transactionId: 'tx-orphan', kind: 'restore', steps: [{ id: 'backup_cleanup', phase: 'verified' }] },
+    )).toMatchObject({ health: 'recovery_required', transaction: { kind: 'state_reconciliation', transactionId: 'tx-orphan' } });
+  });
 });
 
 describe('protect transaction service', () => {
