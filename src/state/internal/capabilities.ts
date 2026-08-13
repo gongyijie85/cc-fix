@@ -7,7 +7,10 @@ export type MutationAuditOperation =
   | 'state.commit'
   | 'backup.create'
   | 'backup.delete'
-  | 'backup.reconcile_delete';
+  | 'backup.reconcile_delete'
+  | 'persist.protect'
+  | 'persist.restore'
+  | 'persist.recover';
 
 export type MutationLockRequest = Readonly<{
   lockKey: string;
