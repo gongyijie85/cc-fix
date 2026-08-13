@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { access, mkdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { REGION_CODES, type RegionCode } from '../domain/region.js';
 import { StateRepository, BackupRepository, type MutationCoordinatorCapability } from '../state/repository.js';
 import { createFileMutationCoordinator } from '../state/mutation-coordinator.js';
@@ -20,6 +21,8 @@ import { DEEP_ONLY_STEP_IDS, STANDARD_STEP_IDS, type PersistStepId } from './ste
 import { desiredValues } from './targets.js';
 import { storedValueEquals } from '../state/schema.js';
 import { PersistApplicationService } from './application.js';
+import { createNativeHelperFileSystem } from '../state/native-helper-filesystem.js';
+import { createVerifiedBackupDelete, createVerifiedBackupDeleteAuthority } from './verified-backup-delete.js';
 
 export type PersistRuntimeErrorCode = 'UNSUPPORTED_PLATFORM' | 'INITIALIZATION_FAILED' | 'MIGRATION_RECOVERY_REQUIRED';
 export class PersistRuntimeError extends Error {
@@ -61,7 +64,22 @@ export type PersistRuntimeOptions = Readonly<{
   coordinator?: MutationCoordinatorCapability;
   authorities?: Readonly<Record<PersistStepId, ExecutableAuthority>>;
   platform?: NodeJS.Platform;
+  nativeHelperPath?: string;
 }>;
+
+async function resolveNativeHelperPath(explicit?: string): Promise<string | undefined> {
+  const candidates = [
+    explicit,
+    process.env.CC_FIX_NATIVE_HELPER,
+    join(fileURLToPath(new URL('.', import.meta.url)), '..', 'native', 'cc-fix-native-helper.exe'),
+    join(process.cwd(), 'native-helper', 'target', 'release', 'cc-fix-native-helper.exe'),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  for (const candidate of candidates) {
+    const absolute = isAbsolute(candidate) ? candidate : join(process.cwd(), candidate);
+    try { await access(absolute); return absolute; } catch {}
+  }
+  return undefined;
+}
 
 /** Opens and safely initializes/migrates the production persist state. */
 export async function createPersistRuntime(options: PersistRuntimeOptions = {}): Promise<PersistApplicationService> {
@@ -74,13 +92,21 @@ export async function createPersistRuntime(options: PersistRuntimeOptions = {}):
   await mkdir(root, { recursive: true });
   const coordinator = options.coordinator ?? createFileMutationCoordinator();
   const authorities = options.authorities ?? createNativePersistAuthoritySet();
+  const helperPath = await resolveNativeHelperPath(options.nativeHelperPath);
+  const filesystem = helperPath === undefined ? undefined : createNativeHelperFileSystem({ root, helperPath });
+  const deleteAuthority = helperPath === undefined ? undefined : createVerifiedBackupDeleteAuthority();
   const stateRepository = new StateRepository({ root, mutationCoordinator: coordinator });
-  const backupRepository = new BackupRepository({ root, mutationCoordinator: coordinator });
+  const backupRepository = new BackupRepository({
+    root,
+    mutationCoordinator: coordinator,
+    ...(filesystem === undefined ? {} : { filesystem }),
+    ...(deleteAuthority === undefined ? {} : { verifiedRestoreAuthority: deleteAuthority.capability }),
+  });
   const migration = await migrateLegacyProtection({
     root,
     coordinator,
     stateStore: new RepositoryMigrationStateStore(stateRepository),
-    backupStore: new NodeLegacyBackupConversionStore({ root }),
+    backupStore: new NodeLegacyBackupConversionStore({ root, ...(filesystem === undefined ? {} : { filesystem }) }),
     evidenceStore: new NodeLegacyEvidenceStore(),
     classifier: createAuthorityLegacyClassifier(authorities),
   });
@@ -101,5 +127,8 @@ export async function createPersistRuntime(options: PersistRuntimeOptions = {}):
     backupRepository,
     journalRepository: new TransactionJournalRepository(root, statePaths(root).journal),
     authorities,
+    ...(deleteAuthority === undefined ? {} : {
+      deleteDailySnapshot: createVerifiedBackupDelete(backupRepository, deleteAuthority),
+    }),
   });
 }

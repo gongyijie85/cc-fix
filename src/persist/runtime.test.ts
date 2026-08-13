@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { InProcessTestMutationCoordinator } from '../state/test-support/in-process-mutation-coordinator.js';
 import { storedValue, type StoredValue } from '../state/schema.js';
 import type { JsonValue } from '../state/checksum.js';
@@ -48,5 +49,32 @@ describe('persist runtime composition', () => {
   it('derives the per-user root from APPDATA and rejects unsupported production hosts', async () => {
     expect(defaultPersistRoot({ APPDATA: 'D:\\Profiles\\Me\\Roaming' })).toBe('D:\\Profiles\\Me\\Roaming\\cc-fix');
     await expect(createPersistRuntime({ platform: 'linux' })).rejects.toMatchObject({ code: 'UNSUPPORTED_PLATFORM' });
+  });
+
+  const releaseHelper = join(process.cwd(), 'native-helper', 'target', 'release', 'cc-fix-native-helper.exe');
+  it.skipIf(!existsSync(releaseHelper))('completes protect and off with the real native compare-delete helper', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-runtime-native-'));
+    roots.push(root);
+    const values = {
+      environment: storedValue({ TZ: null, LANG: null, LC_ALL: null }),
+      system_timezone: storedValue('China Standard Time'),
+      browser_policies: storedValue(Object.fromEntries([
+        'chrome.accept_language','chrome.webrtc','chrome.application_locale',
+        'edge.accept_language','edge.webrtc','edge.application_locale',
+      ].map((id) => [id, null]))),
+      locale_name: storedValue('zh-CN'), user_languages: storedValue(['zh-CN']), user_culture: storedValue('zh-CN'),
+    } as Record<PersistStepId, StoredValue<JsonValue>>;
+    const service = await createPersistRuntime({
+      root,
+      platform: 'linux',
+      coordinator: new InProcessTestMutationCoordinator().capability,
+      authorities: authorities(values),
+      nativeHelperPath: releaseHelper,
+    });
+    await expect(service.protect({ mode: 'deep', region: 'jp' })).resolves.toMatchObject({ kind: 'committable' });
+    await expect(service.restore()).resolves.toEqual({ kind: 'restored' });
+    await expect(service.status()).resolves.toMatchObject({ mode: 'daily', health: 'healthy' });
+    expect(existsSync(join(root, 'persist-backup.json'))).toBe(false);
+    expect(existsSync(join(root, 'persist-backup.json.prev'))).toBe(false);
   });
 });

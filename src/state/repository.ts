@@ -18,6 +18,7 @@ import {
 import {
   CapabilityError,
   issueMutationCoordinatorCapability,
+  issueVerifiedRestoreAuthorityCapability,
   isMutationRootHeld,
   isMutationCoordinatorCapability,
   mutationRootGateKey,
@@ -29,10 +30,12 @@ import {
   type MutationLockContext,
   type RestoreReservation,
   type VerifiedRestoreAuthorityCapability,
+  type VerifiedRestoreAuthorityBackend,
   type VerifiedRestoreProof,
   type VerifiedRestoreSnapshot,
   runWithHeldMutationRoot,
 } from './internal/capabilities.js';
+import { issueNativeCompareDeleteFilesystem } from './internal/native-compare-delete.js';
 import { statePaths } from './paths.js';
 import {
   cloneImmutable,
@@ -55,6 +58,18 @@ export function createMutationCoordinatorCapability(
   backend: MutationCoordinatorBackend,
 ): MutationCoordinatorCapability {
   return issueMutationCoordinatorCapability(backend);
+}
+
+/** Controlled production gateway for an application-owned restore verifier. */
+export function createVerifiedRestoreAuthorityCapability(
+  backend: VerifiedRestoreAuthorityBackend,
+): VerifiedRestoreAuthorityCapability {
+  return issueVerifiedRestoreAuthorityCapability(backend);
+}
+
+/** Controlled production gateway for a fixed-scope native compare-delete adapter. */
+export function createNativeCompareDeleteFileSystem<T extends DurableFileSystem>(filesystem: T): T {
+  return issueNativeCompareDeleteFilesystem(filesystem);
 }
 
 const STATE_SCHEMA = 'cc-fix-state-v1';
