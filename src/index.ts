@@ -12,6 +12,7 @@ import { startGuiServer } from "./gui/server.js";
 import { spawn } from "node:child_process";
 import { version } from "./version.js";
 import { createPersistRuntime } from "./persist/runtime.js";
+import { installerPreflightExitCode } from "./persist/preflight.js";
 import { parseRegionCode, resolveRegion } from "./domain/region.js";
 import { resolveProtectionRequest } from "./domain/protection.js";
 
@@ -116,6 +117,18 @@ persistCmd
     console.log(`  目标地区: ${status.target?.region ?? status.preferredRegion}`);
     console.log(`  事务: ${status.transaction.kind}`);
     console.log(chalk.dim("\n切换: cc-fix persist on [--level standard|deep] [--region us] / off / recover\n"));
+  });
+
+persistCmd
+  .command("preflight")
+  .description("安装器内部：验证当前状态允许升级/修复")
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    const status = await (await createPersistRuntime()).status();
+    const exitCode = installerPreflightExitCode(status);
+    if (options.json) console.log(JSON.stringify({ allowed: exitCode === 0, status }));
+    else console.log(exitCode === 0 ? chalk.green("✓ 可以安全升级或修复") : chalk.yellow("当前存在未完成恢复，禁止替换程序文件"));
+    if (exitCode !== 0) process.exitCode = exitCode;
   });
 
 // run 命令

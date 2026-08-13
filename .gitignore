@@ -5,6 +5,7 @@ node_modules/
 dist/
 native-helper/target/
 src-tauri/target/
+src-tauri/gen/
 
 # IDE
 .vscode/
@@ -37,6 +38,7 @@ persist-backup.json
 .wayfinder/temp/
 .wayfinder/worktrees/
 .worktrees/
+/release/
 
 # Local one-off e2e probes (screenshots / scripts; not product assets)
 /e2e-*.png

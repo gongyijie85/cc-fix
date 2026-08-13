@@ -42,13 +42,13 @@ function resolvedToolchainLock() {
         sha256: digest,
       },
       innoSetup: {
-        version: "6.7.0",
-        source: "https://files.jrsoftware.org/is/6/innosetup-6.7.0.exe",
+        version: "6.7.3",
+        source: "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe",
         sha256: digest,
       },
       webView2: {
-        version: "139.0.3405.86",
-        source: "https://download.microsoft.com/download/webview2/MicrosoftEdgeWebView2RuntimeInstallerX64-139.0.3405.86.exe",
+        version: "1.3.251.23",
+        source: "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/11111111-2222-3333-4444-555555555555/MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
         sha256: digest,
       },
     },

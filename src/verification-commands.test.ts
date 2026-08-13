@@ -13,6 +13,9 @@ const packageJson = JSON.parse(
 const notImplementedStages = [
   "test:integration",
   "test:gui",
+] as const;
+
+const implementedStages = [
   "build:core",
   "build:desktop",
   "build:installer",
@@ -50,6 +53,11 @@ describe("verification command contract", () => {
     for (const stage of notImplementedStages) {
       expect(packageJson.scripts[stage]).not.toMatch(/skip|exit 0/i);
     }
+  });
+
+  it.each(implementedStages)("routes implemented stage %s to a real command", (stage) => {
+    expect(packageJson.scripts[stage]).toBeDefined();
+    expect(packageJson.scripts[stage]).not.toContain("not-implemented-stage.mjs");
   });
 });
 

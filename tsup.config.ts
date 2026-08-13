@@ -7,12 +7,12 @@ export default defineConfig({
   clean: true,
   splitting: false,
   sourcemap: true,
-  target: "node20",
+  target: "node24",
   noExternal: [/.*/],
   loader: {
     ".html": "text",
   },
   banner: {
-    js: "#!/usr/bin/env node",
+    js: "#!/usr/bin/env node\nimport { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
   },
 });
