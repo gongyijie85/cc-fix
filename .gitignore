@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 native-helper/target/
+src-tauri/target/
 
 # IDE
 .vscode/
