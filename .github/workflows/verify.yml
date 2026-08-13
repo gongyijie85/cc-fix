@@ -1,0 +1,60 @@
+name: Verify
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-product:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.1
+          cache: pnpm
+      - name: Pin Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:validate
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:coverage
+      - run: cargo test --locked --manifest-path native-helper/Cargo.toml
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: |
+          $lock = Get-Content toolchain.lock.json -Raw | ConvertFrom-Json
+          Invoke-WebRequest $lock.tools.innoSetup.source -OutFile inno.exe
+          if ((Get-FileHash inno.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $lock.tools.innoSetup.sha256) { throw 'Inno digest mismatch' }
+          Start-Process .\inno.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER' -WindowStyle Hidden -Wait
+      - run: pnpm release:bundle
+      - run: pnpm verify:evidence
+      - run: pnpm test:windows
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cc-fix-${{ github.sha }}-windows-evidence
+          path: |
+            release/installer/*
+            release/evidence/*
+            .test-results/coverage/*
+            .wayfinder/temp/installer-lifecycle-*/*
+          if-no-files-found: error
+          retention-days: 14

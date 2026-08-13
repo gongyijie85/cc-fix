@@ -193,7 +193,7 @@ function showToast(msg) {
 
 // ── 按钮禁用 ──
 function setButtonsDisabled(d) {
-  ["btnOn", "btnOff", "btnRefresh", "regionSelect"].forEach(id => {
+  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "regionSelect", "levelSelect"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = d;
   });
@@ -417,15 +417,27 @@ evtSource.onerror = () => { /* EventSource 自动重连 */ };
 
 // ── 操作按钮 ──
 async function persistOn() {
+  const region = document.getElementById("regionSelect")?.value || "us";
+  const level = document.getElementById("levelSelect")?.value || "standard";
+  if (level === "deep" && !confirm("深度保护会进一步修改 Windows Locale、首选语言列表和 Culture；关闭保护时会从耐久备份完整还原。是否继续？")) return;
   setButtonsDisabled(true);
   lastFixAction = "on";
-  const region = document.getElementById("regionSelect")?.value || "us";
-  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}`, { method: "POST" });
+  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}&level=${encodeURIComponent(level)}`, { method: "POST" });
   if (!res.ok) {
     setButtonsDisabled(false);
     showToast("已有操作进行中，请稍候");
   }
   // 事件流驱动 UI 更新
+}
+
+async function persistRecover() {
+  setButtonsDisabled(true);
+  lastFixAction = "recover";
+  const res = await fetch("/api/fix/recover", { method: "POST" });
+  if (!res.ok) {
+    setButtonsDisabled(false);
+    showToast("已有操作进行中，请稍候");
+  }
 }
 
 async function persistOff() {
@@ -465,7 +477,7 @@ async function loadRegions() {
     if (!res.ok) return;
     const data = await res.json();
     sel.innerHTML = data.regions.map(r => `<option value="${esc(r.code)}">${REGION_LABELS[r.code] || esc(r.code)}</option>`).join("");
-    sel.value = data.default;
+    if (!sel.value || !data.regions.some(r => r.code === sel.value)) sel.value = data.default;
   } catch { /* 回落静态选项 */ }
 }
 
@@ -474,13 +486,17 @@ async function loadStatus() {
     const res = await fetch("/api/status");
     const status = await res.json();
     const dot = $("#statusDot"), txt = $("#statusText");
-    if (status.enabled) { dot.className = "status-dot on"; txt.textContent = "持久化已开启"; }
-    else { dot.className = "status-dot off"; txt.textContent = "持久化未开启"; }
-    // persist on 期间禁止切换地区
+    if (status.mode !== "daily") { dot.className = "status-dot on"; txt.textContent = `${status.mode} · ${status.health}`; }
+    else { dot.className = "status-dot off"; txt.textContent = `daily · ${status.health}`; }
     const sel = document.getElementById("regionSelect");
     const hint = document.getElementById("regionHint");
-    if (sel) sel.disabled = status.enabled;
-    if (hint) hint.style.display = status.enabled ? "" : "none";
+    if (sel) { sel.disabled = false; sel.value = status.target?.region || status.preferredRegion || "us"; }
+    const level = document.getElementById("levelSelect");
+    if (level && status.mode !== "daily") level.value = status.mode;
+    const needsRecovery = status.transaction?.kind !== "none" || status.health === "recovery_required";
+    if (hint) { hint.style.display = needsRecovery ? "" : "none"; hint.textContent = "存在未完成事务，请先恢复"; }
+    const recover = document.getElementById("btnRecover");
+    if (recover) recover.style.display = needsRecovery ? "" : "none";
   } catch {}
 }
 
@@ -516,14 +532,19 @@ function render(data) {
   html += `<div class="region-select">
     <label for="regionSelect">🌍 目标地区</label>
     <select id="regionSelect"><option value="us">🇺🇸 美国</option></select>
-    <span class="region-hint" id="regionHint">请先还原日常配置再切换地区</span>
+    <label for="levelSelect">🛡️ 保护强度</label>
+    <select id="levelSelect"><option value="standard">标准（推荐）</option><option value="deep">深度</option></select>
+    <span class="region-hint" id="regionHint">存在未完成事务，请先恢复</span>
   </div>`;
 
   html += `<div class="actions">
     <button class="btn btn-on" id="btnOn" onclick="persistOn()">🛡️ 一键切换到安全环境<small>persist on</small></button>
     <button class="btn btn-off" id="btnOff" onclick="persistOff()">🏠 一键还原日常配置<small>persist off</small></button>
+    <button class="btn btn-off" id="btnRecover" style="display:none" onclick="persistRecover()">🧰 继续恢复<small>persist recover</small></button>
     <button class="btn btn-refresh" id="btnRefresh" onclick="refresh()">🔄 重新检测</button>
   </div>`;
+
+  html += `<p style="color:var(--muted);font-size:12px;margin-top:12px">VPN、路由器、网卡、DNS、hosts 与 DoH 仅做检测和提醒，CC-Fix 不会修改这些网络配置。</p>`;
 
   if (recommendations.length > 0) {
     html += `<div class="recommendations"><h3>💡 修复建议</h3><ul>`;
@@ -532,8 +553,7 @@ function render(data) {
   }
 
   $("#content").innerHTML = html;
-  loadRegions();
-  loadStatus();
+  loadRegions().then(loadStatus);
 }
 
 loadStatus();

@@ -1,8 +1,12 @@
 // 目标地区配置
 
 import type { TargetRegion } from "../detection/types.js";
+import {
+  parseRegionCode,
+  type RegionCode,
+} from "../domain/region.js";
 
-export const TARGET_REGIONS: Record<string, TargetRegion> = {
+export const TARGET_REGIONS = {
   us: {
     code: "us",
     name: "United States",
@@ -35,10 +39,10 @@ export const TARGET_REGIONS: Record<string, TargetRegion> = {
     lang: "en_SG.UTF-8",
     lcAll: "en_SG.UTF-8",
   },
-};
+} satisfies Record<RegionCode, TargetRegion>;
 
-export const DEFAULT_REGION = "us";
+export const DEFAULT_REGION = "us" satisfies RegionCode;
 
 export function getTargetRegion(code: string): TargetRegion {
-  return TARGET_REGIONS[code] ?? TARGET_REGIONS[DEFAULT_REGION];
+  return TARGET_REGIONS[parseRegionCode(code, "explicit")];
 }

@@ -6,21 +6,29 @@ import htmlContent from "./index.html";
 import { runDetection } from "../detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION, TARGET_REGIONS } from "../detection/regions.js";
 import { fetchIpIntelligence } from "../proxy/ip-intel.js";
-import { getPersistStatus } from "../platform/windows.js";
-import { persistOnFlow, persistOffFlow } from "../fix/flow.js";
 import { recordFixSummary, recordCheck, readHistory } from "../fix/history.js";
 import type { StreamEvent } from "../events/types.js";
+import { RegionResolutionError } from "../domain/region.js";
+import { parseRegionCode, resolveRegion } from "../domain/region.js";
+import { resolveProtectionRequest } from "../domain/protection.js";
+import { createPersistRuntime } from "../persist/runtime.js";
+import type { PersistApplicationService } from "../persist/application.js";
+import { GuiSession } from "./session.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "no-store",
   });
   res.end(JSON.stringify(data));
 }
 
 async function serveHtml(res: http.ServerResponse) {
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'",
+  });
   res.end(htmlContent);
 }
 
@@ -61,20 +69,6 @@ function releaseLock() {
 let lastDetectScore: number | null = null;
 let pendingRecheck: number | null = null;
 
-// 包装事件消费：透传广播、记录操作日志并维护 recheck 状态
-// 日志先于广播写入，前端收到 summary 后拉取历史时不会落空
-function fixEventConsumer(action: "persist-on" | "persist-off") {
-  return (e: StreamEvent) => {
-    if (e.type === "summary") {
-      recordFixSummary(action, e);
-    }
-    broadcast(e);
-    if (e.type === "summary" && e.fail === 0 && !e.fatal && lastDetectScore !== null) {
-      pendingRecheck = lastDetectScore;
-    }
-  };
-}
-
 function checkEventConsumer(e: StreamEvent) {
   if (e.type === "detect-done") {
     recordCheck(e.response.score);
@@ -92,17 +86,31 @@ function checkEventConsumer(e: StreamEvent) {
 // ── 触发端点处理 ──
 
 async function handleFixOn(res: http.ServerResponse, url: URL) {
+  const requestedRegion = url.searchParams.get("region");
+  if (requestedRegion !== null) parseRegionCode(requestedRegion, "explicit");
+  const requestedLevel = url.searchParams.get("level") ?? undefined;
+
   if (!tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
-  // 非法/缺省 region 由 getTargetRegion 回落到 DEFAULT_REGION（与 CLI 同一事实源）
-  const regionCode = url.searchParams.get("region") || DEFAULT_REGION;
-  const target = getTargetRegion(regionCode);
   try {
-    await persistOnFlow(
-      { regionCode: target.code, targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
-      fixEventConsumer("persist-on"),
-    );
+    const runtime = await runtimeFactory();
+    const status = await runtime.status();
+    const region = resolveRegion({ explicit: requestedRegion ?? undefined, active: status.target?.region, preferred: status.preferredRegion });
+    const target = resolveProtectionRequest({ currentMode: status.mode, resolvedRegion: region, level: requestedLevel });
+    broadcast({ type: "step-start", stepId: "persist", name: `切换到 ${target.mode} / ${target.region}` });
+    const result = await runtime.protect(target);
+    const failed = result.kind === "compensated" || result.kind === "recovery_required";
+    const summary = { type: "summary" as const, ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: result.kind === "compensated", fatal: result.kind === "recovery_required" };
+    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `事务结果: ${result.kind}` });
+    else broadcast({ type: "step-ok", stepId: "persist" });
+    if (!failed && lastDetectScore !== null) pendingRecheck = lastDetectScore;
+    recordFixSummary("persist-on", summary);
+    broadcast(summary);
+  } catch (error) {
+    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    const summary = { type: "summary" as const, ok: 0, fail: 1, rolledBack: false, fatal: true };
+    recordFixSummary("persist-on", summary); broadcast(summary);
   } finally {
     releaseLock();
   }
@@ -113,7 +121,37 @@ async function handleFixOff(res: http.ServerResponse) {
   res.writeHead(202); res.end();
 
   try {
-    await persistOffFlow(fixEventConsumer("persist-off"));
+    broadcast({ type: "step-start", stepId: "persist", name: "还原日常配置" });
+    const result = await (await runtimeFactory()).restore();
+    const failed = result.kind === "recovery_required";
+    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `未完成项: ${result.failed.join(", ")}` });
+    else broadcast({ type: "step-ok", stepId: "persist" });
+    if (!failed && lastDetectScore !== null) pendingRecheck = lastDetectScore;
+    const summary = { type: "summary" as const, ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: false, fatal: failed };
+    recordFixSummary("persist-off", summary); broadcast(summary);
+  } catch (error) {
+    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    const summary = { type: "summary" as const, ok: 0, fail: 1, rolledBack: false, fatal: true };
+    recordFixSummary("persist-off", summary); broadcast(summary);
+  } finally {
+    releaseLock();
+  }
+}
+
+async function handleRecover(res: http.ServerResponse) {
+  if (!tryAcquireLock(res)) return;
+  res.writeHead(202); res.end();
+
+  try {
+    broadcast({ type: "step-start", stepId: "persist", name: "继续未完成的恢复事务" });
+    const result = await (await runtimeFactory()).recover();
+    const failed = result.kind === "recovery_required";
+    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `仍未恢复项: ${result.failed.join(", ")}` });
+    else broadcast({ type: "step-ok", stepId: "persist" });
+    broadcast({ type: "summary", ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: false, fatal: failed });
+  } catch (error) {
+    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    broadcast({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
   } finally {
     releaseLock();
   }
@@ -123,8 +161,9 @@ async function handleCheckStart(res: http.ServerResponse) {
   if (!tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
-  const target = getTargetRegion(DEFAULT_REGION);
   try {
+    const status = await (await runtimeFactory()).status();
+    const target = getTargetRegion(status.target?.region ?? status.preferredRegion);
     const ipIntel = await fetchIpIntelligence();
     await runDetection("auto", target.timezone, target.lang, ipIntel, checkEventConsumer);
   } finally {
@@ -133,7 +172,7 @@ async function handleCheckStart(res: http.ServerResponse) {
 }
 
 async function handleStatus(res: http.ServerResponse) {
-  const status = getPersistStatus();
+  const status = await (await runtimeFactory()).status();
   sendJson(res, status);
 }
 
@@ -150,15 +189,41 @@ function handleRegions(res: http.ServerResponse) {
 
 // ── 服务器 ──
 
-export function startGuiServer(port = 3456): Promise<http.Server> {
+let runtimeFactory: () => Promise<PersistApplicationService> = createPersistRuntime;
+
+export type GuiHttpServer = http.Server & Readonly<{
+  ccFixSession: GuiSession;
+  bootstrapUrl(): string;
+}>;
+
+export function startGuiServer(
+  port = 3456,
+  dependencies?: Readonly<{ createRuntime?: () => Promise<PersistApplicationService>; session?: GuiSession }>,
+): Promise<GuiHttpServer> {
+  runtimeFactory = dependencies?.createRuntime ?? createPersistRuntime;
+  const session = dependencies?.session ?? new GuiSession();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
     const method = req.method?.toUpperCase() || "GET";
 
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address !== null ? address.port : port;
+    const expectedOrigin = `http://127.0.0.1:${actualPort}`;
+    if (method === "GET" && url.pathname === "/" && url.searchParams.has("token")) {
+      if (session.bootstrap(req, res, url.searchParams.get("token"), expectedOrigin)) return;
+      sendJson(res, { error: "invalid_or_used_bootstrap_token" }, 401);
+      return;
+    }
+    const isApi = url.pathname.startsWith('/api/');
+    if (!session.authorize(req, expectedOrigin, isApi)) {
+      sendJson(res, { error: "unauthorized_local_session" }, 401);
+      return;
+    }
+
     // CORS preflight
     if (method === "OPTIONS") {
       res.writeHead(204, {
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": expectedOrigin,
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
       });
@@ -175,7 +240,6 @@ export function startGuiServer(port = 3456): Promise<http.Server> {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           "Connection": "keep-alive",
-          "Access-Control-Allow-Origin": "*",
         });
         res.write("\n");
         clients.add(res);
@@ -191,6 +255,8 @@ export function startGuiServer(port = 3456): Promise<http.Server> {
         await handleFixOn(res, url);
       } else if (method === "POST" && url.pathname === "/api/fix/off") {
         await handleFixOff(res);
+      } else if (method === "POST" && url.pathname === "/api/fix/recover") {
+        await handleRecover(res);
       } else if (method === "POST" && url.pathname === "/api/check/start") {
         await handleCheckStart(res);
       } else {
@@ -198,14 +264,35 @@ export function startGuiServer(port = 3456): Promise<http.Server> {
         res.end("Not found");
       }
     } catch (err) {
+      if (err instanceof RegionResolutionError) {
+        sendJson(res, {
+          error: {
+            code: err.code,
+            source: err.source,
+            value: err.value,
+            validRegions: err.validRegions,
+          },
+        }, 400);
+        return;
+      }
       console.error("GUI 错误:", err);
+      if (res.headersSent || res.writableEnded) return;
       sendJson(res, { error: String(err) }, 500);
     }
   });
 
+  const guiServer = server as GuiHttpServer;
+  Object.defineProperties(guiServer, {
+    ccFixSession: { value: session, enumerable: false },
+    bootstrapUrl: { value: () => {
+      const address = guiServer.address();
+      if (typeof address !== 'object' || address === null) throw new Error('GUI server is not listening');
+      return `http://127.0.0.1:${address.port}/?token=${encodeURIComponent(session.bootstrapToken)}`;
+    }, enumerable: false },
+  });
   return new Promise((resolve) => {
     server.listen(port, "127.0.0.1", () => {
-      resolve(server);
+      resolve(guiServer);
     });
   });
 }

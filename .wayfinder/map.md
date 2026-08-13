@@ -1,42 +1,39 @@
-# Wayfinder Map: CC-Fix Phase 2 — 检测维度补全与增强
+# Wayfinder Map: CC-Fix Windows Productization v0.2
 
 ## Destination
 
-将 cc-fix 从当前的 **4 个检测插件**（时区/语言/Locale/一致性）扩展到 **SPEC 规定的全部中优维度**，并对标 checkcc.org 的高价值检测项，使 CLI 端检测覆盖度从 ~30% 提升到 ~80%。同时修复已知缺陷、增强用户体验。
+把 CC-Fix 从依赖系统 Node 的实验性 CLI 收口为可恢复、可审计的 Windows 产品：统一 CLI/桌面 GUI 状态语义，提供日常/标准/深度三态保护、四地区原子切换、崩溃恢复，以及无需预装 Node 的单文件离线安装器和可验证发布证据。
 
-## Notes
+## Current baseline
 
-- 领域：Claude Code 环境安全检测 CLI 工具
-- 当前版本：v0.1.0，已实现 4 个高优检测 + IP 情报 + persist/run/proxy 命令
-- 上游参考：checkcc.org 有 48 个检测维度，CLI 端可映射约 12 个
-- 技术栈：TypeScript / Node.js CLI / commander.js / vitest
-- 工作目录：`D:\cc-fix`（独立仓库，推送 github.com/gongyijie85/cc-fix）
-- 每个插件需附带单元测试
+- 版本：`0.2.0-rc.1`；版本、工具链、文档一致性均有 fail-closed 门禁。
+- 平台：Windows 11 x64 为公开主线；Windows 10 22H2 仅遗留兼容目标。
+- 核心：Node.js 24 LTS 私有运行时 + 单文件 ESM bundle。
+- 桌面：Tauri v2 / WebView2，localhost 会话认证、单实例和受控 sidecar 生命周期。
+- 安装：Inno Setup 6.7.x per-user 离线单 EXE，固定 AppId、开始菜单、可选桌面/PATH、修复、降级拒绝和 restore-first 卸载。
+- 状态：显式 state v1、不可覆盖 backup v4、journal、活锁识别、校验写入、前代恢复、读回验证、完整补偿与收敛式 off/recover。
+- 发布：GitHub Windows CI、CycloneDX SBOM、第三方声明、构建信息、SHA-256、artifact attestation 和 draft release 门禁。
 
 ## Decisions so far
 
-<!-- Phase 1 已完成 -->
+- 标准保护为默认，保留 Windows 日常语言/区域偏好；深度保护才对齐 Locale、语言列表与 Culture。
+- `us/eu/jp/sg` 使用同一合法地区目录；非法地区显式失败，不静默回落 US。
+- 保护模式只来自完整成功提交；健康、活动事务和恢复需要独立表达，不能从备份存在推断。
+- 首次离开日常状态时保存不可覆盖原始快照；换区、升级、降级和重复对齐不得污染日常基线。
+- VPN、路由器、路由表、网卡、DNS、hosts 与 DoH 永远只读检测和提醒，不提供修改入口。
+- Windows 安装包内置固定来源和 SHA-256 的 Node、WebView2、Tauri、Rust 与 Inno 工具链。
+- 无签名 RC 必须明确审批和警告；未配置 Authenticode 身份时禁止发布 stable。
 
-- [check-cc 代码复用评估] — 40% 直接复用，35% 适配，25% 不可复用
-- [CLI 检测维度设计] — 18 个维度：4 高优 + 8 中优 + 6 低优
-- [自动修复能力调研] — 6 项修复能力，备份+回滚机制
-- [CLI 工具架构设计] — 单包 + commander.js，4 命令
+## Remaining release gates
 
-<!-- Phase 2 决议 -->
-
-- [中优插件优先级](tickets/05-medium-priority-plugins.md) — 实现 6 个中优插件：字体(10)/DNS(8)/BASE_URL(8)/代理(6)/Win区域(4)/UTC偏移(4)，总权重 125 归一化
-- [IP情报增强](tickets/06-ip-intelligence-enhancement.md) — 多源对比(+15)+数据中心ASN判断(+13)，硬编码云厂商ASN清单
-- [插件实现规格](tickets/07-plugin-implementation-spec.md) — 6 个插件全部无新增依赖，用 node:dns/child_process/fs 实现
-- [Phase 2 实现完成] — 10 个插件全部接入 runner + 全部附带单测（47 个用例通过）；修复 ip-api/ipinfo 国家码格式不一致导致多源对比永远失败的 bug（统一用 ISO 码）
-
-## Not yet specified
-
-- **npm 发布**：尚未登录 npm，需要发布流程
-- **macOS/Linux 平台适配**：PlatformAdapter 接口已预留，但 Phase 2 是否实现？
+- 在独立 Windows 11 25H2 与 24H2 客户端完成发布矩阵；26H1 仅手工冒烟，Windows 10 22H2 仅遗留验证。
+- 配置 Authenticode 证书并验证 SHA-256/RFC3161 时间戳与一致发布者，才能发布签名 stable。
+- 在仓库侧配置 npm Trusted Publishing/OIDC 后，才启用与 GitHub Release 同版本、同提交的 npm 正式渠道。
+- 首个公开 RC 验证通过后冻结代码；stable 只能包含允许的版本元数据和发布说明差异。
 
 ## Out of scope
 
-- 浏览器端检测（WebRTC、Client Hints 等）— CLI 场景不适用
-- 服务端边缘分析（Cloudflare 边缘机房）— 需服务端，CLI 无法实现
-- 系统级修改（改注册表时区）— 已决策不做
-- GUI 界面 — 已排除
+- 修改 VPN、路由器、路由表、网卡、DNS、hosts 或 DoH。
+- 自动更新、系统级全用户安装和多个正式版本并存。
+- macOS/Linux 桌面安装包。
+- 承诺 SmartScreen 对新文件绝不提示；签名有效性是确定门禁，信誉提示不是。

@@ -1,415 +1,141 @@
-<div align="center">
+# CC-Fix
 
-# 🛡️ cc-fix
+CC-Fix 是面向 Windows 的环境一致性检测与可恢复保护工具。它提供独立桌面应用、CLI 和本地 GUI，用同一套耐久事务管理环境变量、系统时区、浏览器策略以及可选的语言/区域画像。
 
-**Claude Code 环境安全检测与一键修复 CLI 工具**
+当前版本：`0.2.0-rc.1`。
 
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D20-green.svg)](https://nodejs.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![npm version](https://img.shields.io/npm/v/cc-fix.svg)](https://www.npmjs.com/package/cc-fix)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178c6.svg)](https://www.typescriptlang.org/)
+## 重要边界
 
-[中文](#中文) | [English](#english)
+- CC-Fix 会检测出口网络、VPN、路由、网卡、DNS、hosts 与 DoH 风险，但只给出提醒，绝不修改这些网络配置。
+- “标准保护”会修改当前用户的 `TZ`、`LANG`、`LC_ALL`，Windows 系统时区，以及 Chrome/Edge 的 6 个受管策略槽。
+- “深度保护”还会修改 `LocaleName`、首选语言列表和用户 Culture，因此会更明显地影响日常 Windows 体验。
+- 所有受管值在首次保护前写入不可变日常快照；关闭保护时逐项读回验证并完整还原。
+- 安装包目前未进行 Authenticode 签名，Windows SmartScreen 可能显示未知发布者警告。请先核对随包 SHA-256。
 
-</div>
+## 安装
 
----
+### Windows 桌面版（推荐）
 
-<a id="中文"></a>
+运行 `CC-Fix-Setup-0.2.0-rc.1-x64.exe`。安装器：
 
-## 📖 项目简介
+- 安装到 `%LOCALAPPDATA%\Programs\CC-Fix`，无需管理员权限；
+- 自带 Node.js 24 私有运行时，不要求系统安装 Node.js；
+- 自带 x64 WebView2 离线安装程序，系统缺失时自动安装并复检；
+- 创建开始菜单入口，可选桌面快捷方式和当前用户 PATH；
+- 升级/修复前检查未完成事务；普通卸载会先执行完整日常还原。
 
-使用 **Claude Code / Claude Desktop / Cursor** 等 AI 开发工具时，你的运行环境（时区、语言、Locale、出口 IP 等）可能与账号注册地区不一致，**触发 Anthropic 风控系统，导致账号被限制或封禁**。
+安装包和校验文件由以下命令生成：
 
-`cc-fix` 是一个命令行工具，帮你：
-
-- 🔍 **一键检测** 18 个维度的环境风险信号
-- 📊 **量化评分** 直观展示综合风险等级
-- 🔧 **一键修复** 用户级环境变量持久化 + 系统时区同步切换 + Chrome/Edge 浏览器策略加固，覆盖 CLI 与浏览器指纹检测
-- 🔄 **安全回滚** 自动备份原始设置（含系统时区与浏览器策略），随时恢复
-
-> **核心原理**：用户级环境变量（`TZ`、`LANG`、`LC_ALL`）让 Node.js / Electron 应用（Claude CLI、Cursor、Claude Desktop）自动继承安全环境；同时用 `tzutil` 同步切换 Windows 系统时区，覆盖浏览器/指纹类检测（如 ippure，它们读物理时区而非 `TZ` 环境变量）；并向 Chrome/Edge 写入原生策略（`Accept-Language` 跟随目标地区、WebRTC 防泄漏），压掉浏览器侧语言画像与 IP 泄漏信号（策略需重启浏览器生效；若 `HKCU\Software\Policies` 被 ACL 加固，需以管理员权限运行，其余步骤不受影响）。注意：persist 开启期间系统时钟等原生应用会显示目标时区时间，`persist off` 后自动恢复。
-
----
-
-## ✨ 功能特性
-
-| 功能 | 说明 |
-|------|------|
-| 🌍 环境检测 | 时区、系统语言、UTC 偏移、Node Locale、DNS、字体等 18 个维度 |
-| 🌐 IP 检测 | 出口 IP 国家、ASN、代理环境变量检查 |
-| 📈 风险评分 | 加权评分模型，0-100 分直观展示风险等级 |
-| 🔐 一键持久化 | `persist on` 设置用户级环境变量，新终端自动生效 |
-| ↩️ 安全回滚 | `persist off` 自动恢复备份的原始设置 |
-| 🚀 进程注入 | `run claude` 临时注入安全环境，关闭即恢复 |
-| 🖥️ Desktop 支持 | `run --desktop` 包装启动 Claude Desktop |
-| 🖱️ Web 可视化面板 | `gui` 启动本地 Web 界面，修复/复测过程实时可视 |
-| 🌍 多地区切换 | GUI 下拉框与 CLI `--region` 支持 us/eu/jp/sg 四地区（同一事实源） |
-| 🕘 操作日志 | 每次 on/off/check 追加记录，GUI "最近操作"面板可回看 |
-| 📦 JSON 输出 | `check --json` 供其他工具消费 |
-
----
-
-## 🚀 快速开始
-
-### 安装
-
-```bash
-# 使用 npm
-npm install -g cc-fix
-
-# 使用 pnpm
-pnpm add -g cc-fix
+```powershell
+pnpm build:installer
+pnpm release:evidence
 ```
 
-### 三步走
+### npm CLI（兼容渠道）
 
-```bash
-# 第一步：检测当前环境风险
-cc-fix check
-
-# 第二步：一键开启安全环境（用户级持久化）
-cc-fix persist on
-
-# 第三步：正常使用 Claude Code，环境已自动安全
-claude
-```
-
-### 不想持久化？用进程级注入
-
-```bash
-# 临时以安全环境启动 Claude Code
-cc-fix run claude
-
-# 临时启动 Claude Desktop
-cc-fix run --desktop
-```
-
----
-
-## 🐣 小白快速上手（零基础教程）
-
-> 完全不懂命令行？别担心，跟着做就行。
-
-### 方式一：双击运行（最简单）
-
-1. 下载项目：点击 GitHub 页面绿色 **Code** 按钮 → **Download ZIP**
-2. 解压后进入 `cc-fix` 文件夹
-3. 双击 `scripts\cc-fix.bat` 文件
-4. 看到菜单后，输入数字选择功能，回车确认
-
-```
-  ========================================
-    cc-fix - Claude Code 环境安全工具
-  ========================================
-
-    1. 检测环境风险
-    2. 一键修复环境（安全模式）
-    3. 恢复原始环境（日常模式）
-    4. 查看持久化状态
-    5. 检测出口 IP / 代理
-    6. 安全模式启动 Claude Code
-    7. 安全模式启动 Claude Desktop
-    8. 打开可视化 Web 面板（GUI）
-    0. 退出
-```
-
-> 💡 前提：电脑已安装 [Node.js](https://nodejs.org)（选 LTS 版本，一路下一步即可）
-
-### 方式二：PowerShell 一键安装
-
-打开 **PowerShell**（按 Win 键，搜索 `PowerShell`），粘贴以下命令：
+如果只需要 CLI，也可使用系统 Node.js 20 或更高版本：
 
 ```powershell
 npm install -g cc-fix
+cc-fix --version
 ```
 
-安装完成后，随时运行：
+仓库中的 `scripts/install.ps1` 与 `scripts/cc-fix.bat` 仅用于旧 npm CLI 兼容，不是独立 Windows 安装器。
+
+## 快速开始
 
 ```powershell
-cc-fix check          # 看看你的环境安不安全
-cc-fix persist on     # 一键修复
+# 检测；地区支持 us / eu / jp / sg
+cc-fix check --region us
+
+# 默认标准保护
+cc-fix persist on --region us
+
+# 深度保护（会额外改变语言和区域画像）
+cc-fix persist on --level deep --region jp
+
+# 查看已提交模式、健康状态和事务
+cc-fix persist status
+cc-fix persist status --json
+
+# 继续未完成的恢复事务
+cc-fix persist recover
+
+# 完整还原日常配置
+cc-fix persist off
+
+# 只在子进程中注入目标环境，不改变持久状态
+cc-fix run --region eu claude
 ```
 
-### 方式三：不安装直接运行
+桌面应用和 `cc-fix gui` 共用经过会话认证的 `127.0.0.1` 服务。启动令牌一次性使用，API/SSE 同时检查 Host、Origin 和会话 Cookie。
+
+## 三种模式
+
+| 模式 | 受管范围 | 适用场景 |
+|---|---|---|
+| `daily` | 不施加保护；保留偏好地区 | 日常使用 |
+| `standard` | 环境变量、系统时区、Chrome/Edge 策略 | 默认、低干扰保护 |
+| `deep` | 标准保护 + LocaleName、语言列表、Culture | 明确接受系统语言/区域变化时 |
+
+模式和健康状态彼此独立。`healthy`、`degraded`、`recovery_required` 来自已提交状态和事务日志，不通过“备份文件是否存在”推断。
+
+状态目录为 `%APPDATA%\cc-fix`，主要文件包括：
+
+- `state.json`：已提交目标、偏好地区、健康状态和活动事务；
+- `persist-backup.json`：首次保护前的不可变 v4 日常快照；
+- `transaction-journal.json`：写前计划、逐项验证和补偿进度；
+- `migration-evidence`：旧 v3 状态迁移的只读证据。
+
+不要在受保护或恢复未完成时手工删除这些文件。
+
+## 浏览器策略
+
+标准保护管理 Chrome 与 Edge 各 3 个 HKCU 策略槽：
+
+- `AcceptLanguages`
+- `DefaultWebRtcIPHandlingPolicy`
+- `ApplicationLocaleValue`
+
+浏览器通常需要重启才能采用新策略。如果策略区被组织策略或 ACL 拒绝，已知的“受管/拒绝”错误会记录为降级；未知错误仍按致命错误处理。
+
+## 安装、升级和卸载安全
+
+- 同版本再次安装执行修复，不改变 `%APPDATA%\cc-fix` 状态。
+- 安装器拒绝用较旧的 SemVer（包括 RC 序号）覆盖较新版本；需要回退时先保留状态卸载，再安装能安全读取现有 schema 的版本。
+- 存在活动或待恢复事务时，升级/修复会停止，并要求先运行 `cc-fix persist recover`。
+- 普通卸载先运行 `persist off`；还原失败时停止卸载，保留程序和恢复数据。
+- 紧急情况下可用 `unins000.exe /PRESERVESTATE` 只移除程序并保留全部恢复数据；重新安装后必须立即执行 `persist recover` 或 `persist off`。
+- PATH 卸载只移除安装器拥有的精确 `CC-Fix\bin` 段，不改动其他条目。
+
+## 验证与构建
 
 ```powershell
-npx cc-fix check
-```
-
-> `npx` 会自动下载并运行，用完即走，不占空间。
-
-### 日常使用流程
-
-```
-┌─────────────────────────────────────────────────┐
-│  第一次使用                                      │
-│                                                  │
-│  ① cc-fix check        → 看看风险评分            │
-│  ② cc-fix persist on   → 一键修复               │
-│  ③ 正常用 Claude Code  → 环境已安全              │
-│                                                  │
-│  日常使用                                        │
-│                                                  │
-│  • persist on 后不用管，新终端自动生效            │
-│  • 系统时钟、Office、Teams 不受影响              │
-│  • 想恢复？ cc-fix persist off 即可              │
-│                                                  │
-│  临时使用（不想持久化）                          │
-│                                                  │
-│  • cc-fix run claude   → 安全环境临时启动        │
-│  • 关闭后自动恢复，不留痕迹                      │
-└─────────────────────────────────────────────────┘
-```
-
----
-
-## 📋 命令参考
-
-### `cc-fix check`
-
-检测当前环境的所有风险信号。
-
-```bash
-cc-fix check              # 终端彩色表格输出
-cc-fix check --json       # JSON 格式，供其他工具消费
-cc-fix check --region us  # 指定目标地区（默认 us）
-```
-
-输出示例：
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  cc-fix 环境风险检测报告                                │
-├──────────────────┬──────────┬────────┬──────────────────┤
-│ 检测项           │ 当前值   │ 风险   │ 权重             │
-├──────────────────┼──────────┼────────┼──────────────────┤
-│ 系统时区         │ Asia/... │ 🔴 高  │ 25               │
-│ 出口 IP 国家     │ US       │ 🟢 低  │ 25               │
-│ 系统语言         │ en-US    │ 🟢 低  │ 20               │
-│ ...              │ ...      │ ...    │ ...              │
-├──────────────────┴──────────┴────────┴──────────────────┤
-│ 综合风险评分：23 / 100（中风险）                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-### `cc-fix persist`
-
-管理用户级环境变量持久化。
-
-```bash
-cc-fix persist on              # 开启持久化（默认目标地区 us）
-cc-fix persist on --region us  # 指定目标地区
-cc-fix persist off             # 关闭持久化，恢复原始设置
-cc-fix persist status          # 查看当前持久化状态
-```
-
-**工作原理：**
-- `persist on`：通过 Windows `setx` 命令设置用户级环境变量 `TZ`、`LANG`、`LC_ALL`，通过 `tzutil` 同步切换系统时区（浏览器指纹检测读物理时区，不读 `TZ` 环境变量），并向 Chrome/Edge 的 HKCU 策略区写入 `AcceptLanguage`（跟随目标地区）与 WebRTC 防泄漏策略（需重启浏览器生效）
-- 自动备份原始值（含系统时区与浏览器策略原值，"不存在"也记录）到 `%APPDATA%\cc-fix\persist-backup.json`
-- `persist off`：根据备份恢复环境变量、系统时区与浏览器策略（只还原与快照不一致的槽位），无需手动操作
-- 权限说明：若本机 `HKCU\Software\Policies` 被 ACL 加固为只读，策略步骤会失败并提示以管理员权限重试，环境变量与系统时区仍正常切换
-- 影响面：persist 开启期间系统时钟等原生应用显示目标时区时间
-
-**输出行为：** 每个步骤（备份 / 设置单键 / 恢复单键 / 删除备份）实时输出一行（`▶ 步骤名` + `✓ 完成`），失败时给出错误原因与下一步指引，结束时打印成功/失败汇总。
-
-### `cc-fix gui`
-
-启动本地可视化 Web 面板（默认端口 3456，自动打开浏览器）。
-
-```bash
-cc-fix gui              # 启动面板，Ctrl+C 退出
-cc-fix gui -p 8080      # 指定端口
-```
-
-面板功能：
-
-- **风险总览**：评分、风险等级、出口 IP 情报、全部检测信号表
-- **🛡️ 一键切换到安全环境（Persist On）/ 🏠 一键还原日常配置（Persist Off）**：点击后以步骤清单卡片实时推进——每个步骤展示名称、旧值→新值、成功/失败徽章；失败步骤显示红色错误框，回滚步骤以橙色标记，结束时给出汇总条
-- **🌍 目标地区下拉框**：切换前可选 us/eu/jp/sg（与 CLI `--region` 同一事实源）；persist on 期间禁用并提示"请先还原日常配置再切换地区"
-- **🕘 最近操作面板**：底部折叠面板显示最近 10 条操作记录（时间、动作、成败/评分），数据来自追加式日志 `%APPDATA%\cc-fix\history.jsonl`
-- **自动复测**：修复成功后自动重新检测，并展示修复前后的评分对比条
-- **并发保护**：同一时刻只允许一个操作（修复/恢复/检测）运行，重复触发返回 `409`，按钮保持禁用并提示"已有操作进行中"
-
-技术模型：浏览器通过 `GET /api/events` 的 SSE 常驻通道接收事件；`POST /api/fix/on`、`/api/fix/off`、`/api/check/start` 为触发端点，只启动动作并立即返回 `202`（忙时返回 `409`），不等待结果；`GET /api/history`、`GET /api/regions` 为只读端点。
-
-> 安装脚本（`scripts/install.ps1`）会在桌面生成"CC-Fix 面板"快捷方式，双击直达 `cc-fix gui`。
-
-### `cc-fix run`
-
-以安全环境启动任意命令（进程级注入）。
-
-```bash
-cc-fix run claude              # 安全环境启动 Claude Code
-cc-fix run --desktop           # 安全环境启动 Claude Desktop
-cc-fix run --region eu node    # 指定目标地区
-```
-
-### `cc-fix proxy check`
-
-检测出口 IP 和代理状态。
-
-```bash
-cc-fix proxy check
-```
-
-输出：
-
-```
-出口 IP 信息:
-  IP: 1.2.3.4
-  国家: US
-  地区: California
-  城市: Los Angeles
-  ASN: AS13335
-  组织: Cloudflare
-  时区: America/Los_Angeles
-
-✅ 出口 IP 地区正常
-```
-
----
-
-## 🎯 支持地区
-
-| 代码 | 地区 | 时区 | 语言 |
-|------|------|------|------|
-| `us` | 美国（默认） | America/New_York | en-US |
-| `eu` | 欧洲 | Europe/London | en-GB |
-| `jp` | 日本 | Asia/Tokyo | ja-JP |
-
-> 可通过 `--region` 参数指定，更多地区持续添加中。
-
----
-
-## 🛡️ 风险评分模型
-
-| 分数区间 | 风险等级 | 建议 |
-|---------|---------|------|
-| 0 – 20 | 🟢 低风险 | 可正常使用 |
-| 21 – 50 | 🟡 中风险 | 建议运行 `persist on` |
-| 51 – 70 | 🟠 高风险 | 强烈建议修复环境 |
-| 71 – 100 | 🔴 极高风险 | 立即修复，账号可能已被标记 |
-
-**高权重检测项（共 85 分）：**
-- 系统时区（25 分）— Claude Code 已知主动检测
-- 出口 IP 国家（25 分）— 约 60% 封号原因
-- 系统语言（20 分）— 第二高权重信号
-- 信号一致性（15 分）— 多信号矛盾触发风控
-
----
-
-## 🔧 技术架构
-
-```
-cc-fix
-├── detection/     检测模块（11 个插件，加权评分）
-├── platform/      平台抽象层（Windows setx / 备份恢复）
-├── proxy/         出口 IP 检测（ipinfo.io）
-├── run/           进程级环境变量注入
-└── output/        终端渲染（chalk + cli-table3 + ora）
-```
-
-**技术栈：**
-- TypeScript 5.6 + Node.js 20+
-- commander.js（CLI 框架）
-- tsup（打包）
-- vitest（测试）
-
----
-
-## 📌 注意事项
-
-> ⚠️ **重要提示**
-
-1. **本工具不修改系统设置**，只操作用户级环境变量，无需管理员权限
-2. **本工具不提供代理**，只检测出口 IP 状态，代理需自行配置
-3. **Windows 原生应用不受影响**（系统时钟、Office、Teams 读注册表，不读环境变量）
-4. **Claude Code 可能直接读注册表时区**，如遇此情况，`persist on` 可能不完全生效，请关注项目更新
-5. **Anthropic 风控策略可能变化**，本工具持续跟进更新检测规则
-
----
-
-## 🙏 来源声明
-
-本项目的检测逻辑参考并改编自以下开源项目：
-
-- **[check-cc](https://github.com/yacuo/check-cc)** — 浏览器端 Claude Code 环境风险检测工具（[checkcc.org](https://checkcc.org)）
-  - 复用了其检测维度设计、评分模型、地区配置等核心逻辑
-  - 感谢 check-cc 作者的逆向分析工作和开源贡献
-
-- **Claude Code 社区** — 环境检测逆向分析的社区贡献者们
-
-本项目是 check-cc 的 **CLI 扩展实现**，将浏览器端检测能力延伸到命令行场景，并新增了环境修复、持久化管理、进程注入等实用功能。
-
----
-
-## 🤝 参与贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-```bash
-# 开发模式
-git clone https://github.com/gongyijie85/cc-fix.git
-cd cc-fix
-pnpm install
-pnpm dev    # watch 模式，修改自动编译
-
-# 运行测试
-pnpm test
-
-# 类型检查
+pnpm install --frozen-lockfile
 pnpm typecheck
+pnpm test
+pnpm test:integration
+pnpm test:gui
+cargo test --locked --manifest-path native-helper/Cargo.toml
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+pnpm build:installer
+pnpm verify:payload
+pnpm release:evidence
+pnpm verify:evidence
+pnpm test:windows
 ```
 
----
+Windows 生命周期测试会在隔离的工作区目录和 APPDATA 中完成安装、降级拒绝、修复、私有运行时 CLI、桌面单实例、sidecar 回收、PATH 和卸载验证；它只读取并比较 VPN/路由/网卡/DNS 配置指纹，不修改这些配置。
 
-## 📄 开源协议
+确切的 Node、Rust、Tauri、Inno Setup 与 WebView2 来源及 SHA-256 位于 `toolchain.lock.json`。发布载荷还会生成 CycloneDX SBOM、第三方声明、构建信息和安装包摘要。
 
-本项目基于 [MIT License](./LICENSE) 开源。
+## Windows 支持
 
----
+- 主验证线：Windows 11 25H2 x64；
+- 兼容线：Windows 11 24H2 x64；
+- Windows 11 26H1：新设备手工冒烟；
+- Windows 10 22H2：仅作为已结束常规支持的遗留兼容目标。
 
-<a id="english"></a>
+## 开源协议
 
-## English
-
-### What is cc-fix?
-
-`cc-fix` is a CLI tool that detects and fixes environment risk signals that may trigger Anthropic's risk control system when using Claude Code, Claude Desktop, or Cursor.
-
-### Quick Start
-
-```bash
-npm install -g cc-fix
-
-# Detect environment risks
-cc-fix check
-
-# Fix environment (user-level env vars, no admin required)
-cc-fix persist on
-
-# Or run Claude with temporary safe environment
-cc-fix run claude
-```
-
-### How It Works
-
-The tool sets user-level environment variables (`TZ`, `LANG`, `LC_ALL`) via Windows `setx`, and additionally switches the Windows system timezone via `tzutil`. This approach:
-- ✅ Makes Node.js/Electron apps (Claude CLI, Cursor, Claude Desktop) inherit the safe environment
-- ✅ Covers browser/fingerprint-style checks (e.g. ippure) that read the physical timezone instead of the `TZ` env var
-- ✅ Requires no administrator privileges
-- ⚠️ While persist is on, native apps (system clock, Office, Teams) show the target timezone's time; `persist off` restores everything automatically
-- ✅ Automatically backs up original values for easy rollback
-
-### Credits
-
-Detection logic adapted from [check-cc](https://github.com/yacuo/check-cc) by yacuo. This project extends check-cc's browser-based detection into a full CLI tool with environment repair, persistence management, and process-level injection capabilities.
-
----
-
-<div align="center">
-
-**如果这个项目帮到了你，欢迎给个 ⭐ Star 支持一下！**
-
-</div>
+本项目使用 MIT License。第三方组件遵循各自协议，发布证据中的 `THIRD-PARTY-NOTICES.md` 提供组件清单。

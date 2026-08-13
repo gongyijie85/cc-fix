@@ -18,15 +18,14 @@ describe("getTargetRegion", () => {
     expect(eu.timezone).toBe("Europe/London");
   });
 
-  it("falls back to US for unknown codes", () => {
-    const region = getTargetRegion("unknown");
-    expect(region.code).toBe("us");
+  it("rejects unknown codes instead of silently falling back to US", () => {
+    expect(() => getTargetRegion("unknown")).toThrow();
   });
 });
 
 describe("TARGET_REGIONS", () => {
-  it("has at least 4 regions", () => {
-    expect(Object.keys(TARGET_REGIONS).length).toBeGreaterThanOrEqual(4);
+  it("has exactly the four domain regions", () => {
+    expect(Object.keys(TARGET_REGIONS)).toEqual(["us", "eu", "jp", "sg"]);
   });
 
   it("each region has required fields", () => {

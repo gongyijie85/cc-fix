@@ -1,0 +1,97 @@
+name: Draft Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag (for example v0.2.0-rc.1)
+        required: true
+        type: string
+      allow_unsigned_rc:
+        description: Explicitly allow an unsigned release candidate
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  draft:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.1
+          cache: pnpm
+      - name: Verify tag and unsigned policy
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          ALLOW_UNSIGNED_RC: ${{ inputs.allow_unsigned_rc }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw "Tag/version mismatch: $env:RELEASE_TAG vs $version" }
+          if ($version -notmatch '-rc\.' -and $env:ALLOW_UNSIGNED_RC -eq 'true') { throw 'Stable releases cannot use the unsigned-RC exception' }
+          if ($version -match '-rc\.' -and $env:ALLOW_UNSIGNED_RC -ne 'true') { throw 'No signing identity is configured; explicitly approve the unsigned RC exception' }
+          if ((git status --porcelain).Length -ne 0) { throw 'Release checkout is not clean' }
+      - name: Pin Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:validate
+      - run: pnpm test
+      - run: pnpm test:coverage
+      - run: cargo test --locked --manifest-path native-helper/Cargo.toml
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: |
+          $lock = Get-Content toolchain.lock.json -Raw | ConvertFrom-Json
+          Invoke-WebRequest $lock.tools.innoSetup.source -OutFile inno.exe
+          if ((Get-FileHash inno.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $lock.tools.innoSetup.sha256) { throw 'Inno digest mismatch' }
+          Start-Process .\inno.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER' -WindowStyle Hidden -Wait
+      - run: pnpm release:bundle
+        env:
+          CC_FIX_SIGNING_STATUS: unsigned
+      - run: pnpm verify:evidence
+      - run: pnpm test:windows
+      - name: Attest installer and evidence
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            release/installer/CC-Fix-Setup-*.exe
+            release/installer/CC-Fix-Setup-*.sha256
+            release/evidence/sbom.cdx.json
+            release/evidence/build-info.json
+      - name: Create immutable-ready draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $notes = @"
+          CC-Fix $version Windows release candidate.
+
+          ⚠ This RC is not Authenticode-signed. Verify the published SHA-256 and GitHub artifact attestation before installation. Windows SmartScreen may show an unknown-publisher warning.
+
+          VPN, router, route, network-adapter, DNS, hosts and DoH configuration are detection/reminder-only and are never modified.
+          "@
+          gh release create $env:RELEASE_TAG --verify-tag --draft --prerelease --title "CC-Fix $version" --notes $notes `
+            release/installer/CC-Fix-Setup-*.exe `
+            release/installer/CC-Fix-Setup-*.sha256 `
+            release/evidence/*

@@ -3,6 +3,9 @@ node_modules/
 
 # Build output
 dist/
+native-helper/target/
+src-tauri/target/
+src-tauri/gen/
 
 # IDE
 .vscode/
@@ -21,6 +24,7 @@ Thumbs.db
 
 # Test coverage
 coverage/
+.test-results/
 
 # Logs
 *.log
@@ -30,8 +34,11 @@ pnpm-debug.log*
 # Backup files (runtime generated)
 persist-backup.json
 
-# Research snapshots (third-party reference code, not project source)
-.wayfinder/temp/check-cc/
+# Wayfinder research evidence and local worktrees (preserve locally, never package)
+.wayfinder/temp/
+.wayfinder/worktrees/
+.worktrees/
+/release/
 
 # Local one-off e2e probes (screenshots / scripts; not product assets)
 /e2e-*.png

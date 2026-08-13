@@ -1,6 +1,6 @@
 {
   "name": "cc-fix",
-  "version": "0.1.1",
+  "version": "0.2.0-rc.1",
   "description": "Claude Code 环境安全检测与修复 CLI 工具",
   "type": "module",
   "bin": {
@@ -13,7 +13,22 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:coverage": "node scripts/run-coverage.mjs",
+    "test:integration": "vitest run src/persist/runtime.test.ts src/gui/server.test.ts",
+    "test:gui": "vitest run src/gui/server.test.ts src/gui/session.test.ts",
+    "test:watch": "vitest",
+    "build:core": "tsup",
+    "build:desktop": "cargo build --release --locked --manifest-path src-tauri/Cargo.toml",
+    "build:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1",
+    "verify:payload": "node scripts/verify-windows-payload.mjs",
+    "test:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Test-InstallerLifecycle.ps1",
+    "release:evidence": "node scripts/release/build-evidence.mjs",
+    "verify:evidence": "node scripts/release/verify-evidence.mjs",
+    "release:bundle": "pnpm build:installer && pnpm release:evidence",
+    "check:version": "node scripts/check-version-consistency.mjs",
+    "check:docs": "node scripts/check-doc-consistency.mjs",
+    "check:toolchain": "node scripts/validate-toolchain-lock.mjs",
+    "release:validate": "pnpm check:version && pnpm check:toolchain && pnpm check:docs"
   },
   "keywords": [
     "claude",
@@ -47,15 +62,17 @@
     "node": ">=20"
   },
   "dependencies": {
-    "commander": "^12.1.0",
     "chalk": "^5.3.0",
     "cli-table3": "^0.6.5",
+    "commander": "^12.1.0",
     "ora": "^8.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "^20.17.0",
+    "@vitest/coverage-v8": "^2.1.0",
     "tsup": "^8.3.0",
-    "vitest": "^2.1.0",
-    "@types/node": "^20.17.0"
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
   }
 }

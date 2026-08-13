@@ -2,6 +2,12 @@
 chcp 65001 >nul 2>&1
 title cc-fix - Claude Code 环境安全检测
 
+where cc-fix >nul 2>&1
+if errorlevel 1 (
+  echo This legacy menu requires the npm CLI. Use the recommended CC-Fix Windows installer instead.
+  exit /b 78
+)
+
 :menu
 cls
 echo.
@@ -10,12 +16,12 @@ echo     cc-fix - Claude Code 环境安全工具
 echo   ========================================
 echo.
 echo     1. 检测环境风险
-echo     2. 一键修复环境（安全模式）
+echo     2. 开启标准保护（会修改环境变量、系统时区和浏览器策略）
 echo     3. 恢复原始环境（日常模式）
 echo     4. 查看持久化状态
 echo     5. 检测出口 IP / 代理
-echo     6. 安全模式启动 Claude Code
-echo     7. 安全模式启动 Claude Desktop
+echo     6. 目标环境启动 Claude Code（仅子进程）
+echo     7. 目标环境启动 Claude Desktop（仅子进程）
 echo     8. 打开可视化 Web 面板（GUI）
 echo     0. 退出
 echo.
