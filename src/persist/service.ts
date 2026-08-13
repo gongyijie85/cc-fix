@@ -4,7 +4,7 @@ import { decideRecovery, type RecoveryDecision } from './recovery.js';
 import type { ProtectionTarget } from '../domain/protection.js';
 import type { JsonValue } from '../state/checksum.js';
 import type { StoredValue } from '../state/schema.js';
-import { captureJournalPlan, executePlan, type ExecutableAuthority, type ExecutionResult } from './executor.js';
+import { captureDailyAuthorityValues, captureJournalPlan, executePlan, type ExecutableAuthority, type ExecutionResult } from './executor.js';
 import { createJournalReporter } from './journal-reporter.js';
 import { planTransition, type AuthorityObservation } from './planner.js';
 import type { PersistStepId } from './steps.js';
@@ -23,7 +23,7 @@ export function derivePersistStatus(state: ProtectionState, journal: Transaction
   return { mode: state.committedTarget?.mode ?? 'daily', target: state.committedTarget, health: transaction.kind === 'none' ? state.health : 'recovery_required', transaction };
 }
 
-export type ProtectTransactionResult = ExecutionResult | Readonly<{ kind: 'noop'; degraded: readonly PersistStepId[] }>;
+export type ProtectTransactionResult = ExecutionResult | Readonly<{ kind: 'noop'; degraded: readonly [] }>;
 
 /**
  * One protection transaction with an explicit commit point. The callback is
@@ -36,13 +36,24 @@ export async function runProtectTransaction(input: {
   desired: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>;
   authorities: Readonly<Record<PersistStepId, ExecutableAuthority>>;
   journalRepository: TransactionJournalRepository;
-  commit(result: Extract<ExecutionResult, { kind: 'committable' | 'degraded' }>): Promise<void>;
+  createDailySnapshot?(values: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>): Promise<void>;
+  stateTransaction: {
+    begin(transactionId: string): Promise<void>;
+    complete(result: Extract<ExecutionResult, { kind: 'committable' | 'degraded' }>): Promise<void>;
+    fail(result: Extract<ExecutionResult, { kind: 'compensated' | 'recovery_required' }>): Promise<void>;
+  };
 }): Promise<ProtectTransactionResult> {
   const plan = planTransition({ committedTarget: input.committedTarget, requestedTarget: input.requestedTarget, observed: input.observed });
   if (plan.kind === 'noop') return { kind: 'noop', degraded: [] };
+  if (input.committedTarget === null) {
+    if (input.createDailySnapshot === undefined) throw new Error('Daily snapshot creation is required for initial protection');
+    await input.createDailySnapshot(await captureDailyAuthorityValues(input.authorities));
+  }
   const snapshot = await captureJournalPlan({ steps: plan.steps, desired: input.desired, authorities: input.authorities });
   const journal = await input.journalRepository.plan('protect', snapshot);
+  await input.stateTransaction.begin(journal.transactionId);
   const result = await executePlan({ steps: plan.steps, desired: input.desired, authorities: input.authorities, journal: createJournalReporter(input.journalRepository, journal) });
-  if (result.kind === 'committable' || result.kind === 'degraded') await input.commit(result);
+  if (result.kind === 'committable' || result.kind === 'degraded') await input.stateTransaction.complete(result);
+  else await input.stateTransaction.fail(result);
   return result;
 }

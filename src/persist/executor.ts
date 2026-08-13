@@ -1,16 +1,20 @@
 import type { JsonValue } from '../state/checksum.js';
 import type { StoredValue } from '../state/schema.js';
 import type { PersistStepId, PlannedStep } from './steps.js';
+import { ALL_STEP_IDS } from './steps.js';
+import type { BrowserPolicySlotId, DegradationReason } from '../state/schema.js';
 
 export interface ExecutableAuthority {
   read(): Promise<StoredValue<JsonValue>>;
   write(value: StoredValue<JsonValue>): Promise<void>;
 }
 export interface ExecutionJournal { transition(id: PersistStepId, phase: 'applying' | 'verified' | 'compensating' | 'compensated' | 'recovery_required'): Promise<void>; }
-export class PolicyManagedOrDeniedError extends Error {}
+export class PolicyManagedOrDeniedError extends Error {
+  constructor(readonly slot: BrowserPolicySlotId, readonly policyCause: 'managed' | 'access_denied') { super(`Browser policy ${slot} is ${policyCause}`); }
+}
 export type ExecutionResult =
   | Readonly<{ kind: 'committable'; degraded: readonly [] }>
-  | Readonly<{ kind: 'degraded'; degraded: readonly PersistStepId[] }>
+  | Readonly<{ kind: 'degraded'; degraded: readonly DegradationReason[] }>
   | Readonly<{ kind: 'compensated' | 'recovery_required'; degraded: readonly [] }>;
 
 /** Captures all originals before the first write so recovery has a complete plan. */
@@ -28,6 +32,13 @@ export async function captureJournalPlan(input: {
   return captured;
 }
 
+export async function captureDailyAuthorityValues(
+  authorities: Readonly<Record<PersistStepId, ExecutableAuthority>>,
+): Promise<Readonly<Record<PersistStepId, StoredValue<JsonValue>>>> {
+  const entries = await Promise.all(ALL_STEP_IDS.map(async (id) => [id, await authorities[id].read()] as const));
+  return Object.freeze(Object.fromEntries(entries) as Record<PersistStepId, StoredValue<JsonValue>>);
+}
+
 /** Applies write/readback operations and compensates every modified authority in reverse order. */
 export async function executePlan(input: {
   steps: readonly PlannedStep[];
@@ -36,7 +47,7 @@ export async function executePlan(input: {
   journal: ExecutionJournal;
 }): Promise<ExecutionResult> {
   const modified: Array<{ id: PersistStepId; original: StoredValue<JsonValue> }> = [];
-  const degraded: PersistStepId[] = [];
+  const degraded: DegradationReason[] = [];
   try {
     for (const step of input.steps) {
       if (step.action === 'noop') continue;
@@ -55,7 +66,7 @@ export async function executePlan(input: {
           // This classification is only valid for an authority that reports a
           // rejected managed/denied policy write (therefore no local mutation).
           modified.pop();
-          degraded.push(step.id);
+          degraded.push({ kind: 'browser_policy_unaligned', slot: error.slot, cause: error.policyCause });
           await input.journal.transition(step.id, 'verified');
           continue;
         }

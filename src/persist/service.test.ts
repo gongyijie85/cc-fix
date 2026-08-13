@@ -26,9 +26,10 @@ describe('protect transaction service', () => {
     const ids = ['environment','system_timezone','browser_policies','locale_name','user_languages','user_culture'] as const;
     const authorities = Object.fromEntries(ids.map((id) => [id, authority(id)])) as never;
     const desired = Object.fromEntries(ids.map((id) => [id, storedValue(`new-${id}`)])) as never;
-    const result = await runProtectTransaction({ committedTarget: null, requestedTarget: { mode: 'standard', region: 'us' }, observed: {}, desired, authorities, journalRepository, commit: async () => { order.push('commit'); } });
+    const result = await runProtectTransaction({ committedTarget: null, requestedTarget: { mode: 'standard', region: 'us' }, observed: {}, desired, authorities, journalRepository, createDailySnapshot: async (snapshot) => { expect(Object.keys(snapshot)).toHaveLength(6); order.push('backup'); }, stateTransaction: { begin: async () => { order.push('begin'); }, complete: async () => { order.push('commit'); }, fail: async () => { order.push('fail'); } } });
     expect(result.kind).toBe('committable');
     expect(order.at(-1)).toBe('commit');
+    expect(order[0]).toBe('backup');
     expect((await journalRepository.read())?.steps.every((step) => step.original !== undefined && step.desired !== undefined)).toBe(true);
   });
 });

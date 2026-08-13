@@ -28,9 +28,9 @@ describe('transition executor', () => {
   });
   it('only permits policy managed/denied to degrade a committed target', async () => {
     const f = fixture();
-    f.authorities.browser_policies.write = async () => { throw new PolicyManagedOrDeniedError(); };
+    f.authorities.browser_policies.write = async () => { throw new PolicyManagedOrDeniedError('chrome.webrtc', 'managed'); };
     const result = await executePlan({ ...f, steps: [{ id: 'browser_policies', disposition: 'degradable', action: 'apply' }] });
-    expect(result).toMatchObject({ kind: 'degraded', degraded: ['browser_policies'] });
+    expect(result).toMatchObject({ kind: 'degraded', degraded: [{ kind: 'browser_policy_unaligned', slot: 'chrome.webrtc', cause: 'managed' }] });
   });
   it('marks recovery required when compensation itself cannot be verified', async () => {
     const f = fixture(new Set(['system_timezone']));
