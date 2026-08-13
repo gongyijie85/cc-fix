@@ -4,7 +4,7 @@ import type { JsonValue } from './checksum.js';
 
 export const TRANSACTION_JOURNAL_SCHEMA = 'cc-fix-transaction-journal-v1';
 export type JournalPhase = 'planned' | 'applying' | 'verified' | 'compensating' | 'compensated' | 'recovery_required';
-export type JournalStep = { id: string; phase: JournalPhase };
+export type JournalStep = { id: string; phase: JournalPhase; original?: JsonValue; desired?: JsonValue };
 export type TransactionJournal = {
   transactionId: string;
   kind: 'protect' | 'restore';
@@ -41,13 +41,14 @@ export class TransactionJournalRepository {
     const result = await readCheckedFile<TransactionJournal>({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, validatePayload: validJournal });
     return result.kind === 'missing' ? undefined : result.payload;
   }
-  async plan(kind: TransactionJournal['kind'], ids: readonly string[]): Promise<TransactionJournal> {
+  async plan(kind: TransactionJournal['kind'], steps: readonly (string | Readonly<{ id: string; original?: JsonValue; desired?: JsonValue }>)[]): Promise<TransactionJournal> {
+    const ids = steps.map((step) => typeof step === 'string' ? step : step.id);
     if (ids.length === 0 || new Set(ids).size !== ids.length) throw new Error('A journal plan needs unique steps');
     const existing = await this.read();
     if (existing !== undefined && recoveryAction(existing) !== 'none') {
       throw new Error('An unfinished transaction requires recovery before a new plan');
     }
-    const journal: TransactionJournal = { transactionId: randomUUID(), kind, steps: ids.map((id) => ({ id, phase: 'planned' })) };
+    const journal: TransactionJournal = { transactionId: randomUUID(), kind, steps: steps.map((step) => typeof step === 'string' ? ({ id: step, phase: 'planned' }) : ({ id: step.id, phase: 'planned', ...(step.original === undefined ? {} : { original: step.original }), ...(step.desired === undefined ? {} : { desired: step.desired }) })) };
     await writeCheckedFile({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, payload: journal, validatePayload: validJournal });
     return journal;
   }
