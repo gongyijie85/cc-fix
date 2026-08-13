@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -50,6 +50,7 @@ class MemoryBackupStore implements LegacyBackupConversionStore {
   bytes: Buffer | undefined;
   converted: BackupSnapshotV4 | undefined;
   failWrite = false;
+  failRestore = false;
   writes = 0;
   constructor(bytes?: Buffer) { this.bytes = bytes; }
   async readBytes(): Promise<Buffer | undefined> { return this.bytes === undefined ? undefined : Buffer.from(this.bytes); }
@@ -61,6 +62,7 @@ class MemoryBackupStore implements LegacyBackupConversionStore {
     this.bytes = Buffer.from('checked-v4');
   }
   async restoreLegacy(expected: Buffer): Promise<void> {
+    if (this.failRestore) throw new Error('legacy restore failed');
     this.converted = undefined;
     this.bytes = Buffer.from(expected);
   }
@@ -315,6 +317,21 @@ describe('legacy migration transaction', () => {
     expect(deps.state.state?.committedTarget).toEqual({ mode: 'deep', region: 'us' });
   });
 
+  it('reports recovery required when state failure cannot restore the original v3 bytes', async () => {
+    const deps = setup();
+    deps.state.failWrite = true;
+    deps.backup.failRestore = true;
+    const result = await migrateLegacyProtection({
+      root: 'C:\\state', coordinator: deps.coordinator.capability, stateStore: deps.state,
+      backupStore: deps.backup, evidenceStore: deps.evidence, classifier: classifier({ mode: 'deep', region: 'us' }),
+    });
+    expect(result).toMatchObject({
+      kind: 'recovery_required', reason: 'legacy_restore_failed',
+      committedTarget: { mode: 'deep', region: 'us' }, stateWritten: false,
+    });
+    expect(deps.evidence.bytes).toEqual(legacyBytes());
+  });
+
   it('serializes concurrent retries under one root migration lock', async () => {
     const deps = setup();
     const options = {
@@ -442,6 +459,16 @@ describe('native migration evidence', () => {
     expect(directory).toBe(join(root, 'migration-evidence'));
   });
 
+  it('refuses a migration-evidence junction that escapes the supplied state root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-migration-'));
+    const outside = await mkdtemp(join(tmpdir(), 'cc-fix-migration-outside-'));
+    await symlink(outside, join(root, 'migration-evidence'), process.platform === 'win32' ? 'junction' : 'dir');
+    const bytes = legacyBytes();
+    await expect(new NodeLegacyEvidenceStore().preserve(root, bytes, sha256(bytes))).rejects.toMatchObject({
+      code: 'REPARSE_BOUNDARY',
+    });
+  });
+
   it.each(['create', 'write', 'sync', 'readback', 'readonly', 'directory'] as const)(
     'fails closed on injected evidence %s failure', async (stage) => {
       let stored: Buffer | undefined;
@@ -471,6 +498,18 @@ describe('native migration evidence', () => {
         .rejects.toThrow(/failure|verification/i);
     },
   );
+});
+
+describe('native legacy backup conversion boundary', () => {
+  it('refuses a legacy backup symlink that escapes the supplied state root', async () => {
+    const actualRoot = await mkdtemp(join(tmpdir(), 'cc-fix-migration-'));
+    const linkedRoot = join(tmpdir(), `cc-fix-migration-root-link-${Date.now()}-${Math.random()}`);
+    await writeFile(statePaths(actualRoot).backup, legacyBytes());
+    await symlink(actualRoot, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(new NodeLegacyBackupConversionStore({ root: linkedRoot }).readBytes()).rejects.toMatchObject({
+      code: 'REPARSE_BOUNDARY',
+    });
+  });
 });
 
 describe('native checked-file migration adapters', () => {

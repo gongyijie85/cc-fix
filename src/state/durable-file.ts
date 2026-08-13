@@ -487,6 +487,22 @@ async function validateSafeTarget(
   }
 }
 
+/**
+ * Reuses the checked-file root/reparse/identity validation for adjacent state
+ * artifacts that deliberately are not checked envelopes (for example the
+ * byte-for-byte legacy migration evidence). Call again after any filesystem
+ * operation that may create or replace a path segment.
+ */
+export async function validateDurablePathBoundary(
+  stateRoot: string,
+  filePath: string,
+  filesystem: DurableFileSystem = nodeDurableFileSystem,
+  requiredBoundarySafety?: BoundarySafetyCapability,
+): Promise<void> {
+  requireBoundaryCapability(requiredBoundarySafety, filesystem);
+  await validateSafeTarget(stateRoot, filePath, filesystem);
+}
+
 async function readGeneration<T extends JsonValue>(
   path: string,
   schema: string,

@@ -6,6 +6,7 @@ import { canonicalJson, type JsonValue } from './checksum.js';
 import {
   nodeDurableFileSystem,
   readCheckedFile,
+  validateDurablePathBoundary,
   writeCheckedFile,
   type BoundarySafetyCapability,
   type DurableFileSystem,
@@ -63,6 +64,7 @@ export type LegacyMigrationReason =
   | 'evidence_preservation_failed'
   | 'backup_conversion_failed'
   | 'state_commit_failed'
+  | 'legacy_restore_failed'
   | 'state_read_failed'
   | 'lock_required'
   | 'lock_failed'
@@ -429,7 +431,11 @@ async function runMigration(options: LegacyMigrationOptions): Promise<MigrationR
   try {
     await options.stateStore.initialize(initialState(target.region, target, observation.health, observation.degradation, now));
   } catch {
-    await options.backupStore.restoreLegacy(bytes).catch(() => undefined);
+    try {
+      await options.backupStore.restoreLegacy(bytes);
+    } catch {
+      return result('recovery_required', 'legacy_restore_failed', target, false, evidence);
+    }
     return result('recovery_required', 'state_commit_failed', target, false, evidence);
   }
   return result('migrated', 'legacy_v3_migrated', target, true, evidence);
@@ -499,8 +505,11 @@ export class NodeLegacyBackupConversionStore implements LegacyBackupConversionSt
   }
 
   async readBytes(): Promise<Buffer | undefined> {
+    await this.validateBoundary();
     try {
-      return Buffer.from(await this.filesystem.readFile(this.path), 'utf8');
+      const bytes = Buffer.from(await this.filesystem.readFile(this.path), 'utf8');
+      await this.validateBoundary();
+      return bytes;
     } catch (error) {
       const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
       if (code === 'ENOENT') return undefined;
@@ -536,6 +545,7 @@ export class NodeLegacyBackupConversionStore implements LegacyBackupConversionSt
   async restoreLegacy(expected: Buffer): Promise<void> {
     const text = expected.toString('utf8');
     if (!Buffer.from(text, 'utf8').equals(expected)) throw new Error('Legacy bytes are not lossless UTF-8');
+    await this.validateBoundary();
     const temporary = `${this.path}.migration-restore-${randomUUID()}.tmp`;
     let handle;
     try {
@@ -545,6 +555,7 @@ export class NodeLegacyBackupConversionStore implements LegacyBackupConversionSt
       await handle.close();
       handle = undefined;
       await this.filesystem.replace(temporary, this.path);
+      await this.validateBoundary();
       const restored = await this.readBytes();
       if (restored === undefined || !restored.equals(expected)) throw new Error('Legacy byte restoration verification failed');
       let directory;
@@ -574,6 +585,15 @@ export class NodeLegacyBackupConversionStore implements LegacyBackupConversionSt
     });
     return read.kind === 'ok' &&
       canonicalJson(read.payload) === canonicalJson(expected as unknown as JsonValue);
+  }
+
+  private async validateBoundary(): Promise<void> {
+    await validateDurablePathBoundary(
+      this.options.root,
+      this.path,
+      this.filesystem,
+      this.requiredBoundarySafety,
+    );
   }
 }
 
@@ -606,7 +626,11 @@ const nodeLegacyEvidenceBackend: LegacyEvidenceFileBackend = {
 };
 
 export class NodeLegacyEvidenceStore implements LegacyEvidenceStore {
-  constructor(private readonly backend: LegacyEvidenceFileBackend = nodeLegacyEvidenceBackend) {}
+  constructor(
+    private readonly backend: LegacyEvidenceFileBackend = nodeLegacyEvidenceBackend,
+    private readonly filesystem: DurableFileSystem = nodeDurableFileSystem,
+    private readonly requiredBoundarySafety?: BoundarySafetyCapability,
+  ) {}
 
   async preserve(root: string, bytes: Buffer, hash: string): Promise<EvidencePreservation> {
     if (!isAbsolute(root) || !/^[0-9a-f]{64}$/u.test(hash) || createHash('sha256').update(bytes).digest('hex') !== hash) {
@@ -614,7 +638,12 @@ export class NodeLegacyEvidenceStore implements LegacyEvidenceStore {
     }
     const directory = join(root, 'migration-evidence');
     const path = join(directory, `legacy-v3-sha256-${hash}.json`);
+    // The root already exists at migration time; validate a direct child before
+    // creating the evidence directory, then validate the actual file before and
+    // after every raw-byte write/read sequence.
+    await this.validateBoundary(root, join(root, '.legacy-migration-boundary-probe'));
     await this.backend.ensureDirectory(directory);
+    await this.validateBoundary(root, path);
     let handle;
     try {
       handle = await this.backend.createExclusive(path);
@@ -630,13 +659,23 @@ export class NodeLegacyEvidenceStore implements LegacyEvidenceStore {
       if (!existing.equals(bytes)) throw new Error('Migration evidence hash-path collision contains different bytes');
     }
     const readback = await this.backend.readBytes(path);
+    await this.validateBoundary(root, path);
     if (!readback.equals(bytes) || createHash('sha256').update(readback).digest('hex') !== hash) {
       throw new Error('Migration evidence readback verification failed');
     }
     await this.backend.setReadOnly(path);
     const afterReadonly = await this.backend.readBytes(path);
+    await this.validateBoundary(root, path);
     if (!afterReadonly.equals(bytes)) throw new Error('Migration evidence changed while setting read-only');
     const directoryDurability = await this.backend.syncDirectory(directory);
     return Object.freeze({ path, hash, directoryDurability, readOnly: true });
+  }
+
+  private async validateBoundary(root: string, path: string): Promise<void> {
+    // A custom backend is an isolated test or native implementation and owns
+    // its own boundary contract. The default Node implementation must always
+    // use the shared T04 guard before it touches the host filesystem.
+    if (this.backend !== nodeLegacyEvidenceBackend) return;
+    await validateDurablePathBoundary(root, path, this.filesystem, this.requiredBoundarySafety);
   }
 }
