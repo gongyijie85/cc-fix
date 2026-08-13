@@ -1,0 +1,178 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { BROWSER_POLICY_SLOTS, type BrowserPolicySlotId } from '../../state/schema.js';
+import { PolicyManagedOrDeniedError } from '../../persist/executor.js';
+import { createPersistAuthoritySet } from './adapter-set.js';
+import { createBrowserPolicyProfileAuthority, type BrowserPolicyRegistry } from './browser-policy.js';
+import { createEnvironmentProfileAuthority, type EnvironmentRegistry, type ManagedEnvironmentKey } from './environment.js';
+import { createLocaleAuthorities, type LocaleRegistry } from './locale.js';
+import { createTimezoneAuthority, type ApprovedWindowsTimezone, type TimezoneSystem } from './timezone.js';
+
+const execFileAsync = promisify(execFile);
+
+export type WindowsCommandResult = Readonly<{ stdout: string; stderr: string }>;
+export type WindowsCommandRunner = (
+  executable: string,
+  args: readonly string[],
+  options?: Readonly<{ env?: NodeJS.ProcessEnv }>,
+) => Promise<WindowsCommandResult>;
+
+export const runWindowsCommand: WindowsCommandRunner = async (executable, args, options) => {
+  const result = await execFileAsync(executable, [...args], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 15_000,
+    env: options?.env,
+  });
+  return { stdout: result.stdout, stderr: result.stderr };
+};
+
+function commandErrorText(error: unknown): string {
+  if (typeof error !== 'object' || error === null) return String(error);
+  const candidate = error as { message?: unknown; stderr?: unknown };
+  return `${String(candidate.message ?? '')}\n${String(candidate.stderr ?? '')}`;
+}
+
+function isMissingRegistryError(error: unknown): boolean {
+  const text = commandErrorText(error);
+  return /unable to find|cannot find|not found|找不到|不存在/iu.test(text);
+}
+
+function isAccessDeniedError(error: unknown): boolean {
+  const text = commandErrorText(error);
+  return /access is denied|access denied|拒绝访问|权限/iu.test(text);
+}
+
+const registryTypeLine = /^[ \t]*\S+[ \t]+REG_SZ(?:[ \t]+(.*))?[ \t]*$/iu;
+
+async function readRegistryString(
+  runner: WindowsCommandRunner,
+  keyPath: string,
+  valueName: string,
+): Promise<string | null> {
+  try {
+    const result = await runner('reg.exe', ['query', keyPath, '/v', valueName]);
+    const match = result.stdout.split(/\r?\n/u).map((line) => registryTypeLine.exec(line)).find((candidate) => candidate !== null);
+    if (match == null) throw new Error(`Registry value ${keyPath}\\${valueName} is not REG_SZ`);
+    return match[1] ?? '';
+  } catch (error) {
+    if (isMissingRegistryError(error)) return null;
+    throw error;
+  }
+}
+
+async function writeRegistryString(
+  runner: WindowsCommandRunner,
+  keyPath: string,
+  valueName: string,
+  value: string,
+): Promise<void> {
+  await runner('reg.exe', ['add', keyPath, '/v', valueName, '/t', 'REG_SZ', '/d', value, '/f']);
+}
+
+async function removeRegistryValue(
+  runner: WindowsCommandRunner,
+  keyPath: string,
+  valueName: string,
+): Promise<void> {
+  try { await runner('reg.exe', ['delete', keyPath, '/v', valueName, '/f']); }
+  catch (error) { if (!isMissingRegistryError(error)) throw error; }
+}
+
+const POWERSHELL_JSON_SCRIPT = [
+  "$ErrorActionPreference='Stop'",
+  "$json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:CC_FIX_INPUT_B64))",
+  '$value=ConvertFrom-Json -InputObject $json',
+].join(';');
+
+function encodedInput(value: unknown): NodeJS.ProcessEnv {
+  return { ...process.env, CC_FIX_INPUT_B64: Buffer.from(JSON.stringify(value), 'utf8').toString('base64') };
+}
+
+async function runPowerShellJson<T>(runner: WindowsCommandRunner, script: string): Promise<T> {
+  const result = await runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+  return JSON.parse(result.stdout.trim()) as T;
+}
+
+async function writePowerShellJson(
+  runner: WindowsCommandRunner,
+  script: string,
+  value: unknown,
+): Promise<void> {
+  await runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${POWERSHELL_JSON_SCRIPT};${script}`], {
+    env: encodedInput(value),
+  });
+}
+
+export function createNativeEnvironmentRegistry(runner: WindowsCommandRunner): EnvironmentRegistry {
+  const path = 'HKCU\\Environment';
+  return {
+    read: (key) => readRegistryString(runner, path, key),
+    write: (key, value) => writeRegistryString(runner, path, key, value),
+    remove: (key) => removeRegistryValue(runner, path, key),
+  };
+}
+
+export function createNativeTimezoneSystem(runner: WindowsCommandRunner): TimezoneSystem {
+  return {
+    read: async () => (await runner('tzutil.exe', ['/g'])).stdout.trim(),
+    write: async (id: ApprovedWindowsTimezone) => { await runner('tzutil.exe', ['/s', id]); },
+  };
+}
+
+export function createNativeBrowserPolicyRegistry(runner: WindowsCommandRunner): BrowserPolicyRegistry {
+  const slot = (id: BrowserPolicySlotId) => BROWSER_POLICY_SLOTS.find((candidate) => candidate.id === id)!;
+  return {
+    read: async (id) => { const value = slot(id); return readRegistryString(runner, value.keyPath, value.valueName); },
+    write: async (id, content) => {
+      const value = slot(id);
+      try { await writeRegistryString(runner, value.keyPath, value.valueName, content); }
+      catch (error) {
+        if (isAccessDeniedError(error)) throw new PolicyManagedOrDeniedError(id, 'access_denied');
+        throw error;
+      }
+    },
+    remove: async (id) => { const value = slot(id); await removeRegistryValue(runner, value.keyPath, value.valueName); },
+  };
+}
+
+export function createNativeLocaleRegistry(runner: WindowsCommandRunner): LocaleRegistry {
+  const localePath = 'HKCU\\Control Panel\\International';
+  return {
+    readLocale: () => readRegistryString(runner, localePath, 'LocaleName'),
+    writeLocale: (value) => writeRegistryString(runner, localePath, 'LocaleName', value),
+    removeLocale: () => removeRegistryValue(runner, localePath, 'LocaleName'),
+    readLanguages: () => runPowerShellJson<string[]>(
+      runner,
+      '$tags=@(Get-WinUserLanguageList | ForEach-Object { $_.LanguageTag });ConvertTo-Json -InputObject $tags -Compress',
+    ),
+    writeLanguages: (value) => writePowerShellJson(
+      runner,
+      "$tags=@($value);if($tags.Count -eq 0){Set-WinUserLanguageList -LanguageList @() -Force}else{$list=New-WinUserLanguageList -Language $tags[0];foreach($tag in $tags|Select-Object -Skip 1){$list.Add([string]$tag)|Out-Null};Set-WinUserLanguageList -LanguageList $list -Force}",
+      value,
+    ),
+    removeLanguages: () => writePowerShellJson(
+      runner,
+      'Set-WinUserLanguageList -LanguageList @() -Force',
+      [],
+    ),
+    readCulture: () => runPowerShellJson<string>(runner, 'ConvertTo-Json -InputObject (Get-Culture).Name -Compress'),
+    writeCulture: (value) => writePowerShellJson(runner, 'Set-Culture -CultureInfo ([string]$value)', value),
+    removeCulture: async () => { throw new Error('Windows Culture has no safe missing-value representation'); },
+  };
+}
+
+/** Production authority composition. No network setting is present. */
+export function createNativePersistAuthoritySet(runner: WindowsCommandRunner = runWindowsCommand) {
+  const locale = createLocaleAuthorities(createNativeLocaleRegistry(runner));
+  return createPersistAuthoritySet({
+    environment: createEnvironmentProfileAuthority(createNativeEnvironmentRegistry(runner)),
+    system_timezone: createTimezoneAuthority(createNativeTimezoneSystem(runner)),
+    browser_policies: createBrowserPolicyProfileAuthority(createNativeBrowserPolicyRegistry(runner)),
+    locale_name: locale.localeName,
+    user_languages: locale.userLanguages,
+    user_culture: locale.userCulture,
+  });
+}
+
+export const NATIVE_MANAGED_ENVIRONMENT_KEYS: readonly ManagedEnvironmentKey[] = ['TZ', 'LANG', 'LC_ALL'];
