@@ -17,7 +17,9 @@ import {
 } from './durable-file.js';
 import {
   CapabilityError,
+  isMutationRootHeld,
   isMutationCoordinatorCapability,
+  mutationRootGateKey,
   isRestoreReservation,
   isVerifiedRestoreAuthorityCapability,
   type MutationAuditOperation,
@@ -27,6 +29,7 @@ import {
   type VerifiedRestoreAuthorityCapability,
   type VerifiedRestoreProof,
   type VerifiedRestoreSnapshot,
+  runWithHeldMutationRoot,
 } from './internal/capabilities.js';
 import { statePaths } from './paths.js';
 import {
@@ -42,6 +45,7 @@ import type { ProtectionHealth, ProtectionTarget } from '../domain/protection.js
 import type { RegionCode } from '../domain/region.js';
 
 export { isMutationCoordinatorCapability } from './internal/capabilities.js';
+export { mutationRootGateKey, runWithHeldMutationRoot } from './internal/capabilities.js';
 export type { MutationCoordinatorCapability } from './internal/capabilities.js';
 
 const STATE_SCHEMA = 'cc-fix-state-v1';
@@ -262,10 +266,17 @@ abstract class RepositoryBase {
       if (heldMutationScopes.getStore()?.has(request.lockKey) === true) {
         throw new RepositoryError('LOCK_REENTRY', 'Mutation lock reentry is not permitted');
       }
+      const rootRequest = Object.freeze({
+        lockKey: mutationRootGateKey(this.root), stateRoot: this.root,
+        filePath: this.root, operation,
+      });
+      let rootLock: MutationLockContext | undefined;
       let lock: MutationLockContext;
       try {
+        if (!isMutationRootHeld(this.root)) rootLock = await this.mutationCoordinator!.acquire(rootRequest);
         lock = await this.mutationCoordinator!.acquire(request);
       } catch (error) {
+        await rootLock?.release().catch(() => undefined);
         if (error instanceof CapabilityError && error.code === 'LOCK_REENTRY') {
           throw new RepositoryError('LOCK_REENTRY', 'Mutation lock reentry is not permitted', { cause: error });
         }
@@ -276,16 +287,18 @@ abstract class RepositoryBase {
       try {
         const held = new Set(heldMutationScopes.getStore() ?? []);
         held.add(request.lockKey);
-        result = await heldMutationScopes.run(
-          held,
-          () => withProcessMutationLock(request.lockKey, () => action(lock)),
+        result = await heldMutationScopes.run(held, () =>
+          runWithHeldMutationRoot(this.root, () => withProcessMutationLock(request.lockKey, () => action(lock))),
         );
       } catch (error) {
         actionError = error;
       }
-      try {
-        await lock.release();
-      } catch (releaseError) {
+      let releaseError: unknown;
+      try { await lock.release(); } catch (error) { releaseError = error; }
+      try { await rootLock?.release(); } catch (error) {
+        releaseError = releaseError === undefined ? error : new AggregateError([releaseError, error]);
+      }
+      if (releaseError !== undefined) {
         if (actionError !== undefined) {
           throw new RepositoryError('IO_FAILED', 'Mutation and lock release both failed', {
             cause: new AggregateError([actionError, releaseError]),

@@ -76,7 +76,7 @@ class MemoryEvidenceStore implements LegacyEvidenceStore {
     this.calls++;
     if (this.fail) throw new Error('evidence failed');
     this.bytes = Buffer.from(bytes);
-    return { path: `C:\\state\\migration-evidence\\legacy-v3-sha256-${hash}.json`, hash, directoryDurability: 'durable' as const, readOnly: true as const };
+    return { path: `C:\\state\\migration-evidence\\legacy-v3-sha256-${hash}.json`, hash, directoryDurability: 'durable' as const, readOnly: true as const, boundarySafety: 'identity_checked_non_atomic' as const };
   }
 }
 
@@ -398,6 +398,17 @@ describe('legacy migration transaction', () => {
     expect(deps.backup.writes).toBe(0);
   });
 
+  it('contains snapshot-id provider errors without changing the legacy backup', async () => {
+    const deps = setup();
+    const result = await migrateLegacyProtection({
+      root: 'C:\\state', coordinator: deps.coordinator.capability, stateStore: deps.state,
+      backupStore: deps.backup, evidenceStore: deps.evidence,
+      classifier: classifier({ mode: 'deep', region: 'us' }), snapshotId: () => { throw new Error('entropy failure'); },
+    });
+    expect(result).toMatchObject({ kind: 'failed', reason: 'snapshot_id_failed', stateWritten: false });
+    expect(deps.backup.writes).toBe(0);
+  });
+
   it('reports backup read, daily state commit, bad evidence contract, and lock acquisition failures', async () => {
     const readFailure = setup();
     readFailure.backup.readBytes = async () => { throw new Error('read failed'); };
@@ -416,7 +427,7 @@ describe('legacy migration transaction', () => {
 
     const badEvidence = setup();
     badEvidence.evidence.preserve = async (_root, _bytes, hash) => ({
-      path: 'C:\\state\\bad', hash: `${hash.slice(0, -1)}0`, directoryDurability: 'durable', readOnly: true,
+      path: 'C:\\state\\bad', hash: `${hash.slice(0, -1)}0`, directoryDurability: 'durable', readOnly: true, boundarySafety: 'identity_checked_non_atomic',
     });
     expect(await migrateLegacyProtection({
       root: 'C:\\state', coordinator: badEvidence.coordinator.capability, stateStore: badEvidence.state,
@@ -491,6 +502,7 @@ describe('native migration evidence', () => {
           return Buffer.from(stored);
         },
         setReadOnly: async () => { if (stage === 'readonly') fail(); },
+        queryReadOnly: async () => { if (stage === 'readonly') return false; return true; },
         syncDirectory: async () => { if (stage === 'directory') fail(); return 'durable'; },
       };
       const bytes = legacyBytes();
@@ -498,6 +510,20 @@ describe('native migration evidence', () => {
         .rejects.toThrow(/failure|verification/i);
     },
   );
+
+  it('fails closed when setReadOnly succeeds but verification cannot prove the attribute', async () => {
+    let stored: Buffer | undefined;
+    const backend: LegacyEvidenceFileBackend = {
+      ensureDirectory: async () => undefined,
+      createExclusive: async () => ({ write: async (bytes) => { stored = Buffer.from(bytes); }, sync: async () => undefined, close: async () => undefined }),
+      readBytes: async () => Buffer.from(stored!),
+      setReadOnly: async () => undefined,
+      queryReadOnly: async () => false,
+      syncDirectory: async () => 'durable',
+    };
+    await expect(new NodeLegacyEvidenceStore(backend).preserve('C:\\state', legacyBytes(), sha256(legacyBytes())))
+      .rejects.toThrow(/read-only verification/i);
+  });
 });
 
 describe('native legacy backup conversion boundary', () => {
@@ -513,6 +539,42 @@ describe('native legacy backup conversion boundary', () => {
 });
 
 describe('native checked-file migration adapters', () => {
+  it('serializes concurrent repository initialization and backup creation behind the migration root gate', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-migration-adapter-'));
+    const bytes = legacyBytes('jp');
+    await writeFile(statePaths(root).backup, bytes);
+    const coordinator = new InProcessTestMutationCoordinator();
+    const stateRepository = new StateRepository({ root, mutationCoordinator: coordinator.capability });
+    const backupRepository = new BackupRepository({ root, mutationCoordinator: coordinator.capability });
+    let releaseClassifier!: () => void;
+    const classifierStarted = new Promise<void>((resolve) => { releaseClassifier = resolve; });
+    let enteredClassifier!: () => void;
+    const entered = new Promise<void>((resolve) => { enteredClassifier = resolve; });
+    const migration = migrateLegacyProtection({
+      root, coordinator: coordinator.capability,
+      stateStore: new RepositoryMigrationStateStore(stateRepository),
+      backupStore: new NodeLegacyBackupConversionStore({ root }), evidenceStore: new NodeLegacyEvidenceStore(),
+      classifier: { classify: async () => { enteredClassifier(); await classifierStarted; return { candidates: [{ mode: 'standard', region: 'jp' }] }; } },
+      snapshotId: () => '123e4567-e89b-42d3-a456-426614174000',
+    });
+    await entered;
+    const competingState = stateRepository.initialize('us');
+    const parsed = parseLegacyBackupV3(bytes);
+    expect(parsed.kind).toBe('complete');
+    if (parsed.kind !== 'complete') throw new Error('fixture must be complete');
+    const competingBackup = backupRepository.create({
+      ...parsed.backup, snapshotId: '223e4567-e89b-42d3-a456-426614174000',
+    });
+    releaseClassifier();
+    await expect(migration).resolves.toMatchObject({ kind: 'migrated' });
+    await expect(competingState).rejects.toMatchObject({ code: 'STATE_ALREADY_EXISTS' });
+    await expect(competingBackup).rejects.toMatchObject({ code: 'BACKUP_ALREADY_EXISTS' });
+    expect((await stateRepository.read()).value.committedTarget).toEqual({ mode: 'standard', region: 'jp' });
+    expect(await backupRepository.read()).toMatchObject({ kind: 'value', value: { snapshotId: '123e4567-e89b-42d3-a456-426614174000' } });
+    expect(coordinator.requests[0]!.operation).toBe('migration.run');
+    expect(coordinator.requests[0]!.lockKey).toContain('mutation-root');
+  });
+
   it('migrates a real legacy file through T04 checked v4 and repository state', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cc-fix-migration-adapter-'));
     const bytes = legacyBytes('jp');

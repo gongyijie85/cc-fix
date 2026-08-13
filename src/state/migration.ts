@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, mkdir, open, readFile } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { chmod, mkdir, open, readFile, stat } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { canonicalJson, type JsonValue } from './checksum.js';
 import {
   nodeDurableFileSystem,
@@ -15,6 +15,8 @@ import {
   isMutationCoordinatorCapability,
   RepositoryError,
   StateRepository,
+  mutationRootGateKey,
+  runWithHeldMutationRoot,
   type MutationCoordinatorCapability,
 } from './repository.js';
 import { statePaths } from './paths.js';
@@ -68,7 +70,8 @@ export type LegacyMigrationReason =
   | 'state_read_failed'
   | 'lock_required'
   | 'lock_failed'
-  | 'lock_release_failed';
+  | 'lock_release_failed'
+  | 'snapshot_id_failed';
 
 export class LegacyMigrationError extends Error {
   constructor(readonly code: Extract<LegacyMigrationReason,
@@ -109,6 +112,8 @@ export type EvidencePreservation = Readonly<{
   hash: string;
   directoryDurability: 'durable' | 'unsupported';
   readOnly: true;
+  /** Node's path checks are identity-checked but not atomic no-follow operations. */
+  boundarySafety: 'identity_checked_non_atomic' | 'native_no_follow';
 }>;
 
 export interface LegacyEvidenceStore {
@@ -126,6 +131,7 @@ export interface LegacyEvidenceFileBackend {
   createExclusive(path: string): Promise<LegacyEvidenceWriteHandle>;
   readBytes(path: string): Promise<Buffer>;
   setReadOnly(path: string): Promise<void>;
+  queryReadOnly(path: string): Promise<boolean>;
   syncDirectory(path: string): Promise<'durable' | 'unsupported'>;
 }
 
@@ -168,6 +174,7 @@ export type MigrationResult = Readonly<{
   evidenceDirectoryDurability?: 'durable' | 'unsupported';
   committedTarget: ProtectionTarget | null;
   stateWritten: boolean;
+  retryable?: boolean;
 }>;
 
 export type LegacyMigrationOptions = Readonly<{
@@ -421,7 +428,13 @@ async function runMigration(options: LegacyMigrationOptions): Promise<MigrationR
     return result('recovery_required', 'legacy_target_mismatch', null, false, evidence);
   }
 
-  const snapshot = { ...parsed.backup, snapshotId: (options.snapshotId ?? randomUUID)() };
+  let snapshotId: string;
+  try {
+    snapshotId = (options.snapshotId ?? randomUUID)();
+  } catch {
+    return result('failed', 'snapshot_id_failed', null, false, evidence);
+  }
+  const snapshot = { ...parsed.backup, snapshotId };
   if (!isBackupSnapshotV4(snapshot)) return result('failed', 'legacy_invalid_shape', null, false, evidence);
   try {
     await options.backupStore.replaceLegacy(bytes, snapshot);
@@ -436,15 +449,9 @@ async function runMigration(options: LegacyMigrationOptions): Promise<MigrationR
     } catch {
       return result('recovery_required', 'legacy_restore_failed', target, false, evidence);
     }
-    return result('recovery_required', 'state_commit_failed', target, false, evidence);
+    return Object.freeze({ ...result('recovery_required', 'state_commit_failed', target, false, evidence), retryable: true });
   }
   return result('migrated', 'legacy_v3_migrated', target, true, evidence);
-}
-
-function migrationLockKey(root: string): string {
-  const absolute = resolve(root);
-  const normalized = process.platform === 'win32' ? absolute.toLocaleLowerCase('en-US') : absolute;
-  return `${normalized}\0legacy-migration`;
 }
 
 export async function migrateLegacyProtection(options: LegacyMigrationOptions): Promise<MigrationResult> {
@@ -454,7 +461,7 @@ export async function migrateLegacyProtection(options: LegacyMigrationOptions): 
   let lock;
   try {
     lock = await options.coordinator.acquire({
-      lockKey: migrationLockKey(options.root), stateRoot: options.root,
+      lockKey: mutationRootGateKey(options.root), stateRoot: options.root,
       filePath: options.root, operation: 'migration.run',
     });
   } catch {
@@ -463,7 +470,7 @@ export async function migrateLegacyProtection(options: LegacyMigrationOptions): 
   let migrationResult: MigrationResult;
   let releaseFailed = false;
   try {
-    migrationResult = await runMigration(options);
+    migrationResult = await runWithHeldMutationRoot(options.root, () => runMigration(options));
   } finally {
     try {
       await lock.release();
@@ -480,6 +487,7 @@ export async function migrateLegacyProtection(options: LegacyMigrationOptions): 
         hash: migrationResult.evidenceHash!,
         directoryDurability: migrationResult.evidenceDirectoryDurability!,
         readOnly: true,
+        boundarySafety: 'identity_checked_non_atomic',
       },
     );
   }
@@ -609,6 +617,7 @@ const nodeLegacyEvidenceBackend: LegacyEvidenceFileBackend = {
   },
   readBytes: (path) => readFile(path),
   setReadOnly: (path) => chmod(path, 0o444),
+  queryReadOnly: async (path) => (await stat(path)).mode & 0o222 ? false : true,
   syncDirectory: async (path) => {
     let handle;
     try {
@@ -666,9 +675,11 @@ export class NodeLegacyEvidenceStore implements LegacyEvidenceStore {
     await this.backend.setReadOnly(path);
     const afterReadonly = await this.backend.readBytes(path);
     await this.validateBoundary(root, path);
-    if (!afterReadonly.equals(bytes)) throw new Error('Migration evidence changed while setting read-only');
+    if (!afterReadonly.equals(bytes) || !(await this.backend.queryReadOnly(path))) {
+      throw new Error('Migration evidence read-only verification failed');
+    }
     const directoryDurability = await this.backend.syncDirectory(directory);
-    return Object.freeze({ path, hash, directoryDurability, readOnly: true });
+    return Object.freeze({ path, hash, directoryDurability, readOnly: true, boundarySafety: 'identity_checked_non_atomic' });
   }
 
   private async validateBoundary(root: string, path: string): Promise<void> {

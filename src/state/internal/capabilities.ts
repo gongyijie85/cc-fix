@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { resolve } from 'node:path';
+
 export type MutationAuditOperation =
   | 'migration.run'
   | 'state.initialize'
@@ -12,6 +15,29 @@ export type MutationLockRequest = Readonly<{
   filePath: string;
   operation: MutationAuditOperation;
 }>;
+
+const heldRootGates = new AsyncLocalStorage<ReadonlySet<string>>();
+
+/** A stable parent scope for every mutation under one durable state root. */
+export function mutationRootGateKey(root: string): string {
+  const absolute = resolve(root);
+  const normalized = process.platform === 'win32' ? absolute.toLocaleLowerCase('en-US') : absolute;
+  return `${normalized}\0mutation-root`;
+}
+
+/**
+ * Marks an already-acquired root gate as held for nested repository work.
+ * Nested work must still acquire its file lock; it must never reacquire root.
+ */
+export function runWithHeldMutationRoot<T>(root: string, action: () => Promise<T>): Promise<T> {
+  const held = new Set(heldRootGates.getStore() ?? []);
+  held.add(mutationRootGateKey(root));
+  return heldRootGates.run(held, action);
+}
+
+export function isMutationRootHeld(root: string): boolean {
+  return heldRootGates.getStore()?.has(mutationRootGateKey(root)) === true;
+}
 
 export class CapabilityError extends Error {
   constructor(readonly code: 'INVALID_CAPABILITY' | 'LOCK_REENTRY', message: string) {

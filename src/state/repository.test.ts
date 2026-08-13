@@ -387,7 +387,7 @@ describe('StateRepository revisioned commits', () => {
     expect((await repository.read()).value).toEqual(committed.value);
   });
 
-  it('uses one lock identity for state mutations while keeping operation as audit metadata', async () => {
+  it('acquires the root gate before the state file lock for every state mutation', async () => {
     const root = await makeRoot();
     const coordinator = new InProcessTestMutationCoordinator();
     const repository = new StateRepository({ root, mutationCoordinator: coordinator.capability });
@@ -399,13 +399,12 @@ describe('StateRepository revisioned commits', () => {
       degradation: [],
       activeTransactionId: null,
     });
-    expect(coordinator.requests.map(({ lockKey }) => lockKey)).toEqual([
-      coordinator.requests[0]!.lockKey,
-      coordinator.requests[0]!.lockKey,
-    ]);
+    expect(coordinator.requests).toHaveLength(4);
+    expect(coordinator.requests[0]!.lockKey).toBe(coordinator.requests[2]!.lockKey);
+    expect(coordinator.requests[1]!.lockKey).toBe(coordinator.requests[3]!.lockKey);
+    expect(coordinator.requests[0]!.lockKey).not.toBe(coordinator.requests[1]!.lockKey);
     expect(coordinator.requests.map(({ operation }) => operation)).toEqual([
-      'state.initialize',
-      'state.commit',
+      'state.initialize', 'state.initialize', 'state.commit', 'state.commit',
     ]);
   });
 
@@ -763,7 +762,7 @@ describe('BackupRepository immutable snapshots', () => {
     });
   });
 
-  it('uses one backup lock identity for create and delete while auditing distinct operations', async () => {
+  it('acquires the root gate before the backup file lock while auditing distinct operations', async () => {
     const root = await makeRoot();
     const coordinator = new InProcessTestMutationCoordinator();
     const verifier = new FakeVerifiedRestoreAuthority();
@@ -776,10 +775,11 @@ describe('BackupRepository immutable snapshots', () => {
     const snapshot = backupSnapshot();
     await repository.create(snapshot);
     await repository.deleteAfterVerifiedRestore(verifier.issue(snapshot));
-    expect(coordinator.requests[0]!.lockKey).toBe(coordinator.requests[1]!.lockKey);
+    expect(coordinator.requests).toHaveLength(4);
+    expect(coordinator.requests[0]!.lockKey).toBe(coordinator.requests[2]!.lockKey);
+    expect(coordinator.requests[1]!.lockKey).toBe(coordinator.requests[3]!.lockKey);
     expect(coordinator.requests.map(({ operation }) => operation)).toEqual([
-      'backup.create',
-      'backup.delete',
+      'backup.create', 'backup.create', 'backup.delete', 'backup.delete',
     ]);
   });
 
