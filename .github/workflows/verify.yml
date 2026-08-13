@@ -48,11 +48,13 @@ jobs:
       - run: pnpm verify:evidence
       - run: pnpm test:windows
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: cc-fix-${{ github.sha }}-windows-evidence
           path: |
             release/installer/*
             release/evidence/*
             .test-results/coverage/*
+            .wayfinder/temp/installer-lifecycle-*/*
           if-no-files-found: error
           retention-days: 14

@@ -33,9 +33,19 @@ function Get-NetworkFingerprint {
   return Get-TextHash ((@{ adapters = $Adapters; dns = $Dns; routes = $Routes; vpn = $Vpn } | ConvertTo-Json -Depth 6 -Compress))
 }
 
-function Invoke-Installer([string[]]$Arguments) {
-  $Process = Start-Process -FilePath $InstallerPath -ArgumentList $Arguments -WindowStyle Hidden -Wait -PassThru
-  if ($Process.ExitCode -ne 0) { throw "Installer failed with exit code $($Process.ExitCode)" }
+function Invoke-BoundedProcess([string]$Stage, [string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds = 180) {
+  Write-Host "[installer-lifecycle] $Stage"
+  $Process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WindowStyle Hidden -PassThru
+  if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+    Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+    throw "$Stage timed out after $TimeoutSeconds seconds"
+  }
+  return $Process.ExitCode
+}
+
+function Invoke-Installer([string]$Stage, [string[]]$Arguments) {
+  $ExitCode = Invoke-BoundedProcess $Stage $InstallerPath $Arguments
+  if ($ExitCode -ne 0) { throw "$Stage failed with exit code $ExitCode" }
 }
 
 $OriginalPath = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
@@ -43,7 +53,7 @@ $NetworkBefore = Get-NetworkFingerprint
 $DesktopPid = $null
 try {
   $InstallArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon', "/LOG=$EvidenceRoot\install.log")
-  Invoke-Installer $InstallArguments
+  Invoke-Installer 'fresh install' $InstallArguments
   $Version = (& "$InstallRoot\bin\cc-fix.cmd" --version) -join ''
   if ($LASTEXITCODE -ne 0 -or $Version.Trim() -ne $Package.version) { throw "Private-runtime CLI version smoke failed: $Version" }
   & "$InstallRoot\bin\cc-fix.cmd" persist preflight --json | Out-File -LiteralPath (Join-Path $EvidenceRoot 'preflight.json') -Encoding utf8
@@ -52,11 +62,11 @@ try {
 
   $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C76DF1B-B683-4A77-9B4C-89E3305D2399}_is1'
   Set-ItemProperty -LiteralPath $UninstallKey -Name DisplayVersion -Value '99.0.0'
-  $Downgrade = Start-Process -FilePath $InstallerPath -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon') -WindowStyle Hidden -Wait -PassThru
-  if ($Downgrade.ExitCode -eq 0) { throw 'Downgrade was not refused' }
+  $DowngradeExitCode = Invoke-BoundedProcess 'downgrade refusal' $InstallerPath @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon') 60
+  if ($DowngradeExitCode -eq 0) { throw 'Downgrade was not refused' }
   Set-ItemProperty -LiteralPath $UninstallKey -Name DisplayVersion -Value $Package.version
 
-  Invoke-Installer @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon', "/LOG=$EvidenceRoot\repair.log")
+  Invoke-Installer 'same-version repair' @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon', "/LOG=$EvidenceRoot\repair.log")
 
   $Desktop = Start-Process -FilePath "$InstallRoot\CC-Fix.exe" -WindowStyle Hidden -PassThru
   $DesktopPid = $Desktop.Id
@@ -73,8 +83,12 @@ try {
   if (@($Children | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }).Count -ne 0) { throw 'Private Node sidecar survived desktop exit' }
 
   $Uninstaller = Join-Path $InstallRoot 'unins000.exe'
-  $Process = Start-Process -FilePath $Uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$EvidenceRoot\uninstall.log") -WindowStyle Hidden -Wait -PassThru
-  if ($Process.ExitCode -ne 0) { throw "Uninstall failed with exit code $($Process.ExitCode)" }
+  $UninstallExitCode = Invoke-BoundedProcess 'restore-first uninstall' $Uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$EvidenceRoot\uninstall.log")
+  if ($UninstallExitCode -ne 0) { throw "Uninstall failed with exit code $UninstallExitCode" }
+  $UninstallDeadline = [DateTime]::UtcNow.AddSeconds(60)
+  while ((Test-Path -LiteralPath $InstallRoot) -and ([DateTime]::UtcNow -lt $UninstallDeadline)) {
+    Start-Sleep -Milliseconds 250
+  }
   if (Test-Path -LiteralPath $InstallRoot) { throw 'Managed install directory remains after uninstall' }
   $CurrentPath = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
   if ($CurrentPath -ne $OriginalPath) { throw 'Uninstall did not restore the exact original PATH' }

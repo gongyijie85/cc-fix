@@ -137,6 +137,12 @@ begin
   RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C76DF1B-B683-4A77-9B4C-89E3305D2399}_is1', 'DisplayVersion', Version);
 end;
 
+procedure ReportSetupError(Message: String);
+begin
+  Log(Message);
+  if not WizardSilent then MsgBox(Message, mbError, MB_OK);
+end;
+
 function InitializeSetup: Boolean;
 var
   Location, InstalledVersion, Launcher, Parameters: String;
@@ -147,12 +153,12 @@ begin
   { Legacy 0.1.x had no durable transaction and is migrated by the new runtime on first launch. }
   if Pos('0.1.', InstalledVersion) = 1 then exit;
   if not CompareReleaseVersions(CurrentReleaseVersion, InstalledVersion, VersionComparison) then begin
-    MsgBox('无法安全识别已安装的 CC-Fix 版本（' + InstalledVersion + '），已停止覆盖安装。', mbError, MB_OK);
+    ReportSetupError('无法安全识别已安装的 CC-Fix 版本（' + InstalledVersion + '），已停止覆盖安装。');
     Result := False;
     exit;
   end;
   if VersionComparison < 0 then begin
-    MsgBox('已安装 CC-Fix ' + InstalledVersion + '，不能用较旧的 ' + CurrentReleaseVersion + ' 覆盖。请先保留状态卸载较新版本。', mbError, MB_OK);
+    ReportSetupError('已安装 CC-Fix ' + InstalledVersion + '，不能用较旧的 ' + CurrentReleaseVersion + ' 覆盖。请先保留状态卸载较新版本。');
     Result := False;
     exit;
   end;
@@ -161,7 +167,7 @@ begin
   Parameters := '/D /S /C ""' + Launcher + '" persist preflight"';
   Result := Exec(ExpandConstant('{cmd}'), Parameters, Location, SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
   if not Result then
-    MsgBox('当前有未完成的 CC-Fix 恢复事务，已停止升级/修复。请先运行 cc-fix persist recover。', mbError, MB_OK);
+    ReportSetupError('当前有未完成的 CC-Fix 恢复事务，已停止升级/修复。请先运行 cc-fix persist recover。');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -292,13 +298,14 @@ var
 begin
   for Index := 1 to ParamCount do begin
     if CompareText(ParamStr(Index), '/PRESERVESTATE') = 0 then begin
-      MsgBox('将仅移除程序并保留全部保护状态和恢复数据。重新安装同版本或更新版本后，请立即运行 cc-fix persist recover 或 persist off。', mbInformation, MB_OK);
+      if not UninstallSilent then
+        MsgBox('将仅移除程序并保留全部保护状态和恢复数据。重新安装同版本或更新版本后，请立即运行 cc-fix persist recover 或 persist off。', mbInformation, MB_OK);
       Result := True;
       exit;
     end;
   end;
   Parameters := '/D /S /C ""' + ExpandConstant('{app}\bin\cc-fix.cmd') + '" persist off"';
   Result := Exec(ExpandConstant('{cmd}'), Parameters, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
-  if not Result then
+  if (not Result) and (not UninstallSilent) then
     MsgBox('CC-Fix 无法完整还原日常配置，因此已停止卸载。请运行 cc-fix persist recover，确认状态健康后再卸载。', mbError, MB_OK);
 end;
