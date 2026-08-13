@@ -41,6 +41,9 @@ import {
 import type { ProtectionHealth, ProtectionTarget } from '../domain/protection.js';
 import type { RegionCode } from '../domain/region.js';
 
+export { isMutationCoordinatorCapability } from './internal/capabilities.js';
+export type { MutationCoordinatorCapability } from './internal/capabilities.js';
+
 const STATE_SCHEMA = 'cc-fix-state-v1';
 const BACKUP_SCHEMA = 'cc-fix-backup-v4';
 
@@ -347,6 +350,34 @@ export class StateRepository extends RepositoryBase {
     };
     if (!isProtectionState(state)) {
       throw new RepositoryError('INVALID_STATE', 'Initial protection state is invalid');
+    }
+    const immutable = cloneImmutable(state);
+    return this.mutate('state.initialize', this.paths.state, async () => {
+      const existing = await this.readInternal();
+      if (!('kind' in existing)) {
+        throw new RepositoryError('STATE_ALREADY_EXISTS', 'Protection state already exists');
+      }
+      try {
+        const durability = await writeCheckedFile({
+          stateRoot: this.root,
+          filePath: this.paths.state,
+          schema: STATE_SCHEMA,
+          filesystem: this.filesystem,
+          requiredBoundarySafety: this.requiredBoundarySafety,
+          payload: asJson(immutable),
+          validatePayload: validateStatePayload,
+        });
+        return { ...durability, value: immutable };
+      } catch (error) {
+        throw fromDurableError(error, 'STATE_CORRUPT');
+      }
+    });
+  }
+
+  /** T06 migration-only atomic import. It never publishes an intermediate daily state. */
+  async initializeImported(state: ProtectionState): Promise<PersistenceResult<ProtectionState>> {
+    if (!isProtectionState(state) || state.revision !== 0) {
+      throw new RepositoryError('INVALID_STATE', 'Imported protection state must be a valid initial revision');
     }
     const immutable = cloneImmutable(state);
     return this.mutate('state.initialize', this.paths.state, async () => {

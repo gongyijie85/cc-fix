@@ -1,4 +1,5 @@
 export type MutationAuditOperation =
+  | 'migration.run'
   | 'state.initialize'
   | 'state.commit'
   | 'backup.create'

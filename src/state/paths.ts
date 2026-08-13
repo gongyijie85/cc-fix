@@ -2,10 +2,12 @@ import { isAbsolute, join } from 'node:path';
 
 export const STATE_FILE_NAME = 'state.json';
 export const BACKUP_FILE_NAME = 'persist-backup.json';
+export const MIGRATION_EVIDENCE_DIRECTORY_NAME = 'migration-evidence';
 
 export type StatePaths = {
   state: string;
   backup: string;
+  migrationEvidence: string;
 };
 
 export function statePaths(root: string): StatePaths {
@@ -15,5 +17,6 @@ export function statePaths(root: string): StatePaths {
   return {
     state: join(root, STATE_FILE_NAME),
     backup: join(root, BACKUP_FILE_NAME),
+    migrationEvidence: join(root, MIGRATION_EVIDENCE_DIRECTORY_NAME),
   };
 }

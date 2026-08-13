@@ -353,6 +353,7 @@ describe('StateRepository revisioned commits', () => {
     expect(statePaths(root)).toEqual({
       state: join(root, 'state.json'),
       backup: join(root, 'persist-backup.json'),
+      migrationEvidence: join(root, 'migration-evidence'),
     });
     expect(() => statePaths('relative')).toThrow('absolute literal path');
   });
