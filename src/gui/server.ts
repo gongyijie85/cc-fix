@@ -13,17 +13,22 @@ import { parseRegionCode, resolveRegion } from "../domain/region.js";
 import { resolveProtectionRequest } from "../domain/protection.js";
 import { createPersistRuntime } from "../persist/runtime.js";
 import type { PersistApplicationService } from "../persist/application.js";
+import { GuiSession } from "./session.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "no-store",
   });
   res.end(JSON.stringify(data));
 }
 
 async function serveHtml(res: http.ServerResponse) {
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'",
+  });
   res.end(htmlContent);
 }
 
@@ -167,19 +172,39 @@ function handleRegions(res: http.ServerResponse) {
 
 let runtimeFactory: () => Promise<PersistApplicationService> = createPersistRuntime;
 
+export type GuiHttpServer = http.Server & Readonly<{
+  ccFixSession: GuiSession;
+  bootstrapUrl(): string;
+}>;
+
 export function startGuiServer(
   port = 3456,
-  dependencies?: Readonly<{ createRuntime?: () => Promise<PersistApplicationService> }>,
-): Promise<http.Server> {
+  dependencies?: Readonly<{ createRuntime?: () => Promise<PersistApplicationService>; session?: GuiSession }>,
+): Promise<GuiHttpServer> {
   runtimeFactory = dependencies?.createRuntime ?? createPersistRuntime;
+  const session = dependencies?.session ?? new GuiSession();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
     const method = req.method?.toUpperCase() || "GET";
 
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address !== null ? address.port : port;
+    const expectedOrigin = `http://127.0.0.1:${actualPort}`;
+    if (method === "GET" && url.pathname === "/" && url.searchParams.has("token")) {
+      if (session.bootstrap(req, res, url.searchParams.get("token"), expectedOrigin)) return;
+      sendJson(res, { error: "invalid_or_used_bootstrap_token" }, 401);
+      return;
+    }
+    const isApi = url.pathname.startsWith('/api/');
+    if (!session.authorize(req, expectedOrigin, isApi)) {
+      sendJson(res, { error: "unauthorized_local_session" }, 401);
+      return;
+    }
+
     // CORS preflight
     if (method === "OPTIONS") {
       res.writeHead(204, {
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": expectedOrigin,
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
       });
@@ -196,7 +221,6 @@ export function startGuiServer(
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           "Connection": "keep-alive",
-          "Access-Control-Allow-Origin": "*",
         });
         res.write("\n");
         clients.add(res);
@@ -236,9 +260,18 @@ export function startGuiServer(
     }
   });
 
+  const guiServer = server as GuiHttpServer;
+  Object.defineProperties(guiServer, {
+    ccFixSession: { value: session, enumerable: false },
+    bootstrapUrl: { value: () => {
+      const address = guiServer.address();
+      if (typeof address !== 'object' || address === null) throw new Error('GUI server is not listening');
+      return `http://127.0.0.1:${address.port}/?token=${encodeURIComponent(session.bootstrapToken)}`;
+    }, enumerable: false },
+  });
   return new Promise((resolve) => {
     server.listen(port, "127.0.0.1", () => {
-      resolve(server);
+      resolve(guiServer);
     });
   });
 }

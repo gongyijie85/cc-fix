@@ -1,4 +1,3 @@
-import type { Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runtimeMocks = vi.hoisted(() => ({
@@ -9,9 +8,10 @@ const runtimeMocks = vi.hoisted(() => ({
 
 vi.mock("./index.html", () => ({ default: "<!doctype html>" }));
 
-import { startGuiServer } from "./server.js";
+import { startGuiServer, type GuiHttpServer } from "./server.js";
 
-let server: Server | undefined;
+let server: GuiHttpServer | undefined;
+let authHeaders: Record<string, string> = {};
 
 async function baseUrl(): Promise<string> {
   server = await startGuiServer(0, { createRuntime: async () => runtimeMocks as never });
@@ -19,7 +19,12 @@ async function baseUrl(): Promise<string> {
   if (!address || typeof address === "string") {
     throw new Error("GUI test server did not bind a TCP port");
   }
-  return `http://127.0.0.1:${address.port}`;
+  const origin = `http://127.0.0.1:${address.port}`;
+  const bootstrap = await fetch(server.bootstrapUrl(), { redirect: "manual" });
+  const cookie = bootstrap.headers.get("set-cookie")?.split(";", 1)[0];
+  if (!cookie) throw new Error("GUI bootstrap did not issue a session cookie");
+  authHeaders = { Cookie: cookie, Origin: origin };
+  return origin;
 }
 
 async function closeServer(): Promise<void> {
@@ -45,7 +50,7 @@ describe("POST /api/fix/on region validation", () => {
   it("defaults only a completely omitted region to US", async () => {
     const origin = await baseUrl();
 
-    const response = await fetch(`${origin}/api/fix/on`, { method: "POST" });
+    const response = await fetch(`${origin}/api/fix/on`, { method: "POST", headers: authHeaders });
 
     expect(response.status).toBe(202);
     await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
@@ -56,7 +61,7 @@ describe("POST /api/fix/on region validation", () => {
     const origin = await baseUrl();
 
     for (const value of ["", "unknown"]) {
-      const response = await fetch(`${origin}/api/fix/on?region=${value}`, { method: "POST" });
+      const response = await fetch(`${origin}/api/fix/on?region=${value}`, { method: "POST", headers: authHeaders });
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toEqual({
         error: {
@@ -69,7 +74,7 @@ describe("POST /api/fix/on region validation", () => {
       expect(runtimeMocks.protect).not.toHaveBeenCalled();
     }
 
-    const validResponse = await fetch(`${origin}/api/fix/on?region=jp`, { method: "POST" });
+    const validResponse = await fetch(`${origin}/api/fix/on?region=jp`, { method: "POST", headers: authHeaders });
     expect(validResponse.status).toBe(202);
     await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
     expect(runtimeMocks.protect.mock.calls[0]?.[0]).toEqual({ mode: "standard", region: "jp" });
@@ -77,10 +82,18 @@ describe("POST /api/fix/on region validation", () => {
 
   it("accepts an explicit deep level and reports committed state status", async () => {
     const origin = await baseUrl();
-    const response = await fetch(`${origin}/api/fix/on?region=sg&level=deep`, { method: "POST" });
+    const response = await fetch(`${origin}/api/fix/on?region=sg&level=deep`, { method: "POST", headers: authHeaders });
     expect(response.status).toBe(202);
     await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledWith({ mode: "deep", region: "sg" }));
-    const status = await fetch(`${origin}/api/status`);
+    const status = await fetch(`${origin}/api/status`, { headers: authHeaders });
     await expect(status.json()).resolves.toMatchObject({ mode: "daily", preferredRegion: "us", health: "healthy" });
+  });
+
+  it("rejects missing sessions, hostile origins and bootstrap replay", async () => {
+    const origin = await baseUrl();
+    expect((await fetch(`${origin}/api/status`)).status).toBe(401);
+    expect((await fetch(`${origin}/api/status`, { headers: { ...authHeaders, Origin: "https://evil.example" } })).status).toBe(401);
+    const replay = await fetch(server!.bootstrapUrl(), { redirect: "manual" });
+    expect(replay.status).toBe(401);
   });
 });
