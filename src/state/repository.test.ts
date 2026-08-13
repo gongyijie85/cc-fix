@@ -354,6 +354,8 @@ describe('StateRepository revisioned commits', () => {
       state: join(root, 'state.json'),
       backup: join(root, 'persist-backup.json'),
       migrationEvidence: join(root, 'migration-evidence'),
+      journal: join(root, 'transaction-journal.json'),
+      lock: join(root, 'mutation.lock'),
     });
     expect(() => statePaths('relative')).toThrow('absolute literal path');
   });
