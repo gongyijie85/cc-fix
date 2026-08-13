@@ -102,6 +102,7 @@ cc-fix run --region eu claude
 ## 安装、升级和卸载安全
 
 - 同版本再次安装执行修复，不改变 `%APPDATA%\cc-fix` 状态。
+- 安装器拒绝用较旧的 SemVer（包括 RC 序号）覆盖较新版本；需要回退时先保留状态卸载，再安装能安全读取现有 schema 的版本。
 - 存在活动或待恢复事务时，升级/修复会停止，并要求先运行 `cc-fix persist recover`。
 - 普通卸载先运行 `persist off`；还原失败时停止卸载，保留程序和恢复数据。
 - 紧急情况下可用 `unins000.exe /PRESERVESTATE` 只移除程序并保留全部恢复数据；重新安装后必须立即执行 `persist recover` 或 `persist off`。
@@ -124,7 +125,7 @@ pnpm verify:evidence
 pnpm test:windows
 ```
 
-Windows 生命周期测试会在隔离的工作区目录和 APPDATA 中完成安装、修复、私有运行时 CLI、桌面单实例、sidecar 回收、PATH 和卸载验证；它只读取并比较 VPN/路由/网卡/DNS 配置指纹，不修改这些配置。
+Windows 生命周期测试会在隔离的工作区目录和 APPDATA 中完成安装、降级拒绝、修复、私有运行时 CLI、桌面单实例、sidecar 回收、PATH 和卸载验证；它只读取并比较 VPN/路由/网卡/DNS 配置指纹，不修改这些配置。
 
 确切的 Node、Rust、Tauri、Inno Setup 与 WebView2 来源及 SHA-256 位于 `toolchain.lock.json`。发布载荷还会生成 CycloneDX SBOM、第三方声明、构建信息和安装包摘要。
 
