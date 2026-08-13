@@ -420,7 +420,8 @@ async function persistOn() {
   setButtonsDisabled(true);
   lastFixAction = "on";
   const region = document.getElementById("regionSelect")?.value || "us";
-  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}`, { method: "POST" });
+  const level = document.getElementById("levelSelect")?.value || "standard";
+  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}&level=${encodeURIComponent(level)}`, { method: "POST" });
   if (!res.ok) {
     setButtonsDisabled(false);
     showToast("已有操作进行中，请稍候");
@@ -465,7 +466,7 @@ async function loadRegions() {
     if (!res.ok) return;
     const data = await res.json();
     sel.innerHTML = data.regions.map(r => `<option value="${esc(r.code)}">${REGION_LABELS[r.code] || esc(r.code)}</option>`).join("");
-    sel.value = data.default;
+    if (!sel.value || !data.regions.some(r => r.code === sel.value)) sel.value = data.default;
   } catch { /* 回落静态选项 */ }
 }
 
@@ -474,13 +475,14 @@ async function loadStatus() {
     const res = await fetch("/api/status");
     const status = await res.json();
     const dot = $("#statusDot"), txt = $("#statusText");
-    if (status.enabled) { dot.className = "status-dot on"; txt.textContent = "持久化已开启"; }
-    else { dot.className = "status-dot off"; txt.textContent = "持久化未开启"; }
-    // persist on 期间禁止切换地区
+    if (status.mode !== "daily") { dot.className = "status-dot on"; txt.textContent = `${status.mode} · ${status.health}`; }
+    else { dot.className = "status-dot off"; txt.textContent = `daily · ${status.health}`; }
     const sel = document.getElementById("regionSelect");
     const hint = document.getElementById("regionHint");
-    if (sel) sel.disabled = status.enabled;
-    if (hint) hint.style.display = status.enabled ? "" : "none";
+    if (sel) { sel.disabled = false; sel.value = status.target?.region || status.preferredRegion || "us"; }
+    const level = document.getElementById("levelSelect");
+    if (level && status.mode !== "daily") level.value = status.mode;
+    if (hint) { hint.style.display = status.transaction?.kind === "none" ? "none" : ""; hint.textContent = "存在未完成事务，请先恢复"; }
   } catch {}
 }
 
@@ -516,7 +518,9 @@ function render(data) {
   html += `<div class="region-select">
     <label for="regionSelect">🌍 目标地区</label>
     <select id="regionSelect"><option value="us">🇺🇸 美国</option></select>
-    <span class="region-hint" id="regionHint">请先还原日常配置再切换地区</span>
+    <label for="levelSelect">🛡️ 保护强度</label>
+    <select id="levelSelect"><option value="standard">标准（推荐）</option><option value="deep">深度</option></select>
+    <span class="region-hint" id="regionHint">存在未完成事务，请先恢复</span>
   </div>`;
 
   html += `<div class="actions">
@@ -532,8 +536,7 @@ function render(data) {
   }
 
   $("#content").innerHTML = html;
-  loadRegions();
-  loadStatus();
+  loadRegions().then(loadStatus);
 }
 
 loadStatus();

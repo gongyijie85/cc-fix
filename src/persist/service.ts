@@ -13,6 +13,7 @@ import { TransactionJournalRepository } from '../state/journal.js';
 export type PersistStatus = Readonly<{
   mode: 'daily' | 'standard' | 'deep';
   target: ProtectionState['committedTarget'];
+  preferredRegion: ProtectionState['preferredRegion'];
   health: ProtectionState['health'];
   transaction: RecoveryDecision | Readonly<{ kind: 'state_reconciliation'; transactionId: string }>;
 }>;
@@ -26,6 +27,7 @@ export function derivePersistStatus(state: ProtectionState, journal: Transaction
   return {
     mode: state.committedTarget?.mode ?? 'daily',
     target: state.committedTarget,
+    preferredRegion: state.preferredRegion,
     health: effectiveTransaction.kind === 'none' ? state.health : 'recovery_required',
     transaction: effectiveTransaction,
   };

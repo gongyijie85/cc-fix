@@ -6,14 +6,14 @@ import { runDetection } from "./detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION } from "./detection/regions.js";
 import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
-import { getPersistStatus } from "./platform/windows.js";
-import { persistOnFlow, persistOffFlow } from "./fix/flow.js";
-import { recordFixSummary, recordCheck } from "./fix/history.js";
+import { recordCheck } from "./fix/history.js";
 import { runWithInjectedEnv, runDesktop } from "./run/injector.js";
 import { startGuiServer } from "./gui/server.js";
 import { exec } from "node:child_process";
-import type { StreamEvent } from "./events/types.js";
 import { version } from "./version.js";
+import { createPersistRuntime } from "./persist/runtime.js";
+import { parseRegionCode, resolveRegion } from "./domain/region.js";
+import { resolveProtectionRequest } from "./domain/protection.js";
 
 
 const program = new Command();
@@ -49,97 +49,73 @@ const persistCmd = program
 
 persistCmd
   .command("on")
-  .description("开启用户级持久化")
-  .option("--region <region>", "目标地区", DEFAULT_REGION)
+  .description("开启用户级持久化（默认标准保护）")
+  .option("--region <region>", "目标地区；省略时沿用已提交/偏好地区")
+  .option("--level <level>", "保护强度: standard | deep")
+  .option("--deep", "深度保护（等价于 --level deep）")
   .action(async (options) => {
-    const target = getTargetRegion(options.region);
-    await persistOnFlow(
-      { regionCode: options.region, targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
-      (event: StreamEvent) => {
-        if (event.type === "step-start") {
-          const change = event.oldValue !== undefined ? `: ${event.oldValue} → ${event.newValue}` : "";
-          console.log(chalk.dim(`▶ ${event.name}${change}`));
-        }
-        if (event.type === "step-ok") {
-          console.log(chalk.green(`  ✓ 完成${event.rollback ? " (回滚)" : ""}`));
-        }
-        if (event.type === "step-fail") {
-          console.log(chalk.red(`  ✗ 失败${event.rollback ? " (回滚)" : ""}: ${event.error}`));
-        }
-        if (event.type === "summary") {
-          recordFixSummary("persist-on", event);
-          if (event.fatal) {
-            console.log(chalk.red.bold("══ 致命错误，需手动检查 HKCU\\Environment ══"));
-          } else {
-            const parts = [`${event.ok} 成功`];
-            if (event.fail > 0) parts.push(`${event.fail} 失败`);
-            if (event.rolledBack) parts.push("已回滚");
-            console.log(chalk.dim(`══ ${parts.join(" · ")} ══`));
-          }
-          console.log(chalk.dim("运行 `cc-fix check` 验证效果"));
-        }
-      },
-    );
+    if (options.region !== undefined) parseRegionCode(options.region, "explicit");
+    const runtime = await createPersistRuntime();
+    const status = await runtime.status();
+    const region = resolveRegion({
+      explicit: options.region,
+      active: status.target?.region,
+      preferred: status.preferredRegion,
+    });
+    const target = resolveProtectionRequest({
+      currentMode: status.mode,
+      resolvedRegion: region,
+      level: options.level,
+      deep: options.deep,
+    });
+    const result = await runtime.protect(target);
+    if (result.kind === "recovery_required") {
+      throw new Error("保护转换补偿不完整；请运行 `cc-fix persist recover`");
+    }
+    if (result.kind === "compensated") {
+      throw new Error("保护转换失败，已完整回滚；系统仍保持原模式");
+    }
+    const suffix = result.kind === "degraded" ? `（降级：${result.degraded.length} 个浏览器策略槽未对齐）` : "";
+    console.log(chalk.green(`✓ 已提交 ${target.mode} / ${target.region} ${suffix}`));
+    console.log(chalk.dim("运行 `cc-fix check` 验证效果；浏览器可能需要重启"));
   });
 
 persistCmd
   .command("off")
   .description("关闭用户级持久化，恢复原始环境")
   .action(async () => {
-    await persistOffFlow((event: StreamEvent) => {
-      if (event.type === "step-start") {
-        const change = event.oldValue !== undefined ? `: ${event.oldValue} → ${event.newValue}` : "";
-        console.log(chalk.dim(`▶ ${event.name}${change}`));
-      }
-      if (event.type === "step-ok") {
-        console.log(chalk.green(`  ✓ 完成`));
-      }
-      if (event.type === "step-fail") {
-        console.log(chalk.red(`  ✗ 失败: ${event.error}`));
-      }
-      if (event.type === "summary") {
-        recordFixSummary("persist-off", event);
-        if (event.fatal) {
-          console.log(chalk.red.bold("══ 致命错误，需手动检查 HKCU\\Environment ══"));
-        } else {
-          console.log(chalk.dim(`══ ${event.ok} 成功 ══`));
-        }
-        console.log(chalk.dim("运行 `cc-fix check` 验证效果"));
-      }
-    });
+    const result = await (await createPersistRuntime()).restore();
+    if (result.kind === "recovery_required") {
+      throw new Error(`还原尚未完成（${result.failed.join(", ")}）；请运行 \`cc-fix persist recover\``);
+    }
+    console.log(result.kind === "noop" ? chalk.dim("当前已是日常模式") : chalk.green("✓ 已完整还原日常配置"));
+  });
+
+persistCmd
+  .command("recover")
+  .description("继续未完成的保护补偿或日常还原")
+  .action(async () => {
+    const result = await (await createPersistRuntime()).recover();
+    if (result.kind === "recovery_required") throw new Error(`仍有未恢复项：${result.failed.join(", ")}`);
+    console.log(result.kind === "noop" ? chalk.dim("没有需要恢复的事务") : chalk.green("✓ 恢复事务已收敛"));
   });
 
 persistCmd
   .command("status")
   .description("查看持久化状态")
-  .action(() => {
-    const status = getPersistStatus();
-    const modeLabel = status.mode === "secure" ? "安全模式 (secure)" : "日常模式 (daily)";
-
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    const status = await (await createPersistRuntime()).status();
+    if (options.json) {
+      console.log(JSON.stringify(status, null, 2));
+      return;
+    }
     console.log("\n持久化状态:");
-    console.log(`  模式: ${status.mode === "secure" ? chalk.green(modeLabel) : chalk.dim(modeLabel)}`);
-    console.log(`  可还原备份: ${status.enabled ? "有" : "无"}`);
-
-    if (status.activeRegion) {
-      console.log(`  目标地区: ${status.activeRegion}`);
-    }
-    if (status.backup) {
-      console.log(`  备份时间: ${status.backup.timestamp}`);
-      if (status.backup.schemaVersion) {
-        console.log(`  备份版本: v${status.backup.schemaVersion}`);
-      }
-    }
-
-    console.log("\n当前环境变量（用户级）:");
-    for (const [key, value] of Object.entries(status.current)) {
-      console.log(`  ${key}: ${value || "(未设置)"}`);
-    }
-
-    console.log("\n系统区域:");
-    console.log(`  时区: ${status.systemTimezone || "(未知)"}`);
-    console.log(`  区域格式: ${status.localeName || "(未知)"}`);
-
-    console.log(chalk.dim("\n切换: cc-fix persist on [--region us]  /  cc-fix persist off\n"));
+    console.log(`  模式: ${status.mode === "daily" ? chalk.dim(status.mode) : chalk.green(status.mode)}`);
+    console.log(`  健康: ${status.health === "healthy" ? chalk.green(status.health) : chalk.yellow(status.health)}`);
+    console.log(`  目标地区: ${status.target?.region ?? status.preferredRegion}`);
+    console.log(`  事务: ${status.transaction.kind}`);
+    console.log(chalk.dim("\n切换: cc-fix persist on [--level standard|deep] [--region us] / off / recover\n"));
   });
 
 // run 命令
@@ -214,4 +190,7 @@ program
     exec(`start ${url}`);
   });
 
-program.parse();
+await program.parseAsync().catch((error: unknown) => {
+  console.error(chalk.red(`错误: ${error instanceof Error ? error.message : String(error)}`));
+  process.exitCode = 1;
+});

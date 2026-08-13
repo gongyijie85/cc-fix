@@ -6,11 +6,13 @@ import htmlContent from "./index.html";
 import { runDetection } from "../detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION, TARGET_REGIONS } from "../detection/regions.js";
 import { fetchIpIntelligence } from "../proxy/ip-intel.js";
-import { getPersistStatus } from "../platform/windows.js";
-import { persistOnFlow, persistOffFlow } from "../fix/flow.js";
 import { recordFixSummary, recordCheck, readHistory } from "../fix/history.js";
 import type { StreamEvent } from "../events/types.js";
 import { RegionResolutionError } from "../domain/region.js";
+import { parseRegionCode, resolveRegion } from "../domain/region.js";
+import { resolveProtectionRequest } from "../domain/protection.js";
+import { createPersistRuntime } from "../persist/runtime.js";
+import type { PersistApplicationService } from "../persist/application.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
@@ -62,20 +64,6 @@ function releaseLock() {
 let lastDetectScore: number | null = null;
 let pendingRecheck: number | null = null;
 
-// 包装事件消费：透传广播、记录操作日志并维护 recheck 状态
-// 日志先于广播写入，前端收到 summary 后拉取历史时不会落空
-function fixEventConsumer(action: "persist-on" | "persist-off") {
-  return (e: StreamEvent) => {
-    if (e.type === "summary") {
-      recordFixSummary(action, e);
-    }
-    broadcast(e);
-    if (e.type === "summary" && e.fail === 0 && !e.fatal && lastDetectScore !== null) {
-      pendingRecheck = lastDetectScore;
-    }
-  };
-}
-
 function checkEventConsumer(e: StreamEvent) {
   if (e.type === "detect-done") {
     recordCheck(e.response.score);
@@ -94,16 +82,30 @@ function checkEventConsumer(e: StreamEvent) {
 
 async function handleFixOn(res: http.ServerResponse, url: URL) {
   const requestedRegion = url.searchParams.get("region");
-  const target = getTargetRegion(requestedRegion === null ? DEFAULT_REGION : requestedRegion);
+  if (requestedRegion !== null) parseRegionCode(requestedRegion, "explicit");
+  const requestedLevel = url.searchParams.get("level") ?? undefined;
 
   if (!tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
   try {
-    await persistOnFlow(
-      { regionCode: target.code, targetTimezone: target.timezone, targetWinTimezone: target.winTimezone, targetLang: target.lang, targetLcAll: target.lcAll },
-      fixEventConsumer("persist-on"),
-    );
+    const runtime = await runtimeFactory();
+    const status = await runtime.status();
+    const region = resolveRegion({ explicit: requestedRegion ?? undefined, active: status.target?.region, preferred: status.preferredRegion });
+    const target = resolveProtectionRequest({ currentMode: status.mode, resolvedRegion: region, level: requestedLevel });
+    broadcast({ type: "step-start", stepId: "persist", name: `切换到 ${target.mode} / ${target.region}` });
+    const result = await runtime.protect(target);
+    const failed = result.kind === "compensated" || result.kind === "recovery_required";
+    const summary = { type: "summary" as const, ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: result.kind === "compensated", fatal: result.kind === "recovery_required" };
+    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `事务结果: ${result.kind}` });
+    else broadcast({ type: "step-ok", stepId: "persist" });
+    if (!failed && lastDetectScore !== null) pendingRecheck = lastDetectScore;
+    recordFixSummary("persist-on", summary);
+    broadcast(summary);
+  } catch (error) {
+    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    const summary = { type: "summary" as const, ok: 0, fail: 1, rolledBack: false, fatal: true };
+    recordFixSummary("persist-on", summary); broadcast(summary);
   } finally {
     releaseLock();
   }
@@ -114,7 +116,18 @@ async function handleFixOff(res: http.ServerResponse) {
   res.writeHead(202); res.end();
 
   try {
-    await persistOffFlow(fixEventConsumer("persist-off"));
+    broadcast({ type: "step-start", stepId: "persist", name: "还原日常配置" });
+    const result = await (await runtimeFactory()).restore();
+    const failed = result.kind === "recovery_required";
+    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `未完成项: ${result.failed.join(", ")}` });
+    else broadcast({ type: "step-ok", stepId: "persist" });
+    if (!failed && lastDetectScore !== null) pendingRecheck = lastDetectScore;
+    const summary = { type: "summary" as const, ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: false, fatal: failed };
+    recordFixSummary("persist-off", summary); broadcast(summary);
+  } catch (error) {
+    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    const summary = { type: "summary" as const, ok: 0, fail: 1, rolledBack: false, fatal: true };
+    recordFixSummary("persist-off", summary); broadcast(summary);
   } finally {
     releaseLock();
   }
@@ -124,8 +137,9 @@ async function handleCheckStart(res: http.ServerResponse) {
   if (!tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
-  const target = getTargetRegion(DEFAULT_REGION);
   try {
+    const status = await (await runtimeFactory()).status();
+    const target = getTargetRegion(status.target?.region ?? status.preferredRegion);
     const ipIntel = await fetchIpIntelligence();
     await runDetection("auto", target.timezone, target.lang, ipIntel, checkEventConsumer);
   } finally {
@@ -134,7 +148,7 @@ async function handleCheckStart(res: http.ServerResponse) {
 }
 
 async function handleStatus(res: http.ServerResponse) {
-  const status = getPersistStatus();
+  const status = await (await runtimeFactory()).status();
   sendJson(res, status);
 }
 
@@ -151,7 +165,13 @@ function handleRegions(res: http.ServerResponse) {
 
 // ── 服务器 ──
 
-export function startGuiServer(port = 3456): Promise<http.Server> {
+let runtimeFactory: () => Promise<PersistApplicationService> = createPersistRuntime;
+
+export function startGuiServer(
+  port = 3456,
+  dependencies?: Readonly<{ createRuntime?: () => Promise<PersistApplicationService> }>,
+): Promise<http.Server> {
+  runtimeFactory = dependencies?.createRuntime ?? createPersistRuntime;
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
     const method = req.method?.toUpperCase() || "GET";
