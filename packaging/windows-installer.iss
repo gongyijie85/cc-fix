@@ -63,6 +63,62 @@ Filename: "{app}\CC-Fix.exe"; Description: "启动 CC-Fix"; Flags: nowait postin
 const
   WebViewClientId = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   InstallerStateKey = 'Software\CC-Fix\Installer';
+  CurrentReleaseVersion = '{#AppVersion}';
+
+function ParseReleaseVersion(Value: String; var Major, Minor, Patch, Stability, PreNumber: Integer): Boolean;
+var
+  Core, PreRelease, Part: String;
+  Separator: Integer;
+begin
+  Result := False;
+  Core := Value;
+  PreRelease := '';
+  Separator := Pos('-', Core);
+  if Separator > 0 then begin
+    PreRelease := Copy(Core, Separator + 1, MaxInt);
+    Delete(Core, Separator, MaxInt);
+  end;
+
+  Separator := Pos('.', Core);
+  if Separator = 0 then exit;
+  Part := Copy(Core, 1, Separator - 1);
+  Major := StrToIntDef(Part, -1);
+  Delete(Core, 1, Separator);
+  Separator := Pos('.', Core);
+  if Separator = 0 then exit;
+  Part := Copy(Core, 1, Separator - 1);
+  Minor := StrToIntDef(Part, -1);
+  Delete(Core, 1, Separator);
+  if Pos('.', Core) > 0 then exit;
+  Patch := StrToIntDef(Core, -1);
+  if (Major < 0) or (Minor < 0) or (Patch < 0) then exit;
+
+  if PreRelease = '' then begin
+    Stability := 1;
+    PreNumber := 0;
+  end else begin
+    if Pos('rc.', PreRelease) <> 1 then exit;
+    PreNumber := StrToIntDef(Copy(PreRelease, 4, MaxInt), -1);
+    if PreNumber < 0 then exit;
+    Stability := 0;
+  end;
+  Result := True;
+end;
+
+function CompareReleaseVersions(Left, Right: String; var Comparison: Integer): Boolean;
+var
+  LeftMajor, LeftMinor, LeftPatch, LeftStability, LeftPre: Integer;
+  RightMajor, RightMinor, RightPatch, RightStability, RightPre: Integer;
+begin
+  Result := ParseReleaseVersion(Left, LeftMajor, LeftMinor, LeftPatch, LeftStability, LeftPre) and
+    ParseReleaseVersion(Right, RightMajor, RightMinor, RightPatch, RightStability, RightPre);
+  if not Result then exit;
+  Comparison := LeftMajor - RightMajor;
+  if Comparison = 0 then Comparison := LeftMinor - RightMinor;
+  if Comparison = 0 then Comparison := LeftPatch - RightPatch;
+  if Comparison = 0 then Comparison := LeftStability - RightStability;
+  if (Comparison = 0) and (LeftStability = 0) then Comparison := LeftPre - RightPre;
+end;
 
 function WebView2Installed: Boolean;
 var
@@ -84,12 +140,22 @@ end;
 function InitializeSetup: Boolean;
 var
   Location, InstalledVersion, Launcher, Parameters: String;
-  ResultCode: Integer;
+  ResultCode, VersionComparison: Integer;
 begin
   Result := True;
   if not ExistingInstallLocation(Location, InstalledVersion) then exit;
   { Legacy 0.1.x had no durable transaction and is migrated by the new runtime on first launch. }
   if Pos('0.1.', InstalledVersion) = 1 then exit;
+  if not CompareReleaseVersions(CurrentReleaseVersion, InstalledVersion, VersionComparison) then begin
+    MsgBox('无法安全识别已安装的 CC-Fix 版本（' + InstalledVersion + '），已停止覆盖安装。', mbError, MB_OK);
+    Result := False;
+    exit;
+  end;
+  if VersionComparison < 0 then begin
+    MsgBox('已安装 CC-Fix ' + InstalledVersion + '，不能用较旧的 ' + CurrentReleaseVersion + ' 覆盖。请先保留状态卸载较新版本。', mbError, MB_OK);
+    Result := False;
+    exit;
+  end;
   Launcher := AddBackslash(Location) + 'bin\cc-fix.cmd';
   if not FileExists(Launcher) then begin Result := False; exit; end;
   Parameters := '/D /S /C ""' + Launcher + '" persist preflight"';

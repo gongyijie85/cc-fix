@@ -50,6 +50,12 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Fresh install preflight was blocked' }
   if (-not (((Get-ItemProperty 'HKCU:\Environment' -Name Path).Path -split ';') -contains "$InstallRoot\bin")) { throw 'PATH segment was not added' }
 
+  $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C76DF1B-B683-4A77-9B4C-89E3305D2399}_is1'
+  Set-ItemProperty -LiteralPath $UninstallKey -Name DisplayVersion -Value '99.0.0'
+  $Downgrade = Start-Process -FilePath $InstallerPath -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon') -WindowStyle Hidden -Wait -PassThru
+  if ($Downgrade.ExitCode -eq 0) { throw 'Downgrade was not refused' }
+  Set-ItemProperty -LiteralPath $UninstallKey -Name DisplayVersion -Value $Package.version
+
   Invoke-Installer @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon', "/LOG=$EvidenceRoot\repair.log")
 
   $Desktop = Start-Process -FilePath "$InstallRoot\CC-Fix.exe" -WindowStyle Hidden -PassThru
@@ -81,6 +87,7 @@ try {
     result = 'passed'
     privateRuntime = $true
     repair = $true
+    downgradeRefused = $true
     singleInstance = $true
     sidecarReaped = $true
     pathRestored = $true
