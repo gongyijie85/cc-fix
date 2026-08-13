@@ -34,6 +34,7 @@ export async function runProtectTransaction(input: {
   requestedTarget: ProtectionTarget;
   observed: AuthorityObservation;
   desired: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>;
+  dailyValues?: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>;
   authorities: Readonly<Record<PersistStepId, ExecutableAuthority>>;
   journalRepository: TransactionJournalRepository;
   createDailySnapshot?(values: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>): Promise<void>;
@@ -49,10 +50,16 @@ export async function runProtectTransaction(input: {
     if (input.createDailySnapshot === undefined) throw new Error('Daily snapshot creation is required for initial protection');
     await input.createDailySnapshot(await captureDailyAuthorityValues(input.authorities));
   }
-  const snapshot = await captureJournalPlan({ steps: plan.steps, desired: input.desired, authorities: input.authorities });
+  const effectiveDesired = { ...input.desired };
+  for (const step of plan.steps) {
+    if (step.action !== 'restore') continue;
+    if (input.dailyValues === undefined) throw new Error('Daily snapshot values are required for a downshift');
+    effectiveDesired[step.id] = input.dailyValues[step.id];
+  }
+  const snapshot = await captureJournalPlan({ steps: plan.steps, desired: effectiveDesired, authorities: input.authorities });
   const journal = await input.journalRepository.plan('protect', snapshot);
   await input.stateTransaction.begin(journal.transactionId);
-  const result = await executePlan({ steps: plan.steps, desired: input.desired, authorities: input.authorities, journal: createJournalReporter(input.journalRepository, journal) });
+  const result = await executePlan({ steps: plan.steps, desired: effectiveDesired, authorities: input.authorities, journal: createJournalReporter(input.journalRepository, journal) });
   if (result.kind === 'committable' || result.kind === 'degraded') await input.stateTransaction.complete(result);
   else await input.stateTransaction.fail(result);
   return result;

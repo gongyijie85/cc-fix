@@ -43,7 +43,7 @@ export class TransactionJournalRepository {
   }
   async plan(kind: TransactionJournal['kind'], steps: readonly (string | Readonly<{ id: string; original?: JsonValue; desired?: JsonValue }>)[]): Promise<TransactionJournal> {
     const ids = steps.map((step) => typeof step === 'string' ? step : step.id);
-    if (ids.length === 0 || new Set(ids).size !== ids.length) throw new Error('A journal plan needs unique steps');
+    if (new Set(ids).size !== ids.length) throw new Error('A journal plan needs unique steps');
     const existing = await this.read();
     if (existing !== undefined && recoveryAction(existing) !== 'none') {
       throw new Error('An unfinished transaction requires recovery before a new plan');

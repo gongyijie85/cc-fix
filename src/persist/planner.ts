@@ -34,6 +34,7 @@ export function planTransition(input: {
       steps.push({ id, disposition: 'required', action: 'restore' });
     }
   }
-  const kind = steps.every((step) => step.action === 'noop') ? 'noop' : 'protect';
+  const sameTarget = from?.mode === target.mode && from.region === target.region;
+  const kind = sameTarget && steps.every((step) => step.action === 'noop') ? 'noop' : 'protect';
   return { kind, from, target, steps };
 }

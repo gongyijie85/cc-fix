@@ -20,6 +20,11 @@ describe('differential transition planner', () => {
     expect(planTransition({ committedTarget: switched.target, requestedTarget: null, observed: {} }).kind).toBe('restore');
     expect(planTransition({ committedTarget: null, requestedTarget: null, observed: {} })).toMatchObject({ kind: 'noop', steps: [] });
   });
+  it('still commits a changed target when every authority is already aligned', () => {
+    const aligned = { environment: true, system_timezone: true, browser_policies: true };
+    expect(planTransition({ committedTarget: null, requestedTarget: { mode: 'standard', region: 'us' }, observed: aligned }).kind).toBe('protect');
+    expect(planTransition({ committedTarget: { mode: 'standard', region: 'jp' }, requestedTarget: { mode: 'standard', region: 'us' }, observed: aligned }).kind).toBe('protect');
+  });
   it('has no external network setting in any plan vocabulary', () => {
     const plan = planTransition({ committedTarget: null, requestedTarget: { mode: 'deep', region: 'sg' }, observed: {} });
     expect(plan.steps.map((s) => s.id).join(' ')).not.toMatch(/vpn|route|adapter|host|doh|dns/i);
