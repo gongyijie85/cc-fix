@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -6,7 +6,7 @@ export const CRITICAL_COVERAGE_GROUPS = ['domain', 'state', 'persist'];
 
 export function aggregateCriticalBranches(coverage) {
   const totals = Object.fromEntries(
-    CRITICAL_COVERAGE_GROUPS.map((group) => [group, { covered: 0, total: 0 }]),
+    CRITICAL_COVERAGE_GROUPS.map((group) => [group, { covered: 0, total: 0, files: 0 }]),
   );
   for (const [rawPath, report] of Object.entries(coverage)) {
     const normalized = rawPath.replaceAll('\\', '/');
@@ -14,6 +14,7 @@ export function aggregateCriticalBranches(coverage) {
       normalized.includes(`/src/${candidate}/`),
     );
     if (group === undefined || report === null || typeof report !== 'object') continue;
+    totals[group].files += 1;
     const branches = report.b;
     if (branches === null || typeof branches !== 'object') continue;
     for (const counts of Object.values(branches)) {
@@ -25,6 +26,19 @@ export function aggregateCriticalBranches(coverage) {
   return totals;
 }
 
+async function sourceGroupExists(group) {
+  const directory = resolve('src', group);
+  try {
+    await access(directory);
+  } catch {
+    return false;
+  }
+  const entries = await readdir(directory, { recursive: true, withFileTypes: true });
+  return entries.some((entry) =>
+    entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts'),
+  );
+}
+
 export async function checkCriticalCoverage(
   coveragePath = '.test-results/coverage/coverage-final.json',
   threshold = 90,
@@ -33,9 +47,14 @@ export async function checkCriticalCoverage(
   const totals = aggregateCriticalBranches(coverage);
   let passed = true;
   for (const group of CRITICAL_COVERAGE_GROUPS) {
-    const { covered, total } = totals[group];
+    const { covered, total, files } = totals[group];
+    if (files === 0 && await sourceGroupExists(group)) {
+      passed = false;
+      process.stdout.write(`[critical-coverage] src/${group}: FAIL no instrumented source files\n`);
+      continue;
+    }
     if (total === 0) {
-      process.stdout.write(`[critical-coverage] src/${group}: no instrumented branches\n`);
+      process.stdout.write(`[critical-coverage] src/${group}: no branches PASS\n`);
       continue;
     }
     const percentage = (covered / total) * 100;

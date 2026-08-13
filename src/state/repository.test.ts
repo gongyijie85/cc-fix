@@ -1049,6 +1049,79 @@ describe('BackupRepository immutable snapshots', () => {
     await expect(repository.read()).resolves.toMatchObject({ kind: 'value' });
   });
 
+  it('reconciles when native final compare-delete removes the backup and then throws', async () => {
+    const root = await makeRoot();
+    const snapshot = backupSnapshot();
+    let unlinkCalls = 0;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      unlink: async (path) => {
+        unlinkCalls += 1;
+        await nodeDurableFileSystem.unlink(path);
+        if (unlinkCalls === 2) {
+          throw Object.assign(new Error('lost native completion response'), { code: 'EIO' });
+        }
+      },
+    };
+    const { repository, verifier } = verifiedBackupRepository(root, { filesystem });
+    await repository.create(snapshot);
+    const proof = verifier.issue(snapshot);
+
+    const result = await repository.deleteAfterVerifiedRestore(proof);
+    expect(result).toMatchObject({
+      committed: true,
+      possiblyDeleted: true,
+      reservationState: 'reconcile_required',
+    });
+    await expect(repository.read()).resolves.toEqual({ kind: 'missing' });
+    if (result.reservationState !== 'reconcile_required') throw new Error('expected reservation');
+    await expect(repository.reconcileVerifiedRestoreDeletion(result.reservation)).resolves.toEqual({
+      kind: 'finalized',
+    });
+  });
+
+  it('keeps the reservation when a different valid backup appears after an uncertain final delete', async () => {
+    const root = await makeRoot();
+    const snapshot = backupSnapshot();
+    const replacement: BackupSnapshotV4 = {
+      ...backupSnapshot(),
+      snapshotId: '3b825f6c-91f3-4a2a-a97a-132bce725413',
+    };
+    let unlinkCalls = 0;
+    const filesystem: DurableFileSystem = {
+      ...nodeDurableFileSystem,
+      unlink: async (path) => {
+        unlinkCalls += 1;
+        await nodeDurableFileSystem.unlink(path);
+        if (unlinkCalls === 2) {
+          await writeFile(
+            path,
+            serializeCheckedEnvelope(createCheckedEnvelope('cc-fix-backup-v4', replacement)),
+            'utf8',
+          );
+          throw Object.assign(new Error('lost response after external replacement'), { code: 'EIO' });
+        }
+      },
+    };
+    const { repository, verifier } = verifiedBackupRepository(root, { filesystem });
+    await repository.create(snapshot);
+    const result = await repository.deleteAfterVerifiedRestore(verifier.issue(snapshot));
+
+    expect(result).toMatchObject({
+      committed: true,
+      possiblyDeleted: true,
+      reservationState: 'reconcile_required',
+    });
+    await expect(repository.read()).resolves.toMatchObject({
+      kind: 'value',
+      value: replacement,
+    });
+    if (result.reservationState !== 'reconcile_required') throw new Error('expected reservation');
+    await expect(repository.reconcileVerifiedRestoreDeletion(result.reservation)).rejects.toMatchObject({
+      code: 'BACKUP_IDENTITY_MISMATCH',
+    });
+  });
+
   it('fails closed on an unknown new backup schema even with a valid predecessor', async () => {
     const root = await makeRoot();
     const repository = backupRepository(root);

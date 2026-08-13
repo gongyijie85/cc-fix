@@ -7,14 +7,24 @@ import { afterEach, describe, expect, it } from 'vitest';
 const roots: string[] = [];
 const checker = join(process.cwd(), 'scripts', 'check-critical-coverage.mjs');
 
-async function fixture(branches: number[], windowsPath = false): Promise<string> {
+async function fixture(
+  branches: number[],
+  windowsPath = false,
+  includeDomain = true,
+): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'cc-fix-coverage-'));
   roots.push(root);
   const path = join(root, 'coverage.json');
   const sourcePath = windowsPath
     ? 'D:\\work\\cc-fix\\src\\state\\repository.ts'
     : '/work/cc-fix/src/state/repository.ts';
-  await writeFile(path, JSON.stringify({ [sourcePath]: { b: { 0: branches } } }), 'utf8');
+  const domainPath = windowsPath
+    ? 'D:\\work\\cc-fix\\src\\domain\\region.ts'
+    : '/work/cc-fix/src/domain/region.ts';
+  await writeFile(path, JSON.stringify({
+    [sourcePath]: { b: { 0: branches } },
+    ...(includeDomain ? { [domainPath]: { b: { 0: [1] } } } : {}),
+  }), 'utf8');
   return path;
 }
 
@@ -35,5 +45,12 @@ describe('critical coverage checker', () => {
     const result = spawnSync(process.execPath, [checker, path], { encoding: 'utf8' });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('src/state: 90.00%');
+  });
+
+  it('fails when an existing critical source directory is absent from the report', async () => {
+    const path = await fixture([...Array(100).fill(1)], false, false);
+    const result = spawnSync(process.execPath, [checker, path], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('src/domain: FAIL no instrumented source files');
   });
 });

@@ -844,6 +844,37 @@ export async function deleteCheckedFile<T extends JsonValue>(
   try {
     previousDelete = await compareAndDelete(previousPath, previousSerialized);
   } catch (error) {
+    // A native compare-delete may remove the final generation and then lose its
+    // completion response. Observe the checked pair before deciding whether the
+    // restore proof can be aborted and reused.
+    try {
+      const observed = await readCheckedFile(options);
+      if (observed.kind === 'missing') {
+        return {
+          committed: true,
+          possiblyDeleted: true,
+          directoryDurability: 'unsupported',
+          boundarySafety: filesystem.boundarySafety,
+        };
+      }
+      try {
+        assertExpectedIdentity(observed.payload, options.expectedIdentity);
+      } catch {
+        return {
+          committed: true,
+          possiblyDeleted: true,
+          directoryDurability: 'unsupported',
+          boundarySafety: filesystem.boundarySafety,
+        };
+      }
+    } catch {
+      return {
+        committed: true,
+        possiblyDeleted: true,
+        directoryDurability: 'unsupported',
+        boundarySafety: filesystem.boundarySafety,
+      };
+    }
     throw new DurableFileError('DELETE_FAILED', 'Final checked generation is still preserved', {
       cause: error,
       possiblyCommitted: false,
