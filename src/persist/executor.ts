@@ -8,7 +8,10 @@ export interface ExecutableAuthority {
 }
 export interface ExecutionJournal { transition(id: PersistStepId, phase: 'applying' | 'verified' | 'compensating' | 'compensated' | 'recovery_required'): Promise<void>; }
 export class PolicyManagedOrDeniedError extends Error {}
-export type ExecutionResult = Readonly<{ kind: 'committable' | 'degraded' | 'compensated' | 'recovery_required'; degraded: readonly PersistStepId[] }>;
+export type ExecutionResult =
+  | Readonly<{ kind: 'committable'; degraded: readonly [] }>
+  | Readonly<{ kind: 'degraded'; degraded: readonly PersistStepId[] }>
+  | Readonly<{ kind: 'compensated' | 'recovery_required'; degraded: readonly [] }>;
 
 /** Captures all originals before the first write so recovery has a complete plan. */
 export async function captureJournalPlan(input: {
@@ -60,7 +63,9 @@ export async function executePlan(input: {
       }
       await input.journal.transition(step.id, 'verified');
     }
-    return { kind: degraded.length === 0 ? 'committable' : 'degraded', degraded };
+    return degraded.length === 0
+      ? { kind: 'committable', degraded: [] }
+      : { kind: 'degraded', degraded };
   } catch {
     let incomplete = false;
     for (const entry of [...modified].reverse()) {
