@@ -22,3 +22,17 @@ export const nodeProcessInspector: ProcessInspector = {
   current: async () => ({ pid: process.pid, startedAtMs: nodeStartedAtMs }),
   isSameProcess: async (owner) => owner.pid === process.pid && owner.startedAtMs === nodeStartedAtMs,
 };
+
+export function createWindowsProcessInspector(
+  queryStartedAtMs: (pid: number) => Promise<number | undefined>,
+): ProcessInspector {
+  let currentIdentity: Promise<Pick<ProcessOwner, 'pid' | 'startedAtMs'>> | undefined;
+  return {
+    current: async () => currentIdentity ??= (async () => {
+      const startedAtMs = await queryStartedAtMs(process.pid);
+      if (startedAtMs === undefined) throw new Error('Cannot establish current process start time');
+      return { pid: process.pid, startedAtMs };
+    })(),
+    isSameProcess: async (owner) => (await queryStartedAtMs(owner.pid)) === owner.startedAtMs,
+  };
+}

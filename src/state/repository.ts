@@ -17,6 +17,7 @@ import {
 } from './durable-file.js';
 import {
   CapabilityError,
+  issueMutationCoordinatorCapability,
   isMutationRootHeld,
   isMutationCoordinatorCapability,
   mutationRootGateKey,
@@ -24,6 +25,7 @@ import {
   isVerifiedRestoreAuthorityCapability,
   type MutationAuditOperation,
   type MutationCoordinatorCapability,
+  type MutationCoordinatorBackend,
   type MutationLockContext,
   type RestoreReservation,
   type VerifiedRestoreAuthorityCapability,
@@ -47,6 +49,13 @@ import type { RegionCode } from '../domain/region.js';
 export { isMutationCoordinatorCapability } from './internal/capabilities.js';
 export { mutationRootGateKey, runWithHeldMutationRoot } from './internal/capabilities.js';
 export type { MutationCoordinatorCapability } from './internal/capabilities.js';
+
+/** Controlled production gateway; the private issuer never enters adapter imports. */
+export function createMutationCoordinatorCapability(
+  backend: MutationCoordinatorBackend,
+): MutationCoordinatorCapability {
+  return issueMutationCoordinatorCapability(backend);
+}
 
 const STATE_SCHEMA = 'cc-fix-state-v1';
 const BACKUP_SCHEMA = 'cc-fix-backup-v4';

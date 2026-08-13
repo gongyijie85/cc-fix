@@ -327,7 +327,7 @@ describe('StateRepository revisioned commits', () => {
       }
     }
     expect(productionImporters).toEqual(['state/repository.ts']);
-    expect(productionIssuerImporters).toEqual([]);
+    expect(productionIssuerImporters).toEqual(['state/repository.ts']);
     expect(await readFile(join(sourceRoot, 'index.ts'), 'utf8')).not.toContain('state/internal');
   });
 

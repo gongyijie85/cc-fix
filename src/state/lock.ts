@@ -4,6 +4,7 @@ import type { ProcessInspector, ProcessOwner } from './process-owner.js';
 export type LockRecord = Readonly<ProcessOwner & { lockId: string }>;
 export type LockAcquireResult =
   | { kind: 'acquired'; lock: StateMutationLock; previousOwner?: LockRecord }
+  | { kind: 'busy'; owner: LockRecord }
   | { kind: 'recovery_required'; owner: LockRecord };
 
 export interface LockStore {
@@ -50,7 +51,7 @@ export async function acquireStateMutationLock(options: {
   if (await options.store.create(proposed)) return { kind: 'acquired', lock: new StateMutationLock(options.store, proposed) };
   const existing = await options.store.read();
   if (existing === undefined) return acquireStateMutationLock(options);
-  if (await options.inspector.isSameProcess(existing)) return { kind: 'recovery_required', owner: existing };
+  if (await options.inspector.isSameProcess(existing)) return { kind: 'busy', owner: existing };
   if (!options.recoveryComplete) return { kind: 'recovery_required', owner: existing };
   if (!(await options.store.replace(existing, proposed))) return acquireStateMutationLock(options);
   return { kind: 'acquired', lock: new StateMutationLock(options.store, proposed), previousOwner: existing };
