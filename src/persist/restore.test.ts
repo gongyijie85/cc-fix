@@ -18,4 +18,9 @@ describe('convergent restore', () => {
     expect((await restoreAll(input)).failed).toEqual([]);
     expect(values.environment).toBe('daily-env');
   });
+  it('continues even when journal reporting also fails', async () => {
+    const authority = { read: async () => storedValue('protected'), write: async () => { throw new Error('blocked'); } };
+    const result = await restoreAll({ order: ['environment'], daily: { environment: storedValue('daily') } as never, authorities: { environment: authority } as never, journal: { transition: async () => { throw new Error('journal unavailable'); } } as never });
+    expect(result).toEqual({ verified: [], failed: ['environment'] });
+  });
 });

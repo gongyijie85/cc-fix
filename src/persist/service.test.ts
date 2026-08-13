@@ -6,4 +6,7 @@ describe('persist status', () => {
     expect(derivePersistStatus(state, undefined)).toMatchObject({ mode: 'deep', health: 'healthy' });
     expect(derivePersistStatus(state, { transactionId: 'x', kind: 'protect', steps: [{ id: 'environment', phase: 'applying' }] })).toMatchObject({ mode: 'deep', health: 'recovery_required', transaction: { kind: 'protect_compensation' } });
   });
+  it('reports daily from null target even when other durable data exists', () => {
+    expect(derivePersistStatus({ ...state, committedTarget: null, health: 'degraded' }, undefined)).toMatchObject({ mode: 'daily', health: 'degraded' });
+  });
 });

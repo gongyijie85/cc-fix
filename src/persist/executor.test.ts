@@ -26,4 +26,14 @@ describe('transition executor', () => {
     const result = await executePlan({ ...f, steps: [{ id: 'browser_policies', disposition: 'degradable', action: 'apply' }] });
     expect(result).toMatchObject({ kind: 'degraded', degraded: ['browser_policies'] });
   });
+  it('marks recovery required when compensation itself cannot be verified', async () => {
+    const f = fixture(new Set(['system_timezone']));
+    const originalWrite = f.authorities.environment.write;
+    f.authorities.environment.write = async (value: ReturnType<typeof storedValue<string>>) => {
+      if (value.value === 'old-env') throw new Error('compensation blocked');
+      await originalWrite(value);
+    };
+    const result = await executePlan({ ...f, steps: [{ id: 'environment', disposition: 'required', action: 'apply' }, { id: 'system_timezone', disposition: 'required', action: 'apply' }] });
+    expect(result.kind).toBe('recovery_required');
+  });
 });
