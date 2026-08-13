@@ -62,6 +62,7 @@ Filename: "{app}\CC-Fix.exe"; Description: "启动 CC-Fix"; Flags: nowait postin
 [Code]
 const
   WebViewClientId = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  InstallerStateKey = 'Software\CC-Fix\Installer';
 
 function WebView2Installed: Boolean;
 var
@@ -139,20 +140,55 @@ end;
 procedure AddUserPath(Entry: String);
 var
   Value: String;
+  OriginallyPresent: Boolean;
 begin
+  OriginallyPresent := RegValueExists(HKCU, 'Environment', 'Path');
   RegQueryStringValue(HKCU, 'Environment', 'Path', Value);
   if not PathContains(Value, Entry) then begin
+    if not RegValueExists(HKCU, InstallerStateKey, 'PathOwned') then begin
+      RegWriteStringValue(HKCU, InstallerStateKey, 'OriginalUserPath', Value);
+      RegWriteDWordValue(HKCU, InstallerStateKey, 'OriginalPathPresent', Ord(OriginallyPresent));
+      RegWriteDWordValue(HKCU, InstallerStateKey, 'PathOwned', 1);
+    end;
     if Value <> '' then
       if Value[Length(Value)] <> ';' then Value := Value + ';';
     RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Value + Entry);
+  end else if not RegValueExists(HKCU, InstallerStateKey, 'PathOwned') then begin
+    { A pre-existing matching segment is not owned by CC-Fix. }
+    RegWriteDWordValue(HKCU, InstallerStateKey, 'PathOwned', 0);
   end;
 end;
 
 procedure RemoveUserPath(Entry: String);
 var
-  Value, Remaining, Part, Updated: String;
+  Value, Original, InstalledPrefix, Suffix, Remaining, Part, Updated: String;
   Separator: Integer;
+  Owned, OriginallyPresent: Cardinal;
 begin
+  if RegQueryDWordValue(HKCU, InstallerStateKey, 'PathOwned', Owned) then begin
+    if Owned = 0 then exit;
+    if RegQueryStringValue(HKCU, InstallerStateKey, 'OriginalUserPath', Original) and
+       RegQueryDWordValue(HKCU, InstallerStateKey, 'OriginalPathPresent', OriginallyPresent) then begin
+      InstalledPrefix := Original;
+      if (InstalledPrefix <> '') and (InstalledPrefix[Length(InstalledPrefix)] <> ';') then
+        InstalledPrefix := InstalledPrefix + ';';
+      InstalledPrefix := InstalledPrefix + Entry;
+      if RegQueryStringValue(HKCU, 'Environment', 'Path', Value) and
+         (CompareText(Copy(Value, 1, Length(InstalledPrefix)), InstalledPrefix) = 0) and
+         ((Length(Value) = Length(InstalledPrefix)) or (Value[Length(InstalledPrefix) + 1] = ';')) then begin
+        Suffix := Copy(Value, Length(InstalledPrefix) + 1, MaxInt);
+        if (Suffix <> '') and ((Original = '') or (Original[Length(Original)] = ';')) then
+          Delete(Suffix, 1, 1);
+        if (OriginallyPresent = 0) and (Original = '') and (Suffix = '') then
+          RegDeleteValue(HKCU, 'Environment', 'Path')
+        else
+          RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Original + Suffix);
+        exit;
+      end;
+    end;
+  end;
+
+  { Compatibility fallback for installs created before ownership metadata existed. }
   if not RegQueryStringValue(HKCU, 'Environment', 'Path', Value) then exit;
   Remaining := Value;
   Updated := '';
@@ -176,7 +212,10 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if CurUninstallStep = usPostUninstall then RemoveUserPath(ExpandConstant('{app}\bin'));
+  if CurUninstallStep = usPostUninstall then begin
+    RemoveUserPath(ExpandConstant('{app}\bin'));
+    RegDeleteKeyIncludingSubkeys(HKCU, InstallerStateKey);
+  end;
 end;
 
 function InitializeUninstall: Boolean;
