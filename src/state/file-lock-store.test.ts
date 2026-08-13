@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -18,5 +18,18 @@ describe('cross-process file lock store', () => {
     expect(await first.replace(owner, heartbeat)).toBe(true);
     expect(await second.remove(owner)).toBe(false);
     expect(await first.remove(heartbeat)).toBe(true);
+  });
+
+  it('distinguishes missing, corrupt and non-file lock paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-lock-store-read-'));
+    const missingPath = join(root, 'missing.lock');
+    expect(await new FileLockStore(missingPath, inspector).read()).toBeUndefined();
+    await writeFile(missingPath, '{');
+    expect(await new FileLockStore(missingPath, inspector).read()).toBeUndefined();
+    await writeFile(missingPath, '{}');
+    expect(await new FileLockStore(missingPath, inspector).read()).toBeUndefined();
+    const directoryPath = join(root, 'directory.lock');
+    await mkdir(directoryPath);
+    await expect(new FileLockStore(directoryPath, inspector).read()).rejects.toBeDefined();
   });
 });

@@ -54,6 +54,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm release:validate
       - run: pnpm test
+      - run: pnpm test:coverage
       - run: cargo test --locked --manifest-path native-helper/Cargo.toml
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Install pinned Inno Setup

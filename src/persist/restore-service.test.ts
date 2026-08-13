@@ -14,6 +14,17 @@ function values(prefix: string) {
 }
 
 describe('restore transaction service', () => {
+  it('does nothing when state is already daily', async () => {
+    await expect(runRestoreTransaction({
+      protected: false,
+      daily: {} as never,
+      authorities: {} as never,
+      journalRepository: {} as never,
+      deleteDailySnapshot: async () => undefined,
+      stateTransaction: {} as never,
+    })).resolves.toEqual({ kind: 'noop' });
+  });
+
   it('publishes daily before verified backup cleanup and clears the transaction last', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cc-fix-restore-service-'));
     const journalRepository = new TransactionJournalRepository(root, join(root, 'transaction.json'));
@@ -76,5 +87,43 @@ describe('restore transaction service', () => {
     expect(result).toEqual({ kind: 'recovery_required', failed: ['backup_cleanup'] });
     expect(phases).toEqual(['daily', 'recovery']);
     expect((await journalRepository.read())?.steps.at(-1)?.phase).toBe('recovery_required');
+  });
+
+  it('fails loudly if the durable journal disappears before cleanup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-restore-missing-journal-'));
+    const actual = new TransactionJournalRepository(root, join(root, 'transaction.json'));
+    const repository = {
+      plan: actual.plan.bind(actual),
+      transition: actual.transition.bind(actual),
+      read: async () => undefined,
+    } as unknown as TransactionJournalRepository;
+    const daily = values('daily');
+    const authorities = Object.fromEntries(ids.map((id) => [id, { read: async () => daily[id], write: async () => undefined }])) as never;
+    await expect(runRestoreTransaction({
+      protected: true, daily, authorities, journalRepository: repository,
+      deleteDailySnapshot: async () => undefined,
+      stateTransaction: { begin: async () => undefined, restored: async () => undefined, complete: async () => undefined, failBeforeRestore: async () => undefined, failCleanup: async () => undefined },
+    })).rejects.toThrow(/journal disappeared/i);
+  });
+
+  it('still marks state recovery-required when journaling the cleanup failure also fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-restore-double-failure-'));
+    const actual = new TransactionJournalRepository(root, join(root, 'transaction.json'));
+    const repository = {
+      plan: actual.plan.bind(actual), read: actual.read.bind(actual),
+      transition: async (...args: Parameters<TransactionJournalRepository['transition']>) => {
+        if (args[2] === 'recovery_required') throw new Error('journal write failed');
+        return actual.transition(...args);
+      },
+    } as unknown as TransactionJournalRepository;
+    const daily = values('daily');
+    const authorities = Object.fromEntries(ids.map((id) => [id, { read: async () => daily[id], write: async () => undefined }])) as never;
+    let failed = false;
+    await expect(runRestoreTransaction({
+      protected: true, daily, authorities, journalRepository: repository,
+      deleteDailySnapshot: async () => { throw new Error('delete failed'); },
+      stateTransaction: { begin: async () => undefined, restored: async () => undefined, complete: async () => undefined, failBeforeRestore: async () => undefined, failCleanup: async () => { failed = true; } },
+    })).resolves.toEqual({ kind: 'recovery_required', failed: ['backup_cleanup'] });
+    expect(failed).toBe(true);
   });
 });

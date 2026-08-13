@@ -23,6 +23,19 @@ describe('persist status', () => {
 });
 
 describe('protect transaction service', () => {
+  const ids = ['environment','system_timezone','browser_policies','locale_name','user_languages','user_culture'] as const;
+  const desired = Object.fromEntries(ids.map((id) => [id, storedValue(`value-${id}`)])) as never;
+  const authorities = Object.fromEntries(ids.map((id) => [id, { read: async () => storedValue(`value-${id}`), write: async () => undefined }])) as never;
+
+  it('requires snapshot and downshift daily values and returns no-op for an aligned target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-service-guards-'));
+    const journalRepository = new TransactionJournalRepository(root, join(root, 'transaction-journal.json'));
+    const stateTransaction = { begin: async () => undefined, complete: async () => undefined, fail: async () => undefined };
+    await expect(runProtectTransaction({ committedTarget: null, requestedTarget: { mode: 'standard', region: 'us' }, observed: {}, desired, authorities, journalRepository, stateTransaction })).rejects.toThrow(/snapshot creation/i);
+    await expect(runProtectTransaction({ committedTarget: { mode: 'deep', region: 'us' }, requestedTarget: { mode: 'standard', region: 'us' }, observed: { environment: true, system_timezone: true, browser_policies: true }, desired, authorities, journalRepository, stateTransaction })).rejects.toThrow(/daily snapshot values/i);
+    await expect(runProtectTransaction({ committedTarget: { mode: 'standard', region: 'us' }, requestedTarget: { mode: 'standard', region: 'us' }, observed: { environment: true, system_timezone: true, browser_policies: true }, desired, authorities, journalRepository, stateTransaction })).resolves.toEqual({ kind: 'noop', degraded: [] });
+  });
+
   it('persists the complete write-ahead plan and commits only after verification', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cc-fix-service-'));
     const journalRepository = new TransactionJournalRepository(root, join(root, 'transaction-journal.json'));

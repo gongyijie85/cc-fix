@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -9,6 +9,7 @@ import type { JsonValue } from '../state/checksum.js';
 import type { PersistStepId } from './steps.js';
 import { desiredValues } from './targets.js';
 import { createAuthorityLegacyClassifier, createPersistRuntime, defaultPersistRoot } from './runtime.js';
+import { completeLegacyV3 } from '../state/fixtures/legacy-v3.js';
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -44,11 +45,29 @@ describe('persist runtime composition', () => {
     await expect(createAuthorityLegacyClassifier(authorities(values)).classify()).resolves.toEqual({
       candidates: [{ mode: 'standard', region: 'jp' }],
     });
+    values.environment = storedValue({ TZ: 'invalid', LANG: 'invalid', LC_ALL: 'invalid' });
+    await expect(createAuthorityLegacyClassifier(authorities(values)).classify()).resolves.toEqual({ candidates: [] });
   });
 
   it('derives the per-user root from APPDATA and rejects unsupported production hosts', async () => {
     expect(defaultPersistRoot({ APPDATA: 'D:\\Profiles\\Me\\Roaming' })).toBe('D:\\Profiles\\Me\\Roaming\\cc-fix');
+    expect(defaultPersistRoot({})).toMatch(/[\\/]AppData[\\/]Roaming[\\/]cc-fix$/);
     await expect(createPersistRuntime({ platform: 'linux' })).rejects.toMatchObject({ code: 'UNSUPPORTED_PLATFORM' });
+    await expect(createPersistRuntime({ root: 'relative', platform: 'linux', authorities: authorities(desiredValues({ mode: 'deep', region: 'us' }) as never) })).rejects.toMatchObject({ code: 'INITIALIZATION_FAILED' });
+  });
+
+  it('maps corrupt and incomplete legacy backups to distinct fail-closed runtime errors', async () => {
+    const corruptRoot = await mkdtemp(join(tmpdir(), 'cc-fix-runtime-corrupt-'));
+    const incompleteRoot = await mkdtemp(join(tmpdir(), 'cc-fix-runtime-incomplete-'));
+    roots.push(corruptRoot, incompleteRoot);
+    await writeFile(join(corruptRoot, 'persist-backup.json'), '{');
+    const incomplete = completeLegacyV3();
+    delete incomplete.previousLocaleName;
+    await writeFile(join(incompleteRoot, 'persist-backup.json'), JSON.stringify(incomplete));
+    const values = desiredValues({ mode: 'deep', region: 'us' }) as Record<PersistStepId, StoredValue<JsonValue>>;
+    const options = { platform: 'linux' as const, coordinator: new InProcessTestMutationCoordinator().capability, authorities: authorities(values) };
+    await expect(createPersistRuntime({ ...options, root: corruptRoot })).rejects.toMatchObject({ code: 'INITIALIZATION_FAILED' });
+    await expect(createPersistRuntime({ ...options, root: incompleteRoot })).rejects.toMatchObject({ code: 'MIGRATION_RECOVERY_REQUIRED' });
   });
 
   const releaseHelper = join(process.cwd(), 'native-helper', 'target', 'release', 'cc-fix-native-helper.exe');

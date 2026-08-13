@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { acquireStateMutationLock, type LockRecord, type LockStore } from './lock.js';
-import { createWindowsProcessInspector } from './process-owner.js';
+import { createWindowsProcessInspector, nodeProcessInspector } from './process-owner.js';
 
 class MemoryLockStore implements LockStore {
   value: LockRecord | undefined;
@@ -41,5 +41,17 @@ describe('Windows process identity', () => {
     expect(await inspector.current()).toEqual({ pid: process.pid, startedAtMs: 100 });
     expect(await inspector.isSameProcess({ pid: 7, startedAtMs: 200 })).toBe(true);
     expect(await inspector.isSameProcess({ pid: 7, startedAtMs: 199 })).toBe(false);
+  });
+
+  it('fails when native inspection cannot establish the current identity', async () => {
+    const inspector = createWindowsProcessInspector(async () => undefined);
+    await expect(inspector.current()).rejects.toThrow(/start time/i);
+  });
+
+  it('identifies only the exact current Node process identity', async () => {
+    const current = await nodeProcessInspector.current();
+    expect(await nodeProcessInspector.isSameProcess(current)).toBe(true);
+    expect(await nodeProcessInspector.isSameProcess({ ...current, pid: current.pid + 1 })).toBe(false);
+    expect(await nodeProcessInspector.isSameProcess({ ...current, startedAtMs: current.startedAtMs + 1 })).toBe(false);
   });
 });

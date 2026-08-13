@@ -40,6 +40,7 @@ async function fixture() {
   const current = new Map<PersistStepId, StoredValue<JsonValue>>(Object.entries(dailyValues()) as Array<[PersistStepId, StoredValue<JsonValue>]>);
   const writes: PersistStepId[] = [];
   const deletedSnapshots: string[] = [];
+  let deleteFails = false;
   const authorities = Object.fromEntries([...current.keys()].map((id) => [id, {
     read: async () => current.get(id)!,
     write: async (value: StoredValue<JsonValue>) => { writes.push(id); current.set(id, value); },
@@ -53,9 +54,21 @@ async function fixture() {
     authorities,
     now: () => '2026-08-13T00:00:00.000Z',
     snapshotId: () => '7f60ed4b-bd54-4f9e-8c4c-c628a94b02a0',
-    deleteDailySnapshot: async (snapshot) => { deletedSnapshots.push(snapshot.snapshotId); },
+    deleteDailySnapshot: async (snapshot) => {
+      if (deleteFails) throw new Error('injected native delete failure');
+      deletedSnapshots.push(snapshot.snapshotId);
+    },
   });
-  return { root, testCoordinator, stateRepository, backupRepository, journalRepository: new TransactionJournalRepository(root, statePaths(root).journal), current, writes, deletedSnapshots, service };
+  const serviceWithoutDelete = new PersistApplicationService({
+    root, coordinator: testCoordinator.capability, stateRepository, backupRepository,
+    journalRepository: new TransactionJournalRepository(root, statePaths(root).journal), authorities,
+  });
+  return {
+    root, testCoordinator, stateRepository, backupRepository,
+    journalRepository: new TransactionJournalRepository(root, statePaths(root).journal),
+    current, writes, deletedSnapshots, authorities, service, serviceWithoutDelete,
+    setDeleteFailure(value: boolean) { deleteFails = value; },
+  };
 }
 
 describe('persist application service', () => {
@@ -145,5 +158,72 @@ describe('persist application service', () => {
     await expect(subject.service.recover()).resolves.toEqual({ kind: 'noop', failed: [] });
     expect(subject.writes).toEqual([]);
     expect((await subject.stateRepository.read()).value.revision).toBe(before);
+  });
+
+  it('treats restoring an idle daily state as a no-op', async () => {
+    const subject = await fixture();
+    await expect(subject.service.restore()).resolves.toEqual({ kind: 'noop' });
+  });
+
+  it('fails closed when protected state has no daily backup', async () => {
+    const subject = await fixture();
+    await subject.stateRepository.commit(0, {
+      committedTarget: { mode: 'deep', region: 'us' }, preferredRegion: 'us', health: 'healthy', degradation: [], activeTransactionId: null,
+    });
+    await expect(subject.service.restore()).rejects.toMatchObject({ code: 'BACKUP_REQUIRED' });
+    await expect(subject.service.protect({ mode: 'standard', region: 'us' })).rejects.toMatchObject({ code: 'BACKUP_REQUIRED' });
+  });
+
+  it('requires the verified native delete backend before restoring', async () => {
+    const subject = await fixture();
+    await subject.service.protect({ mode: 'standard', region: 'us' });
+    await expect(subject.serviceWithoutDelete.restore()).rejects.toMatchObject({ code: 'DELETE_BACKEND_REQUIRED' });
+  });
+
+  it('blocks new protect and restore requests while state reconciliation is active', async () => {
+    const subject = await fixture();
+    await subject.stateRepository.commit(0, {
+      committedTarget: { mode: 'standard', region: 'us' }, preferredRegion: 'us', health: 'healthy', degradation: [], activeTransactionId: '2d6b94e4-89a2-4a80-a827-6c2e230f66aa',
+    });
+    await expect(subject.service.protect({ mode: 'standard', region: 'jp' })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    await expect(subject.service.restore()).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    await expect(subject.service.recover()).rejects.toMatchObject({ code: 'RECOVERY_CONTEXT_INVALID' });
+  });
+
+  it('records failed protect recovery and preserves the previous committed target', async () => {
+    const subject = await fixture();
+    const daily = dailyValues();
+    const target = desiredValues({ mode: 'standard', region: 'us' });
+    let journal = await subject.journalRepository.plan('protect', [{ id: 'environment', original: daily.environment, desired: target.environment }], {
+      previousState: { committedTarget: null, preferredRegion: 'us', health: 'degraded', degradation: [{ kind: 'browser_policy_unaligned', slot: 'chrome.accept_language', cause: 'access_denied' }] },
+      requestedTarget: { mode: 'standard', region: 'us' },
+    });
+    await subject.stateRepository.commit(0, {
+      committedTarget: null, preferredRegion: 'us', health: 'healthy', degradation: [], activeTransactionId: journal.transactionId,
+    });
+    journal = await subject.journalRepository.transition(journal, 'environment', 'applying');
+    await subject.journalRepository.transition(journal, 'environment', 'verified');
+    subject.authorities.environment.write = async () => { throw new Error('injected compensation failure'); };
+    await expect(subject.service.recover()).resolves.toEqual({ kind: 'recovery_required', failed: ['environment'] });
+    expect((await subject.stateRepository.read()).value.health).toBe('recovery_required');
+  });
+
+  it('retries a failed restore cleanup and converges to daily', async () => {
+    const subject = await fixture();
+    await subject.service.protect({ mode: 'standard', region: 'sg' });
+    subject.setDeleteFailure(true);
+    await expect(subject.service.restore()).resolves.toMatchObject({ kind: 'recovery_required' });
+    subject.setDeleteFailure(false);
+    await expect(subject.service.recover()).resolves.toEqual({ kind: 'recovered', failed: [] });
+    expect((await subject.stateRepository.read()).value).toMatchObject({ committedTarget: null, health: 'healthy', activeTransactionId: null });
+  });
+
+  it('rejects a recovery journal without committed context', async () => {
+    const subject = await fixture();
+    const journal = await subject.journalRepository.plan('protect', [{ id: 'environment', original: dailyValues().environment }]);
+    await subject.stateRepository.commit(0, {
+      committedTarget: null, preferredRegion: 'us', health: 'healthy', degradation: [], activeTransactionId: journal.transactionId,
+    });
+    await expect(subject.service.recover()).rejects.toMatchObject({ code: 'RECOVERY_CONTEXT_INVALID' });
   });
 });

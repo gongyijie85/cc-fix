@@ -27,4 +27,20 @@ describe('verified backup delete application authority', () => {
     await createVerifiedBackupDelete(repository, issuer)(snapshot());
     expect(proof).toEqual({});
   });
+
+  it('returns directly after a committed deletion', async () => {
+    const repository = {
+      deleteAfterVerifiedRestore: async () => ({ reservationState: 'finalized' }),
+      reconcileVerifiedRestoreDeletion: async () => { throw new Error('must not reconcile'); },
+    } as unknown as BackupRepository;
+    await expect(createVerifiedBackupDelete(repository, createVerifiedBackupDeleteAuthority())(snapshot())).resolves.toBeUndefined();
+  });
+
+  it('fails when uncertain deletion cannot be reconciled as finalized', async () => {
+    const repository = {
+      deleteAfterVerifiedRestore: async () => ({ reservationState: 'reconcile_required', reservation: {} }),
+      reconcileVerifiedRestoreDeletion: async () => ({ kind: 'aborted' }),
+    } as unknown as BackupRepository;
+    await expect(createVerifiedBackupDelete(repository, createVerifiedBackupDeleteAuthority())(snapshot())).rejects.toThrow(/requires retry/i);
+  });
 });
