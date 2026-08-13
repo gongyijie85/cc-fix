@@ -21,3 +21,23 @@ export function createEnvironmentAuthority(
     validate: (value): value is string => typeof value === 'string',
   });
 }
+
+export type EnvironmentProfile = { TZ: string | null; LANG: string | null; LC_ALL: string | null };
+
+/** The executor treats the three related environment variables as one compensated step. */
+export function createEnvironmentProfileAuthority(registry: EnvironmentRegistry): WindowsAuthority<EnvironmentProfile> {
+  return createWindowsAuthority('environment', {
+    readRaw: async () => ({
+      TZ: await registry.read('TZ'), LANG: await registry.read('LANG'), LC_ALL: await registry.read('LC_ALL'),
+    }),
+    writeRaw: async (value) => {
+      for (const key of MANAGED_ENVIRONMENT_KEYS) {
+        const next = value[key];
+        if (next === null) await registry.remove(key); else await registry.write(key, next);
+      }
+    },
+    removeRaw: async () => { for (const key of MANAGED_ENVIRONMENT_KEYS) await registry.remove(key); },
+    validate: (value): value is EnvironmentProfile => typeof value === 'object' && value !== null
+      && Object.keys(value).length === 3 && MANAGED_ENVIRONMENT_KEYS.every((key) => typeof (value as Record<string, unknown>)[key] === 'string' || (value as Record<string, unknown>)[key] === null),
+  });
+}
