@@ -41,6 +41,9 @@ export function createWindowsAuthority<T extends JsonValue>(id: string, io: Auth
     id,
     read,
     write: async (value) => {
+      if (value.kind === 'value' && !io.validate(value.value)) {
+        throw new AuthorityError('INVALID_VALUE', `Invalid value for ${id}`);
+      }
       if (value.kind === 'missing') await io.removeRaw(); else await io.writeRaw(value.value);
       const actual = await read();
       if (!storedValueEquals(actual, value)) throw new AuthorityError('READBACK_MISMATCH', `Readback did not match ${id}`);

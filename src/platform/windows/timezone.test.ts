@@ -7,6 +7,6 @@ describe('timezone authority', () => {
     const authority = createTimezoneAuthority({ read: async () => current, write: async (value) => { current = value; } });
     await authority.write(storedValue('Tokyo Standard Time'));
     expect(await authority.read()).toEqual(storedValue('Tokyo Standard Time'));
-    await expect(authority.write(storedValue('x; tzutil /s bad'))).rejects.toThrow('Unapproved');
+    await expect(authority.write(storedValue('x; tzutil /s bad'))).rejects.toThrow('Invalid value');
   });
 });
