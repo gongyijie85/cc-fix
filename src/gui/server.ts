@@ -138,6 +138,25 @@ async function handleFixOff(res: http.ServerResponse) {
   }
 }
 
+async function handleRecover(res: http.ServerResponse) {
+  if (!tryAcquireLock(res)) return;
+  res.writeHead(202); res.end();
+
+  try {
+    broadcast({ type: "step-start", stepId: "persist", name: "继续未完成的恢复事务" });
+    const result = await (await runtimeFactory()).recover();
+    const failed = result.kind === "recovery_required";
+    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `仍未恢复项: ${result.failed.join(", ")}` });
+    else broadcast({ type: "step-ok", stepId: "persist" });
+    broadcast({ type: "summary", ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: false, fatal: failed });
+  } catch (error) {
+    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    broadcast({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
+  } finally {
+    releaseLock();
+  }
+}
+
 async function handleCheckStart(res: http.ServerResponse) {
   if (!tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
@@ -236,6 +255,8 @@ export function startGuiServer(
         await handleFixOn(res, url);
       } else if (method === "POST" && url.pathname === "/api/fix/off") {
         await handleFixOff(res);
+      } else if (method === "POST" && url.pathname === "/api/fix/recover") {
+        await handleRecover(res);
       } else if (method === "POST" && url.pathname === "/api/check/start") {
         await handleCheckStart(res);
       } else {

@@ -11,11 +11,11 @@ mod windows_helper {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FileAttributeTagInfo, FileDispositionInfo, GetFileInformationByHandleEx,
-        SetFileInformationByHandle, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_EXISTING,
+        CreateFileW, DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+        FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileAttributeTagInfo, FileDispositionInfo, GetFileInformationByHandleEx, OPEN_EXISTING,
+        SetFileInformationByHandle,
     };
 
     const OBJ_CASE_INSENSITIVE: u32 = 0x40;
@@ -89,13 +89,19 @@ mod windows_helper {
                 null_mut(),
             )
         };
-        if handle == INVALID_HANDLE_VALUE { return Err(io::Error::last_os_error()); }
-        reject_reparse(handle).map_err(|error| io::Error::new(error.kind(), format!("root attributes: {error}")))?;
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        reject_reparse(handle)
+            .map_err(|error| io::Error::new(error.kind(), format!("root attributes: {error}")))?;
         Ok(handle)
     }
 
     fn reject_reparse(handle: HANDLE) -> io::Result<()> {
-        let mut info = FILE_ATTRIBUTE_TAG_INFO { FileAttributes: 0, ReparseTag: 0 };
+        let mut info = FILE_ATTRIBUTE_TAG_INFO {
+            FileAttributes: 0,
+            ReparseTag: 0,
+        };
         let ok = unsafe {
             GetFileInformationByHandleEx(
                 handle,
@@ -104,20 +110,38 @@ mod windows_helper {
                 std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
             )
         };
-        if ok == 0 { return Err(io::Error::last_os_error()); }
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
         if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "reparse point rejected"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "reparse point rejected",
+            ));
         }
         Ok(())
     }
 
     fn open_relative(root: HANDLE, file_name: &str) -> io::Result<HANDLE> {
-        if file_name.is_empty() || file_name.contains(['\\', '/', ':']) || file_name == "." || file_name == ".." {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid fixed file name"));
+        if file_name.is_empty()
+            || file_name.contains(['\\', '/', ':'])
+            || file_name == "."
+            || file_name == ".."
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid fixed file name",
+            ));
         }
         let mut name = wide(OsStr::new(file_name));
-        let byte_length = ((name.len() - 1) * 2).try_into().map_err(|_| io::ErrorKind::InvalidInput)?;
-        let mut unicode = UnicodeString { length: byte_length, maximum_length: byte_length, buffer: name.as_mut_ptr() };
+        let byte_length = ((name.len() - 1) * 2)
+            .try_into()
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        let mut unicode = UnicodeString {
+            length: byte_length,
+            maximum_length: byte_length,
+            buffer: name.as_mut_ptr(),
+        };
         let mut attributes = ObjectAttributes {
             length: std::mem::size_of::<ObjectAttributes>() as u32,
             root_directory: root,
@@ -126,7 +150,10 @@ mod windows_helper {
             security_descriptor: null_mut(),
             security_quality_of_service: null_mut(),
         };
-        let mut status = IoStatusBlock { value: IoStatusUnion { status: 0 }, information: 0 };
+        let mut status = IoStatusBlock {
+            value: IoStatusUnion { status: 0 },
+            information: 0,
+        };
         let mut handle: HANDLE = null_mut();
         let result = unsafe {
             NtCreateFile(
@@ -143,31 +170,58 @@ mod windows_helper {
                 0,
             )
         };
-        if result < 0 { return Err(io::Error::from_raw_os_error(result)); }
-        reject_reparse(handle).map_err(|error| io::Error::new(error.kind(), format!("file attributes: {error}")))?;
+        if result < 0 {
+            return Err(io::Error::from_raw_os_error(result));
+        }
+        reject_reparse(handle)
+            .map_err(|error| io::Error::new(error.kind(), format!("file attributes: {error}")))?;
         Ok(handle)
     }
 
-    pub fn compare_delete(root: &Path, file_name: &str, expected: &[u8]) -> io::Result<&'static str> {
-        if file_name.is_empty() || file_name.contains(['\\', '/', ':']) || file_name == "." || file_name == ".." {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid fixed file name"));
+    pub fn compare_delete(
+        root: &Path,
+        file_name: &str,
+        expected: &[u8],
+    ) -> io::Result<&'static str> {
+        if file_name.is_empty()
+            || file_name.contains(['\\', '/', ':'])
+            || file_name == "."
+            || file_name == ".."
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid fixed file name",
+            ));
         }
-        let root_handle = open_root(root).map_err(|error| io::Error::new(error.kind(), format!("open root: {error}")))?;
+        let root_handle = open_root(root)
+            .map_err(|error| io::Error::new(error.kind(), format!("open root: {error}")))?;
         let file_handle = match open_relative(root_handle, file_name) {
             Ok(handle) => handle,
             Err(error) => {
-                unsafe { CloseHandle(root_handle); }
+                unsafe {
+                    CloseHandle(root_handle);
+                }
                 // NTSTATUS values do not map losslessly through io::Error. A
                 // missing file is also accepted after a direct metadata check.
-                if !root.join(file_name).exists() { return Ok("missing"); }
-                return Err(io::Error::new(error.kind(), format!("open relative: {error}")));
+                if !root.join(file_name).exists() {
+                    return Ok("missing");
+                }
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("open relative: {error}"),
+                ));
             }
         };
-        unsafe { CloseHandle(root_handle); }
+        unsafe {
+            CloseHandle(root_handle);
+        }
         let mut file = unsafe { File::from_raw_handle(file_handle as RawHandle) };
         let mut actual = Vec::new();
-        file.read_to_end(&mut actual).map_err(|error| io::Error::new(error.kind(), format!("read file: {error}")))?;
-        if actual != expected { return Ok("mismatch"); }
+        file.read_to_end(&mut actual)
+            .map_err(|error| io::Error::new(error.kind(), format!("read file: {error}")))?;
+        if actual != expected {
+            return Ok("mismatch");
+        }
         let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
         let ok = unsafe {
             SetFileInformationByHandle(
@@ -177,7 +231,9 @@ mod windows_helper {
                 std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
             )
         };
-        if ok == 0 { return Err(io::Error::last_os_error()); }
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
         drop(file);
         Ok("deleted")
     }
@@ -189,8 +245,12 @@ mod windows_helper {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         fn root() -> std::path::PathBuf {
-            let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-            let path = std::env::temp_dir().join(format!("cc-fix-helper-{}-{unique}", std::process::id()));
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("cc-fix-helper-{}-{unique}", std::process::id()));
             fs::create_dir(&path).unwrap();
             path
         }
@@ -200,11 +260,20 @@ mod windows_helper {
             let root = root();
             let path = root.join("persist-backup.json");
             fs::write(&path, b"checked envelope\n").unwrap();
-            assert_eq!(compare_delete(&root, "persist-backup.json", b"wrong").unwrap(), "mismatch");
+            assert_eq!(
+                compare_delete(&root, "persist-backup.json", b"wrong").unwrap(),
+                "mismatch"
+            );
             assert!(path.exists());
-            assert_eq!(compare_delete(&root, "persist-backup.json", b"checked envelope\n").unwrap(), "deleted");
+            assert_eq!(
+                compare_delete(&root, "persist-backup.json", b"checked envelope\n").unwrap(),
+                "deleted"
+            );
             assert!(!path.exists());
-            assert_eq!(compare_delete(&root, "persist-backup.json", b"checked envelope\n").unwrap(), "missing");
+            assert_eq!(
+                compare_delete(&root, "persist-backup.json", b"checked envelope\n").unwrap(),
+                "missing"
+            );
             fs::remove_dir(root).unwrap();
         }
 
@@ -227,8 +296,13 @@ fn main() {
     {
         use std::io::Read as _;
         let args: Vec<String> = std::env::args().collect();
-        if args.len() != 4 || args[1] != "compare-delete" ||
-            !matches!(args[3].as_str(), "persist-backup.json" | "persist-backup.json.prev") {
+        if args.len() != 4
+            || args[1] != "compare-delete"
+            || !matches!(
+                args[3].as_str(),
+                "persist-backup.json" | "persist-backup.json.prev"
+            )
+        {
             eprintln!("usage: cc-fix-native-helper compare-delete <root> <fixed-backup-name>");
             std::process::exit(2);
         }
@@ -239,7 +313,10 @@ fn main() {
         }
         match windows_helper::compare_delete(std::path::Path::new(&args[2]), &args[3], &expected) {
             Ok(result) => println!("{result}"),
-            Err(error) => { eprintln!("compare-delete: {error}"); std::process::exit(4); }
+            Err(error) => {
+                eprintln!("compare-delete: {error}");
+                std::process::exit(4);
+            }
         }
     }
 }

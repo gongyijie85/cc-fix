@@ -1,104 +1,28 @@
-# cc-fix 一键安装脚本 (Windows PowerShell)
-# 使用方法：右键 → 使用 PowerShell 运行
-# 或打开 PowerShell 后粘贴执行
+param([switch]$LegacyNpmCli)
 
+$ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$packageJsonPath = Join-Path $repoRoot "package.json"
-$packageVersion = if (Test-Path $packageJsonPath) {
-    (Get-Content $packageJsonPath -Raw | ConvertFrom-Json).version
-} else {
-    "当前 npm 版本"
+$packageJsonPath = Join-Path $repoRoot 'package.json'
+$packageVersion = if (Test-Path -LiteralPath $packageJsonPath) {
+    (Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json).version
+} else { 'current npm version' }
+
+Write-Host 'CC-Fix Windows now ships as a self-contained installer.' -ForegroundColor Yellow
+Write-Host 'Download CC-Fix-Setup-<version>-x64.exe and verify its SHA-256 before running it.' -ForegroundColor Yellow
+Write-Host 'This script is retained only for the legacy npm CLI channel; it does not install the desktop product.' -ForegroundColor Yellow
+
+if (-not $LegacyNpmCli) {
+    Write-Host 'To explicitly install only the legacy npm CLI, rerun with -LegacyNpmCli.' -ForegroundColor Cyan
+    exit 78
 }
 
-Write-Host ""
-Write-Host "  ========================================" -ForegroundColor Cyan
-Write-Host "    cc-fix 一键安装工具 ($packageVersion)" -ForegroundColor Cyan
-Write-Host "    Claude Code 环境安全检测与修复" -ForegroundColor Cyan
-Write-Host "  ========================================" -ForegroundColor Cyan
-Write-Host ""
-
-# 检查 Node.js
-$nodeVersion = $null
-try {
-    $nodeVersion = node -v 2>$null
-} catch {}
-
-if (-not $nodeVersion) {
-    Write-Host "  [!] 未检测到 Node.js，需要先安装" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  请前往 https://nodejs.org 下载安装 Node.js (v20+)" -ForegroundColor Yellow
-    Write-Host "  安装完成后重新运行此脚本" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  按任意键打开 Node.js 下载页面..." -ForegroundColor Gray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    Start-Process "https://nodejs.org"
-    exit 1
+if (-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw 'The legacy npm CLI requires Node.js and npm. The recommended Windows installer includes its own runtime.'
 }
 
-Write-Host "  [OK] Node.js $nodeVersion" -ForegroundColor Green
-
-# 安装 cc-fix
-Write-Host ""
-Write-Host "  正在安装 cc-fix..." -ForegroundColor Cyan
-Write-Host ""
-
-npm install -g cc-fix 2>&1 | ForEach-Object { Write-Host "  $_" }
-
-# 生成桌面快捷方式（直达 cc-fix gui 面板）
-# 优先全局命令；无全局命令时回退到仓库本地构建产物
-function New-CcFixShortcut {
-    try {
-        $localEntry = Join-Path $repoRoot "dist\index.js"
-
-        $globalCmd = Get-Command cc-fix -ErrorAction SilentlyContinue
-        if ($globalCmd) {
-            $targetPath = "cmd.exe"
-            $arguments = "/c cc-fix gui"
-        } elseif (Test-Path $localEntry) {
-            $targetPath = "cmd.exe"
-            $arguments = "/c node `"$localEntry`" gui"
-        } else {
-            Write-Host "  [!] 未找到 cc-fix 可执行入口，跳过快捷方式" -ForegroundColor Yellow
-            return
-        }
-
-        $desktop = [Environment]::GetFolderPath("Desktop")
-        $lnk = Join-Path $desktop "CC-Fix 面板.lnk"
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($lnk)
-        $shortcut.TargetPath = $targetPath
-        $shortcut.Arguments = $arguments
-        $shortcut.Description = "CC-Fix 环境安全检测面板"
-        $shortcut.Save()
-        Write-Host "  [OK] 桌面快捷方式已创建：CC-Fix 面板" -ForegroundColor Green
-    } catch {
-        Write-Host "  [!] 桌面快捷方式创建失败：$_" -ForegroundColor Yellow
-    }
-}
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host ""
-    Write-Host "  ========================================" -ForegroundColor Green
-    Write-Host "    安装成功！" -ForegroundColor Green
-    Write-Host "  ========================================" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "  使用方法：" -ForegroundColor White
-    Write-Host "    cc-fix check          检测环境风险" -ForegroundColor Yellow
-    Write-Host "    cc-fix persist on     一键切换到安全环境" -ForegroundColor Yellow
-    Write-Host "    cc-fix proxy check    检测出口 IP" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  提示：双击桌面“CC-Fix 面板”快捷方式可直接打开可视化面板" -ForegroundColor Gray
-    Write-Host ""
-    New-CcFixShortcut
-} else {
-    Write-Host ""
-    Write-Host "  [!] 安装失败，尝试使用 npx 直接运行..." -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  你可以直接用以下命令运行（无需安装）：" -ForegroundColor White
-    Write-Host "    npx cc-fix check" -ForegroundColor Yellow
-    Write-Host ""
-    New-CcFixShortcut
-}
-
-Write-Host "  按任意键退出..." -ForegroundColor Gray
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Write-Host "Installing legacy npm CLI channel ($packageVersion)..." -ForegroundColor Cyan
+& npm install -g cc-fix
+if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+& cc-fix --version
+if ($LASTEXITCODE -ne 0) { throw "cc-fix verification failed with exit code $LASTEXITCODE" }
+Write-Host 'Legacy CLI installed. Use the Windows installer for the desktop app and managed lifecycle.' -ForegroundColor Green

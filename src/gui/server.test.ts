@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const runtimeMocks = vi.hoisted(() => ({
   protect: vi.fn(async () => ({ kind: "committable", degraded: [] })),
   restore: vi.fn(async () => ({ kind: "restored" })),
+  recover: vi.fn(async () => ({ kind: "recovered", failed: [] })),
   status: vi.fn(async () => ({ mode: "daily", target: null, preferredRegion: "us", health: "healthy", transaction: { kind: "none" } })),
 }));
 
@@ -39,7 +40,17 @@ async function closeServer(): Promise<void> {
 beforeEach(() => {
   runtimeMocks.protect.mockClear();
   runtimeMocks.restore.mockClear();
+  runtimeMocks.recover.mockClear();
   runtimeMocks.status.mockClear();
+});
+
+describe("POST /api/fix/recover", () => {
+  it("routes recovery through the single application service", async () => {
+    const origin = await baseUrl();
+    const response = await fetch(`${origin}/api/fix/recover`, { method: "POST", headers: authHeaders });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => expect(runtimeMocks.recover).toHaveBeenCalledTimes(1));
+  });
 });
 
 afterEach(async () => {

@@ -11,11 +11,11 @@ const packageJson = JSON.parse(
 ) as { scripts: Record<string, string> };
 
 const notImplementedStages = [
-  "test:integration",
-  "test:gui",
 ] as const;
 
 const implementedStages = [
+  "test:integration",
+  "test:gui",
   "build:core",
   "build:desktop",
   "build:installer",

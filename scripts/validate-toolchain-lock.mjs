@@ -58,12 +58,11 @@ function isExactArtifactSource(name, version, source) {
     case "tauri":
       return source === `https://static.crates.io/crates/tauri/tauri-${version}.crate`;
     case "innoSetup":
-      return source === `https://files.jrsoftware.org/is/6/innosetup-${version}.exe`;
+      return source === `https://files.jrsoftware.org/is/6/innosetup-${version}.exe`
+        || source === `https://github.com/jrsoftware/issrc/releases/download/is-${version.replaceAll(".", "_")}/innosetup-${version}.exe`;
     case "webView2":
-      return /(^|\.)microsoft\.com$/i.test(url.hostname)
-        && /webview2/i.test(url.pathname)
-        && new RegExp(`(?:^|[^0-9])${escapedVersion}(?:[^0-9]|$)`).test(url.pathname)
-        && url.pathname.toLowerCase().endsWith(".exe");
+      return url.hostname.toLowerCase() === "msedge.sf.dl.delivery.mp.microsoft.com"
+        && /^\/filestreamingservice\/files\/[0-9a-f-]{36}\/MicrosoftEdgeWebView2RuntimeInstallerX64\.exe$/i.test(url.pathname);
     default:
       return false;
   }

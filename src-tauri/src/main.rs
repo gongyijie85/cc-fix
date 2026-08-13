@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
@@ -19,7 +19,9 @@ struct Sidecar {
 impl Drop for Sidecar {
     fn drop(&mut self) {
         if !self.job.eq(&0) {
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job as *mut _); }
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.job as *mut _);
+            }
             self.job = 0;
         }
     }
@@ -34,15 +36,28 @@ struct ReadyMessage {
 }
 
 fn configured_path(variable: &str, fallback: PathBuf) -> PathBuf {
-    std::env::var_os(variable).map(PathBuf::from).unwrap_or(fallback)
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .unwrap_or(fallback)
 }
 
 fn spawn_sidecar() -> Result<(Child, ReadyMessage), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let install_root = executable.parent().ok_or("desktop executable has no parent")?;
-    let node = configured_path("CC_FIX_NODE_EXE", install_root.join("runtime").join("node.exe"));
-    let script = configured_path("CC_FIX_GUI_SIDECAR", install_root.join("core").join("sidecar.js"));
-    let helper = configured_path("CC_FIX_NATIVE_HELPER", install_root.join("native").join("cc-fix-native-helper.exe"));
+    let install_root = executable
+        .parent()
+        .ok_or("desktop executable has no parent")?;
+    let node = configured_path(
+        "CC_FIX_NODE_EXE",
+        install_root.join("runtime").join("node.exe"),
+    );
+    let script = configured_path(
+        "CC_FIX_GUI_SIDECAR",
+        install_root.join("core").join("sidecar.js"),
+    );
+    let helper = configured_path(
+        "CC_FIX_NATIVE_HELPER",
+        install_root.join("native").join("cc-fix-native-helper.exe"),
+    );
     let bootstrap = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let session_id = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let mut child = Command::new(&node)
@@ -53,21 +68,31 @@ fn spawn_sidecar() -> Result<(Child, ReadyMessage), String> {
         .env("CC_FIX_DESKTOP", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .creation_flags(0x0800_0000)
         .spawn()
         .map_err(|error| format!("unable to start private Node runtime: {error}"))?;
-    let stdout = child.stdout.take().ok_or("sidecar stdout was not captured")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("sidecar stdout was not captured")?;
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let mut line = String::new();
         let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
         let _ = sender.send(result);
     });
-    let line = receiver.recv_timeout(Duration::from_secs(20)).map_err(|_| "sidecar readiness timed out".to_string())?
+    let line = receiver
+        .recv_timeout(Duration::from_secs(20))
+        .map_err(|_| "sidecar readiness timed out".to_string())?
         .map_err(|error| format!("sidecar readiness failed: {error}"))?;
-    let ready: ReadyMessage = serde_json::from_str(&line).map_err(|error| format!("invalid sidecar readiness: {error}"))?;
-    if ready.r#type != "ready" || ready.session_id != session_id || !ready.url.starts_with("http://127.0.0.1:") || !ready.url.contains(&bootstrap) {
+    let ready: ReadyMessage = serde_json::from_str(&line)
+        .map_err(|error| format!("invalid sidecar readiness: {error}"))?;
+    if ready.r#type != "ready"
+        || ready.session_id != session_id
+        || !ready.url.starts_with("http://127.0.0.1:")
+        || !ready.url.contains(&bootstrap)
+    {
         let _ = child.kill();
         return Err("sidecar readiness identity did not match this desktop session".into());
     }
@@ -79,12 +104,17 @@ fn assign_kill_on_close_job(child: &Child) -> Result<isize, String> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
     };
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    if job.is_null() { return Err(format!("unable to create sidecar job: {}", std::io::Error::last_os_error())); }
+    if job.is_null() {
+        return Err(format!(
+            "unable to create sidecar job: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     let configured = unsafe {
@@ -95,12 +125,13 @@ fn assign_kill_on_close_job(child: &Child) -> Result<isize, String> {
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         )
     };
-    let assigned = configured != 0 && unsafe {
-        AssignProcessToJobObject(job, child.as_raw_handle() as *mut _)
-    } != 0;
+    let assigned = configured != 0
+        && unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as *mut _) } != 0;
     if !assigned {
         let error = std::io::Error::last_os_error();
-        unsafe { CloseHandle(job); }
+        unsafe {
+            CloseHandle(job);
+        }
         return Err(format!("unable to assign sidecar job: {error}"));
     }
     Ok(job as isize)
@@ -110,12 +141,38 @@ fn assign_kill_on_close_job(child: &Child) -> Result<isize, String> {
 use std::os::windows::process::CommandExt;
 
 #[cfg(not(windows))]
-trait CommandFlags { fn creation_flags(&mut self, _: u32) -> &mut Self; }
+trait CommandFlags {
+    fn creation_flags(&mut self, _: u32) -> &mut Self;
+}
 #[cfg(not(windows))]
-impl CommandFlags for Command { fn creation_flags(&mut self, _: u32) -> &mut Self { self } }
+impl CommandFlags for Command {
+    fn creation_flags(&mut self, _: u32) -> &mut Self {
+        self
+    }
+}
+
+#[cfg(windows)]
+fn show_native_error(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    let title: Vec<u16> = "CC-Fix 启动失败\0".encode_utf16().collect();
+    let text: Vec<u16> = format!("{message}\0").encode_utf16().collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn show_native_error(message: &str) {
+    eprintln!("CC-Fix startup failed: {message}");
+}
 
 fn main() {
-    tauri::Builder::default()
+    let application = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -123,13 +180,27 @@ fn main() {
             }
         }))
         .setup(|app| {
-            let (mut child, ready) = spawn_sidecar().map_err(std::io::Error::other)?;
+            let (mut child, ready) = match spawn_sidecar() {
+                Ok(result) => result,
+                Err(error) => {
+                    show_native_error(&error);
+                    return Err(std::io::Error::other(error).into());
+                }
+            };
             #[cfg(windows)]
             let job = match assign_kill_on_close_job(&child) {
                 Ok(job) => job,
-                Err(error) => { let _ = child.kill(); return Err(std::io::Error::other(error).into()); }
+                Err(error) => {
+                    let _ = child.kill();
+                    show_native_error(&error);
+                    return Err(std::io::Error::other(error).into());
+                }
             };
-            app.manage(Sidecar { child: Mutex::new(Some(child)), #[cfg(windows)] job });
+            app.manage(Sidecar {
+                child: Mutex::new(Some(child)),
+                #[cfg(windows)]
+                job,
+            });
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(ready.url.parse()?))
                 .title("CC-Fix")
                 .inner_size(1120.0, 760.0)
@@ -137,18 +208,27 @@ fn main() {
                 .build()?;
             Ok(())
         })
-        .build(tauri::generate_context!())
-        .expect("failed to build CC-Fix desktop shell")
-        .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) {
-                if let Some(state) = app.try_state::<Sidecar>() {
-                    if let Ok(mut child) = state.child.lock() {
-                        if let Some(mut process) = child.take() {
-                            let _ = process.kill();
-                            let _ = process.wait();
-                        }
+        .build(tauri::generate_context!());
+    let application = match application {
+        Ok(application) => application,
+        Err(error) => {
+            show_native_error(&format!("桌面窗口初始化失败：{error}"));
+            return;
+        }
+    };
+    application.run(|app, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+        ) {
+            if let Some(state) = app.try_state::<Sidecar>() {
+                if let Ok(mut child) = state.child.lock() {
+                    if let Some(mut process) = child.take() {
+                        let _ = process.kill();
+                        let _ = process.wait();
                     }
                 }
             }
-        });
+        }
+    });
 }
