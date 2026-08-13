@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { storedValue } from '../state/schema.js';
-import { executePlan, PolicyManagedOrDeniedError } from './executor.js';
+import { captureJournalPlan, executePlan, PolicyManagedOrDeniedError } from './executor.js';
 import type { PersistStepId } from './steps.js';
 
 function fixture(fail = new Set<PersistStepId>()) {
@@ -11,6 +11,12 @@ function fixture(fail = new Set<PersistStepId>()) {
   return { values, events, authorities, desired, journal: { transition: async (id: string, phase: string) => events.push(`${phase}:${id}`) } as never };
 }
 describe('transition executor', () => {
+  it('captures every original and desired value before writes begin', async () => {
+    const f = fixture();
+    const captured = await captureJournalPlan({ ...f, steps: [{ id: 'environment', disposition: 'required', action: 'apply' }] });
+    expect(captured).toEqual([{ id: 'environment', original: storedValue('old-env'), desired: storedValue('new-environment') }]);
+    expect(f.events).toEqual([]);
+  });
   it('journals before write, verifies, and reverses all modified steps after failure', async () => {
     const f = fixture(new Set(['system_timezone']));
     const result = await executePlan({ ...f, steps: [{ id: 'environment', disposition: 'required', action: 'apply' }, { id: 'system_timezone', disposition: 'required', action: 'apply' }] });
