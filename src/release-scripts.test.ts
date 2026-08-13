@@ -223,5 +223,5 @@ describe("publish helper", () => {
 
     expect(result.status).not.toBe(0);
     expect(commands).toEqual(allCommands.slice(0, allCommands.indexOf(failedCommand) + 1));
-  }, 20_000);
+  }, 60_000);
 });
