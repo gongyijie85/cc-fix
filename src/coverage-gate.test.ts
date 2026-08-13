@@ -21,8 +21,12 @@ async function fixture(
   const domainPath = windowsPath
     ? 'D:\\work\\cc-fix\\src\\domain\\region.ts'
     : '/work/cc-fix/src/domain/region.ts';
+  const persistPath = windowsPath
+    ? 'D:\\work\\cc-fix\\src\\persist\\planner.ts'
+    : '/work/cc-fix/src/persist/planner.ts';
   await writeFile(path, JSON.stringify({
     [sourcePath]: { b: { 0: branches } },
+    [persistPath]: { b: { 0: [1] } },
     ...(includeDomain ? { [domainPath]: { b: { 0: [1] } } } : {}),
   }), 'utf8');
   return path;
