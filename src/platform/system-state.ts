@@ -38,6 +38,11 @@ export function systemState(): Promise<SystemStateSnapshot> {
   return systemStatePromise;
 }
 
+/** 每次检测运行开始时重置（issue #45 后续）：缓存仅在单次检测内共享，跨次检测必须重读系统状态。 */
+export function resetSystemState(): void {
+  systemStatePromise = undefined;
+}
+
 async function computeSystemState(): Promise<SystemStateSnapshot> {
   if (process.platform === 'win32') {
     const env = { ...process.env } as Record<string, string | undefined>;

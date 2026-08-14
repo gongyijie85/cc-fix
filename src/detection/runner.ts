@@ -4,6 +4,7 @@ import type { DetectionPlugin, DetectionContext } from "./plugin.js";
 import type { SignalResult, CheckResponse, IpIntelligence, AccessRegionCode } from "./types.js";
 import type { EventConsumer } from "../events/types.js";
 import { buildCheckResponse } from "./scoring.js";
+import { resetSystemState } from "../platform/system-state.js";
 import { timezonePlugin } from "./plugins/timezone.js";
 import { languagePlugin } from "./plugins/language.js";
 import { localePlugin } from "./plugins/locale.js";
@@ -25,6 +26,9 @@ export async function runDetection(
   onEvent?: EventConsumer,
 ): Promise<CheckResponse> {
   const context: DetectionContext = { targetTimezone, targetLang };
+
+  // 每次检测重新读取系统状态（时区/偏移可能在两次检测之间被 persist 改变）
+  resetSystemState();
 
   // 阶段：IP 情报
   if (onEvent) onEvent({ type: "phase", label: "正在获取 IP 情报…" });
