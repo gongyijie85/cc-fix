@@ -1,7 +1,8 @@
 // 操作日志 — 追加式 JSONL，回答"我上次干了什么"（ADR-0002）
 
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
+import { defaultPersistRoot } from "../state/paths.js";
 
 export type HistoryAction = "persist-on" | "persist-off" | "check";
 
@@ -15,26 +16,26 @@ export type HistoryEntry = {
   score?: number;
 };
 
-function getHistoryFile(): string {
-  const appdata = process.env.APPDATA || path.join(process.env.HOME || "", ".config");
-  return path.join(appdata, "cc-fix", "history.jsonl");
+/** 日志文件路径；root 可注入（测试传临时目录），默认唯一推导点 state/paths.defaultPersistRoot。 */
+export function historyFilePath(root: string = defaultPersistRoot(process.env)): string {
+  return path.join(root, "history.jsonl");
 }
 
-export function appendHistory(entry: HistoryEntry): void {
+export async function appendHistory(entry: HistoryEntry, root?: string): Promise<void> {
   try {
-    const file = getHistoryFile();
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, JSON.stringify(entry) + "\n", "utf-8");
+    const file = historyFilePath(root);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.appendFile(file, JSON.stringify(entry) + "\n", "utf-8");
   } catch {
     // 日志写入失败不阻断主流程
   }
 }
 
 // 返回最近 limit 条，最新在前；损坏的行跳过
-export function readHistory(limit = 10): HistoryEntry[] {
+export async function readHistory(limit = 10, root?: string): Promise<HistoryEntry[]> {
   let content: string;
   try {
-    content = fs.readFileSync(getHistoryFile(), "utf-8");
+    content = await fs.readFile(historyFilePath(root), "utf-8");
   } catch {
     return [];
   }
@@ -57,24 +58,25 @@ export function readHistory(limit = 10): HistoryEntry[] {
 
 // ── 便捷记录函数 ──
 
-export function recordFixSummary(
+export async function recordFixSummary(
   action: "persist-on" | "persist-off",
   summary: { ok: number; fail: number; rolledBack?: boolean; fatal?: boolean },
-): void {
-  appendHistory({
+  root?: string,
+): Promise<void> {
+  await appendHistory({
     timestamp: new Date().toISOString(),
     action,
     ok: summary.ok,
     fail: summary.fail,
     ...(summary.rolledBack ? { rolledBack: true } : {}),
     ...(summary.fatal ? { fatal: true } : {}),
-  });
+  }, root);
 }
 
-export function recordCheck(score: number): void {
-  appendHistory({
+export async function recordCheck(score: number, root?: string): Promise<void> {
+  await appendHistory({
     timestamp: new Date().toISOString(),
     action: "check",
     score,
-  });
+  }, root);
 }

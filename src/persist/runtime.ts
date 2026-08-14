@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { access, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +5,7 @@ import { REGION_CODES, type RegionCode } from '../domain/region.js';
 import { StateRepository, BackupRepository, type MutationCoordinatorCapability } from '../state/repository.js';
 import { createFileMutationCoordinator } from '../state/mutation-coordinator.js';
 import { TransactionJournalRepository } from '../state/journal.js';
-import { statePaths } from '../state/paths.js';
+import { defaultPersistRoot, statePaths } from '../state/paths.js';
 import {
   migrateLegacyProtection,
   NodeLegacyBackupConversionStore,
@@ -32,10 +31,7 @@ export class PersistRuntimeError extends Error {
   }
 }
 
-export function defaultPersistRoot(environment: NodeJS.ProcessEnv = process.env): string {
-  const appData = environment.APPDATA ?? join(homedir(), 'AppData', 'Roaming');
-  return join(appData, 'cc-fix');
-}
+export { defaultPersistRoot };
 
 /** Classifies legacy v3 state from all six constrained authorities, never from backup existence. */
 export function createAuthorityLegacyClassifier(

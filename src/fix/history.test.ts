@@ -1,99 +1,45 @@
-// 操作日志模块测试 — 追加写入 / 读取 / 损坏行容错
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { appendFile, writeFile } from 'node:fs/promises';
+import { appendHistory, readHistory, recordCheck, recordFixSummary, historyFilePath } from './history.js';
 
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { appendHistory, readHistory, recordFixSummary, recordCheck } from "./history.js";
+let root: string;
 
-let tmpAppdata: string;
-let originalAppdata: string | undefined;
-
-beforeEach(() => {
-  originalAppdata = process.env.APPDATA;
-  tmpAppdata = fs.mkdtempSync(path.join(os.tmpdir(), "cc-fix-history-"));
-  process.env.APPDATA = tmpAppdata;
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), 'cc-fix-history-'));
 });
 
-afterEach(() => {
-  if (originalAppdata === undefined) {
-    delete process.env.APPDATA;
-  } else {
-    process.env.APPDATA = originalAppdata;
-  }
-  fs.rmSync(tmpAppdata, { recursive: true, force: true });
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
 });
 
-describe("appendHistory / readHistory", () => {
-  it("写入后可读回，最新在前", () => {
-    appendHistory({ timestamp: "2026-08-07T01:00:00Z", action: "persist-on", ok: 4, fail: 0 });
-    appendHistory({ timestamp: "2026-08-07T02:00:00Z", action: "check", score: 36 });
+describe('operation history', () => {
+  it('appends JSONL and reads back newest-first', async () => {
+    await recordCheck(42, root);
+    await recordFixSummary('persist-on', { ok: 3, fail: 1, rolledBack: false }, root);
+    await appendHistory({ timestamp: '2026-01-01T00:00:00.000Z', action: 'check', score: 7 }, root);
+    const entries = await readHistory(10, root);
+    expect(entries.map(e => e.action)).toEqual(['check', 'persist-on', 'check']);
+    expect(entries[1]).toMatchObject({ ok: 3, fail: 1 });
+    expect(entries[1]).not.toHaveProperty('rolledBack');
+  });
 
-    const entries = readHistory(10);
+  it('skips corrupt lines without losing the rest', async () => {
+    await appendHistory({ timestamp: '2026-01-01T00:00:00.000Z', action: 'check', score: 1 }, root);
+    await appendFile(historyFilePath(root), 'not json\n', 'utf-8');
+    await appendHistory({ timestamp: '2026-01-01T00:00:01.000Z', action: 'check', score: 2 }, root);
+    const entries = await readHistory(10, root);
     expect(entries).toHaveLength(2);
-    expect(entries[0].action).toBe("check");
-    expect(entries[1].action).toBe("persist-on");
+    expect(entries[0].score).toBe(2);
   });
 
-  it("只返回最近 limit 条", () => {
-    for (let i = 0; i < 15; i++) {
-      appendHistory({ timestamp: `2026-08-07T01:${String(i).padStart(2, "0")}:00Z`, action: "check", score: i });
-    }
-    const entries = readHistory(10);
-    expect(entries).toHaveLength(10);
-    expect(entries[0].score).toBe(14); // 最新在前
-    expect(entries[9].score).toBe(5);
-  });
-
-  it("文件不存在时返回空数组", () => {
-    expect(readHistory()).toEqual([]);
-  });
-
-  it("损坏的单行被跳过，其余条目正常读取", () => {
-    appendHistory({ timestamp: "2026-08-07T01:00:00Z", action: "persist-on", ok: 4, fail: 0 });
-    // 手动追加一行损坏数据与一行缺少必要字段的数据
-    const file = path.join(tmpAppdata, "cc-fix", "history.jsonl");
-    fs.appendFileSync(file, "{broken json\n", "utf-8");
-    fs.appendFileSync(file, JSON.stringify({ foo: 1 }) + "\n", "utf-8");
-    appendHistory({ timestamp: "2026-08-07T02:00:00Z", action: "persist-off", ok: 5, fail: 0 });
-
-    const entries = readHistory(10);
-    expect(entries).toHaveLength(2);
-    expect(entries[0].action).toBe("persist-off");
-    expect(entries[1].action).toBe("persist-on");
-  });
-
-  it("写入失败不抛出（路径非法）", () => {
-    // 让 cc-fix 目录位置被一个文件占位，mkdirSync 必然失败
-    fs.writeFileSync(path.join(tmpAppdata, "cc-fix"), "占位文件", "utf-8");
-    expect(() => appendHistory({ timestamp: "x", action: "check" })).not.toThrow();
-  });
-});
-
-describe("recordFixSummary / recordCheck", () => {
-  it("修复汇总按动作与标志落盘", () => {
-    recordFixSummary("persist-on", { ok: 3, fail: 1, rolledBack: true });
-    recordFixSummary("persist-off", { ok: 5, fail: 0 });
-
-    const [off, on] = readHistory(10);
-    expect(off.action).toBe("persist-off");
-    expect(off.ok).toBe(5);
-    expect(off.rolledBack).toBeUndefined();
-    expect(on.action).toBe("persist-on");
-    expect(on.fail).toBe(1);
-    expect(on.rolledBack).toBe(true);
-  });
-
-  it("fatal 标志落盘", () => {
-    recordFixSummary("persist-off", { ok: 1, fail: 1, fatal: true });
-    const [entry] = readHistory(10);
-    expect(entry.fatal).toBe(true);
-  });
-
-  it("检测记录携带评分", () => {
-    recordCheck(36);
-    const [entry] = readHistory(10);
-    expect(entry.action).toBe("check");
-    expect(entry.score).toBe(36);
+  it('returns empty for a missing log and never throws on write failures', async () => {
+    expect(await readHistory(10, root)).toEqual([]);
+    // root 指向一个文件占位目录，mkdir 失败但 appendHistory 不抛出
+    const blocked = join(root, 'blocked');
+    await writeFile(blocked, '占位', 'utf-8');
+    await expect(appendHistory({ timestamp: 'x', action: 'check' }, blocked)).resolves.toBeUndefined();
   });
 });

@@ -9,6 +9,7 @@ import type { ExecutableAuthority } from '../authority.js';
 import { backupSnapshotToDailyValues } from '../backup-mapper.js';
 import { createRepositoryDailySnapshot } from './internal/daily-snapshot.js';
 import { derivePersistStatus, runProtectTransaction, type PersistStatus, type ProtectTransactionResult } from './internal/service.js';
+import { captureDailyAuthorityValues } from './internal/executor.js';
 export { derivePersistStatus } from './internal/service.js';
 export type { PersistStatus, ProtectTransactionResult } from './internal/service.js';
 export type { RestoreTransactionResult } from './internal/restore-service.js';
@@ -86,10 +87,12 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
       }
 
       const desired = desiredValues(target);
+      // 候选 4：锁内一次性读全部六权威，观察值 / 日志原值 / 日常快照复用同一批读取
+      const currentValues = await captureDailyAuthorityValues(dependencies.authorities);
       const observed: Partial<Record<PersistStepId, boolean>> = {};
-      await Promise.all(managedStepIds(target).map(async (id) => {
-        observed[id] = valuesEqual(await dependencies.authorities[id].read(), desired[id]);
-      }));
+      for (const id of managedStepIds(target)) {
+        observed[id] = valuesEqual(currentValues[id], desired[id]);
+      }
 
       let dailyValues: Readonly<Record<PersistStepId, StoredValue<JsonValue>>> | undefined;
       if (stateRead.value.committedTarget?.mode === 'deep' && target.mode === 'standard') {
@@ -133,6 +136,8 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
         desired,
         dailyValues,
         authorities: dependencies.authorities,
+        snapshotValues: currentValues,
+        originals: currentValues,
         journalRepository: dependencies.journalRepository,
         journalContext: {
           previousState: {

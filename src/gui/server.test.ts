@@ -119,6 +119,8 @@ describe("POST /api/fix/on region validation", () => {
     expect(response.status).toBe(202);
     await readTask;
     await reader.cancel();
+    expect(text).toContain("catalog");
+    expect(text).toContain("timezone");
     expect(text).toContain("browser-hint");
     expect(text).toContain("chrome");
     expect(text).toContain("edge");

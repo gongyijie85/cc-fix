@@ -15,6 +15,7 @@ import { proxyPlugin } from "./plugins/proxy.js";
 import { winRegionPlugin } from "./plugins/win-region.js";
 import { utcOffsetPlugin } from "./plugins/utc-offset.js";
 import { browserPolicyPlugin } from "./plugins/browser-policy.js";
+import { createIpIntelligencePlugins } from "./plugins/ip-intel.js";
 
 export async function runDetection(
   regionCode: AccessRegionCode,
@@ -45,6 +46,8 @@ export async function runDetection(
     utcOffsetPlugin,
     // ADR-0003 — 浏览器策略就位信号
     browserPolicyPlugin,
+    // IP 情报派生信号（与其余信号共享插件 seam）
+    ...createIpIntelligencePlugins(ipIntel),
   ];
 
   // 逐个故障隔离：单个插件失败时发射降级事件，不阻断其余插件
@@ -66,38 +69,6 @@ export async function runDetection(
     })
   );
   const signals: SignalResult[] = results.filter((r): r is SignalResult => r !== null);
-
-  // IP 情报派生信号（参与评分）
-  if (ipIntel) {
-    if (ipIntel.ipType === "datacenter") {
-      const sig: SignalResult = {
-        id: "ip-datacenter",
-        label: "数据中心 IP",
-        value: `${ipIntel.asn} (${ipIntel.org || "未知"})`,
-        score: 1,
-        weight: 13,
-        contribution: 13,
-        source: "network",
-        risk: "high",
-      };
-      signals.push(sig);
-      if (onEvent) onEvent({ type: "detect-ok", signal: sig });
-    }
-    if (!ipIntel.multiSourceConsistent) {
-      const sig: SignalResult = {
-        id: "ip-multi-source",
-        label: "多源不一致",
-        value: `${ipIntel.sourceCount} 个情报源结果不一致`,
-        score: 1,
-        weight: 15,
-        contribution: 15,
-        source: "network",
-        risk: "high",
-      };
-      signals.push(sig);
-      if (onEvent) onEvent({ type: "detect-ok", signal: sig });
-    }
-  }
 
   const response = buildCheckResponse(signals, ipIntel, regionCode);
   if (onEvent) onEvent({ type: "detect-done", response });

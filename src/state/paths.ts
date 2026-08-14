@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
 export const STATE_FILE_NAME = 'state.json';
@@ -25,4 +26,9 @@ export function statePaths(root: string): StatePaths {
     journal: join(root, TRANSACTION_JOURNAL_FILE_NAME),
     lock: join(root, MUTATION_LOCK_FILE_NAME),
   };
+}
+/** 用户级状态根目录（唯一推导点）：%APPDATA%\cc-fix，缺失 APPDATA 时回落家目录。 */
+export function defaultPersistRoot(environment: NodeJS.ProcessEnv = process.env): string {
+  const appData = environment.APPDATA ?? join(homedir(), 'AppData', 'Roaming');
+  return join(appData, 'cc-fix');
 }

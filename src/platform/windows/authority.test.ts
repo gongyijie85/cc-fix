@@ -14,7 +14,7 @@ describe('Windows authority contract', () => {
     expect(await authority.read()).toEqual(storedMissing());
     await authority.write(storedValue(''));
     expect(await authority.read()).toEqual(storedValue(''));
-    await authority.restore(storedValue('日本語'));
+    await authority.write(storedValue('日本語'));
     expect(await authority.read()).toEqual(storedValue('日本語'));
     await authority.write(storedMissing());
   });

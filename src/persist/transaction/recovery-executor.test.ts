@@ -50,6 +50,27 @@ describe('persist crash recovery executor', () => {
     expect([...current.values()]).toEqual([...Object.values(daily)]);
   });
 
+  it('converges aligned planned and recovery_required steps through real journal legal transitions (C5 回归)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-recover-aligned-'));
+    const repository = new TransactionJournalRepository(root, join(root, 'transaction.json'));
+    const daily = values('daily');
+    let journal = await repository.plan('restore', [...ids.map((id) => ({ id, desired: daily[id] })), { id: 'backup_cleanup' }]);
+    journal = await repository.transition(journal, 'environment', 'applying');
+    journal = await repository.transition(journal, 'environment', 'verified');
+    // 其余五权威与 daily 对齐且阶段为 planned（标准保护崩溃场景）
+    const current = new Map(Object.entries(daily) as Array<[PersistStepId, StoredValue<JsonValue>]>);
+    const authorities = Object.fromEntries(ids.map((id) => [id, { read: async () => current.get(id)!, write: async (value: StoredValue<JsonValue>) => { current.set(id, value); } }])) as never;
+    const result = await recoverRestoreAuthorities({ journal, journalRepository: repository, daily, authorities });
+    expect(result).toEqual({ kind: 'recovered', failed: [] });
+    // 对齐且阶段为 recovery_required 的重试同样收敛（旧实现可自愈，回归防护）
+    const root2 = await mkdtemp(join(tmpdir(), 'cc-fix-recover-aligned2-'));
+    const repository2 = new TransactionJournalRepository(root2, join(root2, 'transaction.json'));
+    const journal2 = await repository2.plan('restore', [...ids.map((id) => ({ id, desired: daily[id] })), { id: 'backup_cleanup' }]);
+    const journal3 = await repository2.transition(journal2, 'system_timezone', 'recovery_required');
+    const result2 = await recoverRestoreAuthorities({ journal: journal3, journalRepository: repository2, daily, authorities });
+    expect(result2).toEqual({ kind: 'recovered', failed: [] });
+  });
+
   it('rejects recovery with the wrong journal kind', async () => {
     const empty = { transactionId: 'tx', kind: 'restore', steps: [] } as unknown as TransactionJournal;
     await expect(recoverProtectTransaction({ journal: empty, journalRepository: fakeRepository(), authorities: {} as never })).rejects.toThrow(/protect journal/i);

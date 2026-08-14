@@ -9,7 +9,7 @@ describe('environment authority', () => {
     const authority = createEnvironmentAuthority(registry, 'TZ');
     await authority.write(storedValue('Asia/Tokyo'));
     expect(await authority.read()).toEqual(storedValue('Asia/Tokyo'));
-    await authority.restore(storedMissing());
+    await authority.write(storedMissing());
     expect(await authority.read()).toEqual(storedMissing());
     expect(() => createEnvironmentAuthority(registry, 'PATH' as never)).toThrow('Unmanaged');
   });

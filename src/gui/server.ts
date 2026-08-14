@@ -15,6 +15,7 @@ import { createPersistRuntime } from "../persist/runtime.js";
 import type { PersistApplicationService } from "../persist/application.js";
 import { GuiSession } from "./session.js";
 import { detectRunningBrowsers } from "../platform/browser.js";
+import { signalCatalog } from "../detection/catalog.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
@@ -33,158 +34,168 @@ async function serveHtml(res: http.ServerResponse) {
   res.end(htmlContent);
 }
 
-// ── SSE 常驻通道 ──
+// ── 每实例编排器（评审候选 7）：busy 门 / SSE fan-out / recheck 簿记 / runtime 工厂 ──
 
-const clients = new Set<http.ServerResponse>();
+type GuiRuntimeFactory = () => Promise<PersistApplicationService>;
 
-function broadcast(event: StreamEvent) {
-  const data = `data: ${JSON.stringify(event)}\n\n`;
-  for (const res of clients) {
-    if (res.writableEnded || res.destroyed) {
-      clients.delete(res);
-      continue;
+function createGuiOrchestrator(createRuntime: GuiRuntimeFactory) {
+  const clients = new Set<http.ServerResponse>();
+  let busy = false;
+  let lastDetectScore: number | null = null;
+  let pendingRecheck: number | null = null;
+
+  const broadcast = (event: StreamEvent) => {
+    const data = `data: ${JSON.stringify(event)}
+
+`;
+    for (const res of clients) {
+      if (res.writableEnded || res.destroyed) {
+        clients.delete(res);
+        continue;
+      }
+      res.write(data);
     }
-    res.write(data);
-  }
-}
+  };
 
-// ── 全局锁 ──
+  return Object.freeze({
+    broadcast,
+    attachSse: (req: http.IncomingMessage, res: http.ServerResponse) => {
+      clients.add(res);
+      // 目录事件：服务端唯一定义的信号目录随连接下发（客户端硬编码表仅作回退）
+      res.write(`data: ${JSON.stringify({ type: 'catalog' as const, signals: signalCatalog() })}
 
-let busy = false;
-
-function tryAcquireLock(res: http.ServerResponse): boolean {
-  if (busy) {
-    sendJson(res, { error: "操作进行中" }, 409);
-    return false;
-  }
-  busy = true;
-  return true;
-}
-
-function releaseLock() {
-  busy = false;
-}
-
-// ── 评分对比（recheck）状态 ──
-
-let lastDetectScore: number | null = null;
-let pendingRecheck: number | null = null;
-
-function checkEventConsumer(e: StreamEvent) {
-  if (e.type === "detect-done") {
-    recordCheck(e.response.score);
-  }
-  broadcast(e);
-  if (e.type === "detect-done") {
-    lastDetectScore = e.response.score;
-    if (pendingRecheck !== null) {
-      broadcast({ type: "recheck", before: pendingRecheck, after: e.response.score });
-      pendingRecheck = null;
-    }
-  }
+`);
+      res.on("error", () => clients.delete(res));
+      req.on("close", () => clients.delete(res));
+    },
+    tryAcquireLock: (res: http.ServerResponse): boolean => {
+      if (busy) {
+        sendJson(res, { error: "操作进行中" }, 409);
+        return false;
+      }
+      busy = true;
+      return true;
+    },
+    releaseLock: () => { busy = false; },
+    getRuntime: createRuntime,
+    markPendingRecheckIfKnown: () => { if (lastDetectScore !== null) pendingRecheck = lastDetectScore; },
+    checkEventConsumer: (e: StreamEvent) => {
+      if (e.type === "detect-done") {
+        void recordCheck(e.response.score);
+      }
+      broadcast(e);
+      if (e.type === "detect-done") {
+        lastDetectScore = e.response.score;
+        if (pendingRecheck !== null) {
+          broadcast({ type: "recheck", before: pendingRecheck, after: e.response.score });
+          pendingRecheck = null;
+        }
+      }
+    },
+  });
 }
 
 // ── 触发端点处理 ──
 
-async function handleFixOn(res: http.ServerResponse, url: URL) {
+async function handleFixOn(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse, url: URL) {
   const requestedRegion = url.searchParams.get("region");
   if (requestedRegion !== null) parseRegionCode(requestedRegion, "explicit");
   const requestedLevel = url.searchParams.get("level") ?? undefined;
 
-  if (!tryAcquireLock(res)) return;
+  if (!orchestrator.tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
   try {
-    const runtime = await runtimeFactory();
+    const runtime = await orchestrator.getRuntime();
     const status = await runtime.status();
     const region = resolveRegion({ explicit: requestedRegion ?? undefined, active: status.target?.region, preferred: status.preferredRegion });
     const target = resolveProtectionRequest({ currentMode: status.mode, resolvedRegion: region, level: requestedLevel });
-    broadcast({ type: "step-start", stepId: "persist", name: `切换到 ${target.mode} / ${target.region}` });
+    orchestrator.broadcast({ type: "step-start", stepId: "persist", name: `切换到 ${target.mode} / ${target.region}` });
     const result = await runtime.protect(target);
     const failed = result.kind === "compensated" || result.kind === "recovery_required";
     const summary = { type: "summary" as const, ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: result.kind === "compensated", fatal: result.kind === "recovery_required" };
-    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `事务结果: ${result.kind}` });
-    else broadcast({ type: "step-ok", stepId: "persist" });
-    if (!failed && lastDetectScore !== null) pendingRecheck = lastDetectScore;
+    if (failed) orchestrator.broadcast({ type: "step-fail", stepId: "persist", error: `事务结果: ${result.kind}` });
+    else orchestrator.broadcast({ type: "step-ok", stepId: "persist" });
+    if (!failed) orchestrator.markPendingRecheckIfKnown();
     if (!failed) {
       // 待生效提示（ADR-0006）：策略写入后探测运行中的浏览器。
       // setImmediate：探测内部是同步 tasklist，不阻塞本次请求的关键路径；
       // detectRunningBrowsers 逐浏览器吞掉失败，自身不会抛出。
-      setImmediate(() => { broadcast({ type: "browser-hint", running: detectRunningBrowsers() }); });
+      setImmediate(() => { orchestrator.broadcast({ type: "browser-hint", running: detectRunningBrowsers() }); });
     }
-    recordFixSummary("persist-on", summary);
-    broadcast(summary);
+    void recordFixSummary("persist-on", summary);
+    orchestrator.broadcast(summary);
   } catch (error) {
-    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    orchestrator.broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
     const summary = { type: "summary" as const, ok: 0, fail: 1, rolledBack: false, fatal: true };
-    recordFixSummary("persist-on", summary); broadcast(summary);
+    void recordFixSummary("persist-on", summary); orchestrator.broadcast(summary);
   } finally {
-    releaseLock();
+    orchestrator.releaseLock();
   }
 }
 
-async function handleFixOff(res: http.ServerResponse) {
-  if (!tryAcquireLock(res)) return;
+async function handleFixOff(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse) {
+  if (!orchestrator.tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
   try {
-    broadcast({ type: "step-start", stepId: "persist", name: "还原日常配置" });
-    const result = await (await runtimeFactory()).restore();
+    orchestrator.broadcast({ type: "step-start", stepId: "persist", name: "还原日常配置" });
+    const result = await (await orchestrator.getRuntime()).restore();
     const failed = result.kind === "recovery_required";
-    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `未完成项: ${result.failed.join(", ")}` });
-    else broadcast({ type: "step-ok", stepId: "persist" });
-    if (!failed && lastDetectScore !== null) pendingRecheck = lastDetectScore;
+    if (failed) orchestrator.broadcast({ type: "step-fail", stepId: "persist", error: `未完成项: ${result.failed.join(", ")}` });
+    else orchestrator.broadcast({ type: "step-ok", stepId: "persist" });
+    if (!failed) orchestrator.markPendingRecheckIfKnown();
     const summary = { type: "summary" as const, ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: false, fatal: failed };
-    recordFixSummary("persist-off", summary); broadcast(summary);
+    void recordFixSummary("persist-off", summary); orchestrator.broadcast(summary);
   } catch (error) {
-    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    orchestrator.broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
     const summary = { type: "summary" as const, ok: 0, fail: 1, rolledBack: false, fatal: true };
-    recordFixSummary("persist-off", summary); broadcast(summary);
+    void recordFixSummary("persist-off", summary); orchestrator.broadcast(summary);
   } finally {
-    releaseLock();
+    orchestrator.releaseLock();
   }
 }
 
-async function handleRecover(res: http.ServerResponse) {
-  if (!tryAcquireLock(res)) return;
+async function handleRecover(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse) {
+  if (!orchestrator.tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
   try {
-    broadcast({ type: "step-start", stepId: "persist", name: "继续未完成的恢复事务" });
-    const result = await (await runtimeFactory()).recover();
+    orchestrator.broadcast({ type: "step-start", stepId: "persist", name: "继续未完成的恢复事务" });
+    const result = await (await orchestrator.getRuntime()).recover();
     const failed = result.kind === "recovery_required";
-    if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `仍未恢复项: ${result.failed.join(", ")}` });
-    else broadcast({ type: "step-ok", stepId: "persist" });
-    broadcast({ type: "summary", ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: false, fatal: failed });
+    if (failed) orchestrator.broadcast({ type: "step-fail", stepId: "persist", error: `仍未恢复项: ${result.failed.join(", ")}` });
+    else orchestrator.broadcast({ type: "step-ok", stepId: "persist" });
+    orchestrator.broadcast({ type: "summary", ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: false, fatal: failed });
   } catch (error) {
-    broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
-    broadcast({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
+    orchestrator.broadcast({ type: "step-fail", stepId: "persist", error: error instanceof Error ? error.message : String(error) });
+    orchestrator.broadcast({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
   } finally {
-    releaseLock();
+    orchestrator.releaseLock();
   }
 }
 
-async function handleCheckStart(res: http.ServerResponse) {
-  if (!tryAcquireLock(res)) return;
+async function handleCheckStart(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse) {
+  if (!orchestrator.tryAcquireLock(res)) return;
   res.writeHead(202); res.end();
 
   try {
-    const status = await (await runtimeFactory()).status();
+    const status = await (await orchestrator.getRuntime()).status();
     const target = getTargetRegion(status.target?.region ?? status.preferredRegion);
     const ipIntel = await fetchIpIntelligence();
-    await runDetection("auto", target.timezone, target.lang, ipIntel, checkEventConsumer);
+    await runDetection("auto", target.timezone, target.lang, ipIntel, orchestrator.checkEventConsumer);
   } finally {
-    releaseLock();
+    orchestrator.releaseLock();
   }
 }
 
-async function handleStatus(res: http.ServerResponse) {
-  const status = await (await runtimeFactory()).status();
+async function handleStatus(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse) {
+  const status = await (await orchestrator.getRuntime()).status();
   sendJson(res, status);
 }
 
 async function handleHistory(res: http.ServerResponse) {
-  sendJson(res, readHistory(10));
+  sendJson(res, await readHistory(10));
 }
 
 function handleRegions(res: http.ServerResponse) {
@@ -196,8 +207,6 @@ function handleRegions(res: http.ServerResponse) {
 
 // ── 服务器 ──
 
-let runtimeFactory: () => Promise<PersistApplicationService> = createPersistRuntime;
-
 export type GuiHttpServer = http.Server & Readonly<{
   ccFixSession: GuiSession;
   bootstrapUrl(): string;
@@ -207,7 +216,7 @@ export function startGuiServer(
   port = 3456,
   dependencies?: Readonly<{ createRuntime?: () => Promise<PersistApplicationService>; session?: GuiSession }>,
 ): Promise<GuiHttpServer> {
-  runtimeFactory = dependencies?.createRuntime ?? createPersistRuntime;
+  const orchestrator = createGuiOrchestrator(dependencies?.createRuntime ?? createPersistRuntime);
   const session = dependencies?.session ?? new GuiSession();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
@@ -249,23 +258,21 @@ export function startGuiServer(
           "Connection": "keep-alive",
         });
         res.write("\n");
-        clients.add(res);
-        res.on("error", () => clients.delete(res));
-        req.on("close", () => clients.delete(res));
+        orchestrator.attachSse(req, res);
       } else if (method === "GET" && url.pathname === "/api/status") {
-        await handleStatus(res);
+        await handleStatus(orchestrator, res);
       } else if (method === "GET" && url.pathname === "/api/history") {
         await handleHistory(res);
       } else if (method === "GET" && url.pathname === "/api/regions") {
         handleRegions(res);
       } else if (method === "POST" && url.pathname === "/api/fix/on") {
-        await handleFixOn(res, url);
+        await handleFixOn(orchestrator, res, url);
       } else if (method === "POST" && url.pathname === "/api/fix/off") {
-        await handleFixOff(res);
+        await handleFixOff(orchestrator, res);
       } else if (method === "POST" && url.pathname === "/api/fix/recover") {
-        await handleRecover(res);
+        await handleRecover(orchestrator, res);
       } else if (method === "POST" && url.pathname === "/api/check/start") {
-        await handleCheckStart(res);
+        await handleCheckStart(orchestrator, res);
       } else {
         res.writeHead(404);
         res.end("Not found");

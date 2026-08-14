@@ -16,11 +16,14 @@ export async function captureJournalPlan(input: {
   steps: readonly PlannedStep[];
   desired: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>;
   authorities: Readonly<Record<PersistStepId, ExecutableAuthority>>;
+  /** 已读原值（候选 4）：锁内无写入，观察值即原值；缺省时按需回读。 */
+  originals?: Readonly<Partial<Record<PersistStepId, StoredValue<JsonValue>>>>;
 }): Promise<readonly { id: PersistStepId; original: JsonValue; desired: JsonValue }[]> {
   const captured = [] as Array<{ id: PersistStepId; original: JsonValue; desired: JsonValue }>;
   for (const step of input.steps) {
     if (step.action === 'noop') continue;
-    const original = await input.authorities[step.id].read();
+    const preRead = input.originals !== undefined ? input.originals[step.id] : undefined;
+    const original = preRead ?? await input.authorities[step.id].read();
     captured.push({ id: step.id, original: original as JsonValue, desired: input.desired[step.id] as JsonValue });
   }
   return captured;
@@ -39,6 +42,8 @@ export async function executePlan(input: {
   desired: Readonly<Record<PersistStepId, StoredValue<JsonValue>>>;
   authorities: Readonly<Record<PersistStepId, ExecutableAuthority>>;
   journal: ExecutionJournal;
+  /** 候选 4：调用方锁内预读的原值，补偿簿记不再二次读。 */
+  originals?: Readonly<Partial<Record<PersistStepId, StoredValue<JsonValue>>>>;
 }): Promise<ExecutionResult> {
   const modified: Array<{ id: PersistStepId; original: StoredValue<JsonValue> }> = [];
   const degraded: DegradationReason[] = [];
@@ -46,7 +51,7 @@ export async function executePlan(input: {
     for (const step of input.steps) {
       if (step.action === 'noop') continue;
       const authority = input.authorities[step.id];
-      const original = await authority.read();
+      const original = (input.originals !== undefined ? input.originals[step.id] : undefined) ?? await authority.read();
       await input.journal.transition(step.id, 'applying');
       // A platform write may change state and then throw (or its readback may
       // fail). Record it before crossing that boundary so it is compensated.

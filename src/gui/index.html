@@ -180,7 +180,7 @@ const riskLabel = { low: "安全", medium: "中风险", high: "高风险", criti
 const scoreClass = (s) => s >= 71 ? "score-critical" : s >= 51 ? "score-high" : s >= 21 ? "score-medium" : "score-low";
 
 // ── 检测信号占位表（13 行） ──
-const DETECT_SIGNALS = [
+let DETECT_SIGNALS = [
   { id: "timezone", label: "时区" },
   { id: "language", label: "语言" },
   { id: "locale", label: "Locale" },
@@ -195,6 +195,11 @@ const DETECT_SIGNALS = [
   { id: "ip-datacenter", label: "数据中心 IP" },
   { id: "ip-multi-source", label: "多源不一致" },
 ];
+
+// 服务端 catalog 事件到达后替换硬编码回退表（服务端为唯一定义，评审候选 7）
+function applySignalCatalog(signals) {
+  if (Array.isArray(signals) && signals.length > 0) DETECT_SIGNALS = signals;
+}
 
 let fixActive = false; // 修复流是否进行中（防止每个 step-start 重复初始化卡片）
 let lastFixAction = null;      // "on" | "off" — summary 时决定提示显示/消失
@@ -410,6 +415,7 @@ function handleEvent(event) {
   else if (event.type === "step-ok") { updateStep(event.stepId, "ok", event.rollback); }
   else if (event.type === "step-fail") { updateStep(event.stepId, "fail", event.rollback, event.error); }
   else if (event.type === "summary") { fixActive = false; showSummary(event); loadHistory(); }
+  else if (event.type === "catalog") { applySignalCatalog(event.signals); }
   else if (event.type === "browser-hint") { pendingBrowserHint = event.running; }
   else if (event.type === "recheck") { showScoreDelta(event.before, event.after); }
   else if (event.type === "detect-start") { buildDetectTable(); }

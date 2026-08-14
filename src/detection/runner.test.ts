@@ -61,6 +61,19 @@ describe("runDetection 插件故障隔离", () => {
     expect(typeof response.score).toBe("number");
   });
 
+  it("IP 情报派生信号走插件 seam，信号与事件并入汇总", async () => {
+    const events: StreamEvent[] = [];
+    const response = await runDetection("auto", "America/New_York", "en", {
+      ipType: "datacenter", asn: "AS13335", org: "Cloudflare", sourceCount: 2, multiSourceConsistent: false,
+    }, (e) => events.push(e));
+    const okIds = events
+      .filter((e): e is Extract<StreamEvent, { type: "detect-ok" }> => e.type === "detect-ok")
+      .map((e) => e.signal.id);
+    expect(okIds).toContain("ip-datacenter");
+    expect(okIds).toContain("ip-multi-source");
+    expect(response.signals.map((s) => s.id).slice(-2)).toEqual(["ip-datacenter", "ip-multi-source"]);
+  });
+
   it("单个插件抛错时发射降级事件，其余信号仍正常汇总", async () => {
     state.failing.add("dns");
     const events: StreamEvent[] = [];

@@ -34,7 +34,7 @@ program
     const target = getTargetRegion(options.region);
     const ipIntel = await fetchIpIntelligence();
     const response = await runDetection("auto", target.timezone, target.lang, ipIntel);
-    recordCheck(response.score);
+    await recordCheck(response.score);
 
     if (options.json) {
       renderJsonResponse(response);

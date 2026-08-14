@@ -10,7 +10,8 @@ export type FixEvent =
   | { type: "step-fail";  stepId: string; error: string; rollback?: boolean }
   | { type: "summary";    ok: number; fail: number; rolledBack: boolean; fatal?: boolean }
   | { type: "browser-hint"; running: string[] }
-  | { type: "recheck";    before: number; after: number };
+  | { type: "recheck";    before: number; after: number }
+  | { type: "catalog";    signals: ReadonlyArray<{ id: string; label: string }> };
 
 // ── 检测流事件 ──
 

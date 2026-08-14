@@ -2,6 +2,7 @@ import type { JsonValue } from '../../../state/checksum.js';
 import { TransactionJournalRepository, type JournalStep, type TransactionJournal } from '../../../state/journal.js';
 import { isSafeJsonValue, isStoredValue, storedValueEquals, type StoredValue } from '../../../state/schema.js';
 import type { ExecutableAuthority } from './executor.js';
+import { applyDailyStep } from './restore.js';
 import { ALL_STEP_IDS, type PersistStepId } from '../../steps.js';
 
 export type RecoveryExecutionResult = Readonly<{
@@ -83,24 +84,26 @@ export async function recoverRestoreAuthorities(input: {
       failed.push(id);
       continue;
     }
-    try {
-      const actual = await input.authorities[id].read();
-      if (!storedValueEquals(actual, input.daily[id])) {
-        if (entry.phase !== 'applying') journal = await input.journalRepository.transition(journal, id, 'applying');
-        const outcome = await input.authorities[id].write(input.daily[id]);
-        if (outcome !== undefined) throw new Error(`Restore recovery write denied on ${id}`);
-      } else if (entry.phase !== 'verified') {
-        if (entry.phase !== 'applying') journal = await input.journalRepository.transition(journal, id, 'applying');
-      }
-      const verified = await input.authorities[id].read();
-      if (!storedValueEquals(verified, input.daily[id])) throw new Error('Restore readback mismatch');
-      if (journal.steps.find((step) => step.id === id)!.phase !== 'verified') {
-        journal = await input.journalRepository.transition(journal, id, 'verified');
-      }
-    } catch {
-      failed.push(id);
-      journal = await markRecoveryRequired(input.journalRepository, journal, id);
-    }
+    const actual = await input.authorities[id].read();
+    const outcome = await applyDailyStep({
+      id,
+      daily: input.daily[id],
+      authority: input.authorities[id],
+      write: !storedValueEquals(actual, input.daily[id]),
+      beginTransition: async () => {
+        // verified 的已对齐步骤不重开（与旧实现一致）；其余阶段一律先推进到 applying。
+        if (entry.phase !== 'applying' && entry.phase !== 'verified') {
+          journal = await input.journalRepository.transition(journal, id, 'applying');
+        }
+      },
+      reportVerified: async () => {
+        if (journal.steps.find((step) => step.id === id)!.phase !== 'verified') {
+          journal = await input.journalRepository.transition(journal, id, 'verified');
+        }
+      },
+      reportFailure: async () => { journal = await markRecoveryRequired(input.journalRepository, journal, id); },
+    });
+    if (outcome === 'failed') failed.push(id);
   }
   return { kind: failed.length === 0 ? 'recovered' : 'recovery_required', failed };
 }

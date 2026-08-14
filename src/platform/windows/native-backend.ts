@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BROWSER_POLICY_SLOTS, type BrowserPolicySlotId } from '../../state/schema.js';
-import { createPersistAuthoritySet } from './adapter-set.js';
 import { createBrowserPolicyProfileAuthority, type BrowserPolicyRegistry, type BrowserPolicyWriteResult } from './browser-policy.js';
+import type { ExecutableAuthority } from '../../persist/authority.js';
+import type { PersistStepId } from '../../persist/steps.js';
 import { createEnvironmentProfileAuthority, type EnvironmentRegistry, type ManagedEnvironmentKey } from './environment.js';
 import { createLocaleAuthorities, type LocaleRegistry } from './locale.js';
 import { createTimezoneAuthority, type TimezoneSystem } from './timezone.js';
@@ -163,9 +164,9 @@ export function createNativeLocaleRegistry(runner: WindowsCommandRunner): Locale
 }
 
 /** Production authority composition. No network setting is present. */
-export function createNativePersistAuthoritySet(runner: WindowsCommandRunner = runWindowsCommand) {
+export function createNativePersistAuthoritySet(runner: WindowsCommandRunner = runWindowsCommand): Readonly<Record<PersistStepId, ExecutableAuthority>> {
   const locale = createLocaleAuthorities(createNativeLocaleRegistry(runner));
-  return createPersistAuthoritySet({
+  return Object.freeze({
     environment: createEnvironmentProfileAuthority(createNativeEnvironmentRegistry(runner)),
     system_timezone: createTimezoneAuthority(createNativeTimezoneSystem(runner)),
     browser_policies: createBrowserPolicyProfileAuthority(createNativeBrowserPolicyRegistry(runner)),
