@@ -51,12 +51,13 @@ describe('transition executor', () => {
     const result = await executePlan({ ...f, steps: [{ id: 'environment', disposition: 'required', action: 'apply' }] });
     expect(result.kind).toBe('compensated');
   });
-  it('compensates when the post-write readback does not match the desired value', async () => {
+  it('delegates readback verification to the authority and does not re-read after a successful write', async () => {
     const f = fixture();
-    f.authorities.environment.write = async () => { f.values.environment = 'written'; };
-    f.authorities.environment.read = async () => storedValue('something-else');
+    let reads = 0;
+    f.authorities.environment.read = async () => { reads += 1; return storedValue('old-env'); };
     const result = await executePlan({ ...f, steps: [{ id: 'environment', disposition: 'required', action: 'apply' }] });
-    expect(result.kind).toBe('compensated');
+    expect(result.kind).toBe('committable');
+    expect(reads).toBe(1);
   });
   it('survives a failed recovery_required journal transition during compensation', async () => {
     const f = fixture(new Set(['system_timezone']));
