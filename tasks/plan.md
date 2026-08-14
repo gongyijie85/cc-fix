@@ -1,5 +1,7 @@
 # Implementation Plan: CC-Fix Windows 产品化 0.2
 
+> 状态核对：见 [`tasks/todo.md`](./todo.md) 顶部状态汇总（2026-08-14，基线 main @ aeb7eec）。Phase 0–6 主体已随 PR #28 落地；未完成/部分项：T13 退出码契约、T14 历史扩展、T18 Playwright、T21 脱敏诊断、T22 提权助手（设计变更）、T27 license/vuln 门禁、T28/T29 签名与 npm 发布、T31 未执行。
+
 ## Overview
 
 本计划把 [Windows 产品化 0.2 规格](../docs/spec/windows-productization-v0.2.md) 分为八个可验证阶段。顺序遵循风险与依赖：状态真相和恢复能力先于界面，界面先于桌面壳，桌面壳和核心载荷先于安装器，安装生命周期通过后才建立公开发布。
