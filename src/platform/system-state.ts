@@ -48,7 +48,7 @@ async function computeSystemState(): Promise<SystemStateSnapshot> {
     const env = { ...process.env } as Record<string, string | undefined>;
     delete env.TZ;
     try {
-      const script = 'console.log(JSON.stringify({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offset: -new Date().getTimezoneOffset() }))';
+      const script = 'console.log(JSON.stringify({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offsetMinutes: -new Date().getTimezoneOffset() }))';
       const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], { env, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
       const parsed = JSON.parse(stdout.trim()) as SystemStateSnapshot;
       if (typeof parsed.timezone === 'string' && parsed.timezone.length > 0 && Number.isFinite(parsed.offsetMinutes)) return Object.freeze(parsed);
