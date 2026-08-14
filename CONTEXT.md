@@ -62,6 +62,7 @@ Claude Code 环境安全检测与修复 CLI 工具（Windows 优先）。检测�
 | 发布晋级（release promotion） | 最后一个通过全部门禁的 RC 只变更允许的版本元数据与发布说明后成为正式公开版 | RC 后任何代码、依赖或安装器变化都必须产生新的 RC |
 | 浏览器策略（browser policy） | Chrome/Edge 原生策略注册表项（HKCU\Software\Policies\…）：`AcceptLanguage`（跟随目标地区）与 WebRTC 防泄漏策略，persist on 写入、off 还原 | 不叫"浏览器插件"；不改系统语言列表（ADR-0003） |
 | 策略快照 | 备份快照中的 `previousBrowserPolicies`：写策略前的原值，含"不存在"（还原时删除） | 与备份同源同一文件，同一"保留最原始值"语义 |
+| 策略槽（policy slot） | 浏览器策略的单个受管位：槽 id（如 `chrome.accept_language`）＋注册表 keyPath/valueName＋期望值，共六槽，由唯一槽目录定义；检测、persist 期望值、备份与迁移全部派生自该目录 | 不用 slotKey 词汇（`chrome/AcceptLanguage`），那是仅迁移输入的旧格式 |
 
 ## 统一事件协议
 
