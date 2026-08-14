@@ -425,10 +425,17 @@ function handleEvent(event) {
 
 // ── SSE 连接 ──
 const evtSource = new EventSource("/api/events");
+let sseOpen = false;
+let pendingStart = false;
+evtSource.onopen = () => {
+  sseOpen = true;
+  // SSE 就绪前发起的检测请求补发，避免事件丢失导致界面停在"检测进行中…"
+  if (pendingStart) { pendingStart = false; startCheck(); }
+};
 evtSource.onmessage = (e) => {
   try { handleEvent(JSON.parse(e.data)); } catch (err) { console.error("事件处理错误:", err); }
 };
-evtSource.onerror = () => { /* EventSource 自动重连 */ };
+evtSource.onerror = () => { sseOpen = false; /* EventSource 自动重连；重连成功后补发积压请求 */ };
 
 // ── 操作按钮 ──
 async function persistOn() {
@@ -466,10 +473,14 @@ async function persistOff() {
 }
 
 function startCheck() {
+  if (!sseOpen) { pendingStart = true; return; }
   $("#detectCard").classList.add("visible");
   fetch("/api/check/start", { method: "POST" }).then(res => {
     if (!res.ok) {
       $("#detectCard").classList.remove("visible");
+      // 全局忙（409）：不再让页面停留在无限旋转的"正在检测…"
+      const loadingText = document.querySelector("#content .loading p");
+      if (loadingText) loadingText.textContent = "已有操作进行中，请稍候后再试…";
       showToast("已有操作进行中，请稍候");
     }
   });

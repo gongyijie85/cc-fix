@@ -1,11 +1,51 @@
 // DNS 检测插件 — 解析 Anthropic API 域名，识别污染/劫持；CDN 边缘国家不误报
 
 import dns from "node:dns";
-import { promisify } from "node:util";
 import type { DetectionPlugin, DetectionContext } from "../plugin.js";
 import type { SignalResult } from "../types.js";
 
-const dnsLookup = promisify(dns.lookup);
+/** 单次 DNS 解析的硬超时：坏/慢 DNS（丢包黑洞、VPN 残留 DNS）不得拖住整个检测流 */
+const DNS_LOOKUP_TIMEOUT_MS = 5000;
+
+export type DnsLookupFn = (
+  host: string,
+  options: { signal?: AbortSignal },
+) => Promise<{ address: string; family: number }>;
+
+function defaultLookup(host: string, options: { signal?: AbortSignal }): Promise<{ address: string; family: number }> {
+  return new Promise((resolve, reject) => {
+    // signal 在 Node ≥18.18 的 dns.lookup 中受支持；@types/node 20 尚未收录该字段，此处断言绕过。
+    // 即便运行时不响应 abort，lookupWithTimeout 的竞速也会在超时后放弃。
+    const lookupOptions = { signal: options.signal } as unknown as dns.LookupOneOptions;
+    dns.lookup(host, lookupOptions, (error, address: string, family: number) => {
+      if (error) { reject(error); return; }
+      resolve({ address, family });
+    });
+  });
+}
+
+/**
+ * 带超时的解析：即使底层 lookup 不响应 abort，也通过竞速在超时后放弃，
+ * 保证调用方永远不会被一个卡死的解析无限阻塞。
+ */
+async function lookupWithTimeout(
+  host: string,
+  lookup: DnsLookupFn,
+  timeoutMs: number,
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`DNS 解析超时（${timeoutMs}ms）`)), timeoutMs);
+  try {
+    return await Promise.race([
+      lookup(host, { signal: controller.signal }).then((result) => result.address),
+      new Promise<never>((_resolve, reject) => {
+        controller.signal.addEventListener("abort", () => reject(controller.signal.reason));
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Cloudflare 等 CDN 的公网段（Anthropic 走 CF，边缘国家 ≠ DNS 泄露） */
 function isCloudflareIp(ip: string): boolean {
@@ -35,14 +75,17 @@ function isSuspiciousPrivateIp(ip: string): boolean {
   return false;
 }
 
-export const dnsPlugin: DetectionPlugin = {
-  id: "dns",
-  label: "DNS 配置",
-  weight: 8,
-  run: async (_context: DetectionContext): Promise<SignalResult> => {
-    try {
-      const result = await dnsLookup("api.anthropic.com");
-      const ip = result.address;
+export function createDnsPlugin(
+  lookup: DnsLookupFn = defaultLookup,
+  timeoutMs: number = DNS_LOOKUP_TIMEOUT_MS,
+): DetectionPlugin {
+  return {
+    id: "dns",
+    label: "DNS 配置",
+    weight: 8,
+    run: async (_context: DetectionContext): Promise<SignalResult> => {
+      try {
+        const ip = await lookupWithTimeout("api.anthropic.com", lookup, timeoutMs);
 
       // Clash fake-ip：解析进 198.18.0.0/16 表示域名已由代理接管（Merlin Clash / mihomo 正常行为）
       if (isClashFakeIp(ip)) {
@@ -137,7 +180,7 @@ export const dnsPlugin: DetectionPlugin = {
         risk: "low",
       };
     } catch {
-      // DNS 解析失败（网络不可达等）≠ DNS 泄露，跳过不加分
+      // DNS 解析失败（网络不可达/超时等）≠ DNS 泄露，跳过不加分
       return {
         id: "dns",
         label: "DNS 配置",
@@ -149,5 +192,9 @@ export const dnsPlugin: DetectionPlugin = {
         risk: "low",
       };
     }
-  },
-};
+    },
+  };
+}
+
+/** 默认实例：真实 dns.lookup + 5s 硬超时 */
+export const dnsPlugin = createDnsPlugin();

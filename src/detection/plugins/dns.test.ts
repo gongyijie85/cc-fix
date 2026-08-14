@@ -2,18 +2,24 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// 模拟真实 dns.lookup 的 promisify.custom 行为（返回 { address, family }）
+// 模拟 node:dns.lookup 的回调签名 (host, options, callback)
 const { mockLookup } = vi.hoisted(() => {
-  type Resolver = (host: string) => Promise<{ address: string; family: number }>;
+  type Resolver = (host: string, options: { signal?: AbortSignal }) => Promise<{ address: string; family: number }>;
   const state: { resolve: Resolver } = {
     resolve: async () => ({ address: "104.18.1.1", family: 4 }),
   };
-  const mockLookup = Object.assign(vi.fn(), {
-    [Symbol.for("nodejs.util.promisify.custom")]: (host: string) => state.resolve(host),
-    __setState: (resolve: Resolver) => {
-      state.resolve = resolve;
+  const mockLookup = vi.fn(
+    (host: string, options: { signal?: AbortSignal } | number | undefined, cb?: (error: Error | null, address?: string, family?: number) => void) => {
+      const opts = typeof options === "object" && options !== null ? options : {};
+      state.resolve(host, opts).then(
+        (r) => cb?.(null, r.address, r.family),
+        (e) => cb?.(e instanceof Error ? e : new Error(String(e))),
+      );
     },
-  });
+  );
+  mockLookup.__setState = (resolve: Resolver) => {
+    state.resolve = resolve;
+  };
   return { mockLookup };
 });
 
@@ -21,7 +27,7 @@ vi.mock("node:dns", () => ({
   default: { lookup: mockLookup },
 }));
 
-import { dnsPlugin } from "./dns.js";
+import { createDnsPlugin, dnsPlugin } from "./dns.js";
 
 describe("dnsPlugin", () => {
   const originalFetch = globalThis.fetch;
@@ -109,5 +115,41 @@ describe("dnsPlugin", () => {
     expect(result.risk).toBe("low");
     expect(result.contribution).toBe(0);
     expect(result.value).toContain("DNS 解析失败");
+  });
+
+  it("abandons a stalled lookup within the timeout instead of blocking the detection flow", async () => {
+    // 模拟真实 dns.lookup 的 signal 行为：挂起直到 abort，abort 后拒绝
+    mockLookup.__setState(async (_host, options) => {
+      await new Promise<never>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(options.signal!.reason));
+      });
+      return { address: "1.2.3.4", family: 4 };
+    });
+
+    const plugin = createDnsPlugin(undefined, 50); // 50ms 硬超时
+    const started = Date.now();
+    const result = await plugin.run({
+      targetTimezone: "America/New_York",
+      targetLang: "en",
+    });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result.risk).toBe("low");
+    expect(result.contribution).toBe(0);
+    expect(result.value).toContain("解析失败");
+  });
+
+  it("abandons a lookup that ignores the abort signal via race fallback", async () => {
+    // 恶意/异常实现：完全不理会 signal，永远不返回
+    mockLookup.__setState(() => new Promise(() => {}));
+
+    const plugin = createDnsPlugin(undefined, 50);
+    const started = Date.now();
+    const result = await plugin.run({
+      targetTimezone: "America/New_York",
+      targetLang: "en",
+    });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result.risk).toBe("low");
+    expect(result.value).toContain("解析失败");
   });
 });
