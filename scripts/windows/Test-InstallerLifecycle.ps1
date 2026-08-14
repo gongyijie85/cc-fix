@@ -75,6 +75,10 @@ try {
     if ($null -eq $Key) { return $null }
     return $Key.$Name
   }
+  # 语言列表 cmdlet 是 persist on 快照捕获的硬依赖；Server 2025 CI runner 不提供该 cmdlet，
+  # 按 ADR-0010 该冒烟属于客户端测试线，能力缺失时记录跳过而非假失败。
+  $SmokeSupported = $null -ne (Get-Command Get-WinUserLanguageList -ErrorAction SilentlyContinue)
+  if ($SmokeSupported) {
   $SmokePolicySlots = [ordered]@{
     'HKCU\Software\Policies\Google\Chrome' = @('AcceptLanguage', 'DefaultWebRtcIPHandlingPolicy', 'ApplicationLocaleValue')
     'HKCU\Software\Policies\Microsoft\Edge' = @('AcceptLanguage', 'DefaultWebRtcIPHandlingPolicy', 'ApplicationLocaleValue')
@@ -133,6 +137,10 @@ try {
     if ($SmokeTzBefore) { & tzutil.exe /s $SmokeTzBefore | Out-Null }
   }
 
+  } else {
+    Write-Host '[installer-lifecycle] persist smoke skipped: Get-WinUserLanguageList unavailable on this host'
+  }
+
   $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C76DF1B-B683-4A77-9B4C-89E3305D2399}_is1'
   Set-ItemProperty -LiteralPath $UninstallKey -Name DisplayVersion -Value '99.0.0'
   $DowngradeExitCode = Invoke-BoundedProcess 'downgrade refusal' $InstallerPath @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon') 60
@@ -177,7 +185,7 @@ try {
     downgradeRefused = $true
     singleInstance = $true
     sidecarReaped = $true
-    persistSmoke = $true
+    persistSmoke = if ($SmokeSupported) { 'passed' } else { 'skipped-unsupported' }
     pathRestored = $true
     networkConfigurationUnchanged = $true
     evidenceRoot = $EvidenceRoot
