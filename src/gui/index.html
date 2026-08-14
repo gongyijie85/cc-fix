@@ -546,6 +546,21 @@ async function loadStatus() {
     if (level && status.mode !== "daily") level.value = status.mode;
     const needsRecovery = status.transaction?.kind !== "none" || status.health === "recovery_required";
     if (hint) { hint.style.display = needsRecovery ? "" : "none"; hint.textContent = "存在未完成事务，请先恢复"; }
+    // 未对齐策略槽（ADR-0011 每槽降级）：逐槽展示
+    const policyHint = $("#browserHint");
+    const POLICY_SLOT_LABELS = {
+      "chrome.accept_language": "Chrome/AcceptLanguage", "chrome.webrtc": "Chrome/WebRTC 防泄漏", "chrome.application_locale": "Chrome/ApplicationLocale",
+      "edge.accept_language": "Edge/AcceptLanguage", "edge.webrtc": "Edge/WebRTC 防泄漏", "edge.application_locale": "Edge/ApplicationLocale",
+    };
+    const unaligned = Array.isArray(status.degradation) ? status.degradation.map(d => POLICY_SLOT_LABELS[d.slot] || d.slot) : [];
+    if (policyHint) {
+      if (status.health === "degraded" && unaligned.length > 0) {
+        policyHint.textContent = "⚠️ 策略槽未对齐（可能受组织策略管理）：" + unaligned.join("、");
+        policyHint.classList.add("visible", "strong");
+      } else {
+        policyHint.classList.remove("visible", "strong");
+      }
+    }
     const recover = document.getElementById("btnRecover");
     if (recover) recover.style.display = needsRecovery ? "" : "none";
   } catch {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { storedValue } from '../state/schema.js';
-import { captureJournalPlan, executePlan, PolicyManagedOrDeniedError } from './executor.js';
+import { captureJournalPlan, executePlan } from './executor.js';
 import type { PersistStepId } from './steps.js';
 
 function fixture(fail = new Set<PersistStepId>()) {
@@ -26,11 +26,51 @@ describe('transition executor', () => {
     expect(f.events).toContain('applying:environment');
     expect(f.events).toContain('compensated:environment');
   });
-  it('only permits policy managed/denied to degrade a committed target', async () => {
+  it('fails closed: a rejected policy write compensates like any required step (ADR-0011 T1)', async () => {
     const f = fixture();
-    f.authorities.browser_policies.write = async () => { throw new PolicyManagedOrDeniedError('chrome.webrtc', 'managed'); };
+    f.authorities.browser_policies.write = async (value: ReturnType<typeof storedValue<string>>) => {
+      if (value.value.startsWith('new-')) throw new Error('Access is denied.');
+      f.values.browser_policies = value.value;
+    };
+    const result = await executePlan({ ...f, steps: [{ id: 'browser_policies', disposition: 'required', action: 'apply' }] });
+    expect(result.kind).toBe('compensated');
+    expect(f.values.browser_policies).toBe('old-policy');
+    expect(f.events).toContain('compensated:browser_policies');
+  });
+  it('commits degraded per slot: written subset stays, unaligned slots recorded (ADR-0011 T2)', async () => {
+    const f = fixture();
+    f.authorities.browser_policies.write = async () => ({ unaligned: [{ kind: 'browser_policy_unaligned', slot: 'chrome.webrtc', cause: 'access_denied' }] });
     const result = await executePlan({ ...f, steps: [{ id: 'browser_policies', disposition: 'degradable', action: 'apply' }] });
-    expect(result).toMatchObject({ kind: 'degraded', degraded: [{ kind: 'browser_policy_unaligned', slot: 'chrome.webrtc', cause: 'managed' }] });
+    expect(result).toMatchObject({ kind: 'degraded', degraded: [{ kind: 'browser_policy_unaligned', slot: 'chrome.webrtc', cause: 'access_denied' }] });
+    expect(f.events).toContain('verified:browser_policies');
+    expect(f.events).not.toContain('compensating:browser_policies');
+  });
+  it('rejects per-slot denials on a required (non-degradable) step', async () => {
+    const f = fixture();
+    f.authorities.environment.write = async () => ({ unaligned: [{ kind: 'browser_policy_unaligned', slot: 'chrome.webrtc', cause: 'access_denied' }] });
+    const result = await executePlan({ ...f, steps: [{ id: 'environment', disposition: 'required', action: 'apply' }] });
+    expect(result.kind).toBe('compensated');
+  });
+  it('compensates when the post-write readback does not match the desired value', async () => {
+    const f = fixture();
+    f.authorities.environment.write = async () => { f.values.environment = 'written'; };
+    f.authorities.environment.read = async () => storedValue('something-else');
+    const result = await executePlan({ ...f, steps: [{ id: 'environment', disposition: 'required', action: 'apply' }] });
+    expect(result.kind).toBe('compensated');
+  });
+  it('survives a failed recovery_required journal transition during compensation', async () => {
+    const f = fixture(new Set(['system_timezone']));
+    const originalTransition = f.journal.transition;
+    f.journal.transition = async (id: string, phase: string) => {
+      if (phase === 'recovery_required') throw new Error('journal unavailable');
+      await originalTransition(id, phase);
+    };
+    f.authorities.environment.write = async (value: ReturnType<typeof storedValue<string>>) => {
+      if (value.value === 'old-env') throw new Error('compensation blocked');
+      f.values.environment = value.value;
+    };
+    const result = await executePlan({ ...f, steps: [{ id: 'environment', disposition: 'required', action: 'apply' }, { id: 'system_timezone', disposition: 'required', action: 'apply' }] });
+    expect(result.kind).toBe('recovery_required');
   });
   it('marks recovery required when compensation itself cannot be verified', async () => {
     const f = fixture(new Set(['system_timezone']));

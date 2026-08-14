@@ -29,11 +29,9 @@ describe('native Windows persist backend', () => {
     expect(JSON.parse(Buffer.from(encoded!, 'base64').toString('utf8'))).toEqual(['zh-CN', 'en-US']);
   });
 
-  it('classifies only explicit access denial as a degradable browser policy failure', async () => {
+  it('reports per-slot access denial while unknown failures propagate raw (ADR-0011 T2)', async () => {
     const denied: WindowsCommandRunner = async () => { throw Object.assign(new Error('Access is denied.'), { stderr: 'Access is denied.' }); };
-    await expect(createNativeBrowserPolicyRegistry(denied).write('chrome.accept_language', 'en-US')).rejects.toMatchObject({
-      slot: 'chrome.accept_language', policyCause: 'access_denied',
-    });
+    await expect(createNativeBrowserPolicyRegistry(denied).write('chrome.accept_language', 'en-US')).resolves.toBe('access_denied');
     const unknown: WindowsCommandRunner = async () => { throw new Error('device failure'); };
     await expect(createNativeBrowserPolicyRegistry(unknown).write('chrome.accept_language', 'en-US')).rejects.toThrow('device failure');
   });

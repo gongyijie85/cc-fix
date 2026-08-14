@@ -20,7 +20,8 @@ export async function restoreAll(input: {
   for (const id of input.order) {
     try {
       await input.journal.transition(id, 'applying');
-      await input.authorities[id].write(input.daily[id]);
+      const outcome = await input.authorities[id].write(input.daily[id]);
+      if (outcome !== undefined) throw new Error(`Restore write denied on ${id}`);
       const actual = await input.authorities[id].read();
       if (JSON.stringify(actual) !== JSON.stringify(input.daily[id])) throw new Error('Readback mismatch');
       await input.journal.transition(id, 'verified');

@@ -9,6 +9,13 @@ const runtimeMocks = vi.hoisted(() => ({
 
 vi.mock("./index.html", () => ({ default: "<!doctype html>" }));
 
+const browserMocks = vi.hoisted(() => ({ detectRunningBrowsers: vi.fn<() => string[]>(() => []) }));
+
+vi.mock("../platform/browser.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../platform/browser.js")>();
+  return { ...actual, detectRunningBrowsers: browserMocks.detectRunningBrowsers };
+});
+
 import { startGuiServer, type GuiHttpServer } from "./server.js";
 
 let server: GuiHttpServer | undefined;
@@ -38,6 +45,8 @@ async function closeServer(): Promise<void> {
 }
 
 beforeEach(() => {
+  browserMocks.detectRunningBrowsers.mockClear();
+  browserMocks.detectRunningBrowsers.mockReturnValue([]);
   runtimeMocks.protect.mockClear();
   runtimeMocks.restore.mockClear();
   runtimeMocks.recover.mockClear();
@@ -89,6 +98,30 @@ describe("POST /api/fix/on region validation", () => {
     expect(validResponse.status).toBe(202);
     await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
     expect(runtimeMocks.protect.mock.calls[0]?.[0]).toEqual({ mode: "standard", region: "jp" });
+  });
+
+  it("broadcasts the running-browser hint over the SSE channel after a successful protect", async () => {
+    browserMocks.detectRunningBrowsers.mockReturnValue(["chrome", "edge"]);
+    const origin = await baseUrl();
+    const eventsRes = await fetch(`${origin}/api/events`, { headers: authHeaders });
+    const reader = eventsRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    const deadline = Date.now() + 5000;
+    const readTask = (async () => {
+      while (Date.now() < deadline && !text.includes("browser-hint")) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+    })();
+    const response = await fetch(`${origin}/api/fix/on`, { method: "POST", headers: authHeaders });
+    expect(response.status).toBe(202);
+    await readTask;
+    await reader.cancel();
+    expect(text).toContain("browser-hint");
+    expect(text).toContain("chrome");
+    expect(text).toContain("edge");
   });
 
   it("accepts an explicit deep level and reports committed state status", async () => {

@@ -1,4 +1,4 @@
-import type { ProtectionState } from '../state/schema.js';
+import type { DegradationReason, ProtectionState } from '../state/schema.js';
 import type { TransactionJournal, TransactionJournalContext } from '../state/journal.js';
 import { decideRecovery, type RecoveryDecision } from './recovery.js';
 import type { ProtectionTarget } from '../domain/protection.js';
@@ -15,6 +15,7 @@ export type PersistStatus = Readonly<{
   target: ProtectionState['committedTarget'];
   preferredRegion: ProtectionState['preferredRegion'];
   health: ProtectionState['health'];
+  degradation: readonly DegradationReason[];
   transaction: RecoveryDecision | Readonly<{ kind: 'state_reconciliation'; transactionId: string }>;
 }>;
 
@@ -29,6 +30,7 @@ export function derivePersistStatus(state: ProtectionState, journal: Transaction
     target: state.committedTarget,
     preferredRegion: state.preferredRegion,
     health: effectiveTransaction.kind === 'none' ? state.health : 'recovery_required',
+    degradation: state.degradation,
     transaction: effectiveTransaction,
   };
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { POLICY_SLOTS, slotKey } from '../platform/browser.js';
 import {
   BACKUP_AUTHORITY_IDS,
   BROWSER_POLICY_SLOTS,
+  desiredBrowserPolicies,
   cloneImmutable,
   isBackupSnapshotV4,
   isProtectionState,
@@ -134,7 +134,7 @@ describe('ProtectionState schema v1', () => {
         ...validState(),
         health: 'degraded',
         degradation: [
-          { kind: 'browser_policy_unaligned', slot: 'edge.webrtc', cause: 'managed' },
+          { kind: 'browser_policy_unaligned', slot: 'edge.webrtc', cause: 'access_denied' },
           { kind: 'browser_policy_unaligned', slot: 'edge.webrtc', cause: 'access_denied' },
         ],
       }),
@@ -147,7 +147,7 @@ describe('ProtectionState schema v1', () => {
         ...validState(),
         health: 'degraded',
         degradation: [
-          { kind: 'browser_policy_unaligned', slot: 'edge.webrtc', cause: 'managed' },
+          { kind: 'browser_policy_unaligned', slot: 'edge.webrtc', cause: 'access_denied' },
         ],
       }),
     ).toBe(true);
@@ -163,7 +163,7 @@ describe('ProtectionState schema v1', () => {
       isProtectionState({
         ...validState(),
         degradation: [
-          { kind: 'browser_policy_unaligned', slot: 'edge.webrtc', cause: 'managed' },
+          { kind: 'browser_policy_unaligned', slot: 'edge.webrtc', cause: 'access_denied' },
         ],
       }),
     ).toBe(false);
@@ -190,12 +190,28 @@ describe('ProtectionState schema v1', () => {
 });
 
 describe('BackupSnapshot schema v4', () => {
-  it('covers exactly every browser policy slot managed by the platform adapter', () => {
-    const backupSurface = BROWSER_POLICY_SLOTS.map(
-      (slot) => `${slot.browser}/${slot.valueName}`,
-    ).sort();
-    expect(backupSurface).toEqual(POLICY_SLOTS.map(slotKey).sort());
-    expect(new Set(backupSurface).size).toBe(POLICY_SLOTS.length);
+  it('declares the six managed browser policy slots exactly once (ADR-0011 catalogue)', () => {
+    const ids = BROWSER_POLICY_SLOTS.map((slot) => slot.id);
+    expect(new Set(ids).size).toBe(6);
+    expect(ids).toEqual([
+      'chrome.accept_language',
+      'chrome.webrtc',
+      'chrome.application_locale',
+      'edge.accept_language',
+      'edge.webrtc',
+      'edge.application_locale',
+    ]);
+    const paths = new Set(BROWSER_POLICY_SLOTS.map((slot) => `${slot.keyPath}\\u0000${slot.valueName}`));
+    expect(paths.size).toBe(6);
+  });
+
+  it('derives desired policies in the authority vocabulary', () => {
+    const desired = desiredBrowserPolicies('en_US.UTF-8');
+    expect(Object.keys(desired).sort()).toEqual(BROWSER_POLICY_SLOTS.map((slot) => slot.id).sort());
+    expect(desired['chrome.accept_language']).toBe('en-US,en');
+    expect(desired['edge.accept_language']).toBe('en-US,en');
+    expect(desired['chrome.application_locale']).toBe('en-US');
+    expect(desired['edge.webrtc']).toBe('disable_non_proxied_udp');
   });
 
   it('round-trips all supported registry types exactly', () => {

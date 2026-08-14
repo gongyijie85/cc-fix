@@ -1,9 +1,9 @@
-// 浏览器策略检测插件测试 — 缺失 / 非法 / 规范三种槽位状态
+// 浏览器策略检测插件测试 — 缺失 / 非法 / 规范三种槽位状态（槽 id 词汇）
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { mockedGetPolicy } = vi.hoisted(() => ({
-  mockedGetPolicy: vi.fn<(browser: string, name: string) => string | null>(),
+  mockedGetPolicy: vi.fn<(slot: string) => string | null>(),
 }));
 
 vi.mock("../../platform/browser.js", async (importOriginal) => {
@@ -12,10 +12,10 @@ vi.mock("../../platform/browser.js", async (importOriginal) => {
 });
 
 import { browserPolicyPlugin } from "./browser-policy.js";
-import { targetPolicies } from "../../platform/browser.js";
+import { desiredBrowserPolicies } from "../../state/schema.js";
 
 const CONTEXT = { targetTimezone: "Asia/Singapore", targetLang: "en_SG.UTF-8" };
-const TARGETS = targetPolicies(CONTEXT.targetLang);
+const TARGETS = desiredBrowserPolicies(CONTEXT.targetLang);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -23,7 +23,7 @@ beforeEach(() => {
 
 describe("browserPolicyPlugin", () => {
   it("六槽位均为规范值：通过，risk low", async () => {
-    mockedGetPolicy.mockImplementation((browser, name) => TARGETS[`${browser}/${name}`]);
+    mockedGetPolicy.mockImplementation((slot) => TARGETS[slot as keyof typeof TARGETS]);
 
     const result = await browserPolicyPlugin.run(CONTEXT);
     expect(result.risk).toBe("low");
@@ -44,10 +44,10 @@ describe("browserPolicyPlugin", () => {
   });
 
   it("取值非法（非缺失）：报异常并附当前值", async () => {
-    mockedGetPolicy.mockImplementation((browser, name) => {
-      if (browser === "chrome" && name === "AcceptLanguage") return "zh-CN";
-      if (browser === "edge" && name === "DefaultWebRtcIPHandlingPolicy") return "disable_non_proxied";
-      return TARGETS[`${browser}/${name}`];
+    mockedGetPolicy.mockImplementation((slot) => {
+      if (slot === "chrome.accept_language") return "zh-CN";
+      if (slot === "edge.webrtc") return "disable_non_proxied";
+      return TARGETS[slot as keyof typeof TARGETS];
     });
 
     const result = await browserPolicyPlugin.run(CONTEXT);
@@ -61,8 +61,8 @@ describe("browserPolicyPlugin", () => {
   });
 
   it("AcceptLanguage 跟随目标地区推导（ja_JP.UTF-8 → ja-JP）", async () => {
-    const jaTargets = targetPolicies("ja_JP.UTF-8");
-    mockedGetPolicy.mockImplementation((browser, name) => jaTargets[`${browser}/${name}`]);
+    const jaTargets = desiredBrowserPolicies("ja_JP.UTF-8");
+    mockedGetPolicy.mockImplementation((slot) => jaTargets[slot as keyof typeof jaTargets]);
 
     const result = await browserPolicyPlugin.run({
       targetTimezone: "Asia/Tokyo",

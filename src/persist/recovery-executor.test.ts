@@ -82,6 +82,50 @@ describe('persist crash recovery executor', () => {
     expect(result).toEqual({ kind: 'recovery_required', failed: ['user_culture', 'locale_name', 'browser_policies'] });
   });
 
+  it('marks a protect step failed on a denied compensation write and skips re-marking recovery_required', async () => {
+    const originals = values('daily');
+    const journal = {
+      transactionId: 'tx-protect-denied', kind: 'protect', steps: [
+        { id: 'environment', phase: 'applying', original: originals.environment },
+        { id: 'system_timezone', phase: 'applying', original: originals.system_timezone },
+        { id: 'browser_policies', phase: 'recovery_required' },
+      ],
+    } as unknown as TransactionJournal;
+    const current = new Map(Object.entries(values('target')) as Array<[PersistStepId, StoredValue<JsonValue>]>);
+    const authorities = Object.fromEntries(ids.map((id) => [id, {
+      read: async () => current.get(id)!,
+      write: async (value: StoredValue<JsonValue>) => {
+        if (id === 'environment') return { unaligned: [{ kind: 'browser_policy_unaligned', slot: 'chrome.webrtc', cause: 'access_denied' }] };
+        current.set(id, value);
+      },
+    }])) as never;
+    const result = await recoverProtectTransaction({ journal, journalRepository: fakeRepository(), authorities });
+    expect(result.kind).toBe('recovery_required');
+    expect(result.failed).toContain('environment');
+    expect(result.failed).toContain('browser_policies');
+  });
+
+  it('fails the restore step on a denied write and skips redundant applying transitions', async () => {
+    const daily = values('daily');
+    const journal = {
+      transactionId: 'tx-restore-denied', kind: 'restore', steps: [
+        { id: 'environment', phase: 'applying' },
+        { id: 'system_timezone', phase: 'applying' },
+      ],
+    } as unknown as TransactionJournal;
+    const current = new Map(Object.entries(values('drift')) as Array<[PersistStepId, StoredValue<JsonValue>]>);
+    const authorities = Object.fromEntries(ids.map((id) => [id, {
+      read: async () => current.get(id)!,
+      write: async (value: StoredValue<JsonValue>) => {
+        if (id === 'environment') return { unaligned: [{ kind: 'browser_policy_unaligned', slot: 'edge.webrtc', cause: 'access_denied' }] };
+        current.set(id, value);
+      },
+    }])) as never;
+    const result = await recoverRestoreAuthorities({ journal, journalRepository: fakeRepository(), daily, authorities });
+    expect(result.kind).toBe('recovery_required');
+    expect(result.failed).toContain('environment');
+  });
+
   it('fails closed while covering every restore convergence branch', async () => {
     const daily = values('daily');
     const journal = {

@@ -2,16 +2,16 @@ import type { JsonValue } from '../state/checksum.js';
 import type { StoredValue } from '../state/schema.js';
 import type { PersistStepId, PlannedStep } from './steps.js';
 import { ALL_STEP_IDS } from './steps.js';
-import type { BrowserPolicySlotId, DegradationReason } from '../state/schema.js';
+import type { DegradationReason } from '../state/schema.js';
+
+/** undefined = 全部写入并验证；结构化结果 = 部分策略槽被拒、已写槽保留（ADR-0011 每槽粒度）。 */
+export type WriteOutcome = Readonly<{ unaligned: readonly DegradationReason[] }> | void;
 
 export interface ExecutableAuthority {
   read(): Promise<StoredValue<JsonValue>>;
-  write(value: StoredValue<JsonValue>): Promise<void>;
+  write(value: StoredValue<JsonValue>): Promise<WriteOutcome>;
 }
 export interface ExecutionJournal { transition(id: PersistStepId, phase: 'applying' | 'verified' | 'compensating' | 'compensated' | 'recovery_required'): Promise<void>; }
-export class PolicyManagedOrDeniedError extends Error {
-  constructor(readonly slot: BrowserPolicySlotId, readonly policyCause: 'managed' | 'access_denied') { super(`Browser policy ${slot} is ${policyCause}`); }
-}
 export type ExecutionResult =
   | Readonly<{ kind: 'committable'; degraded: readonly [] }>
   | Readonly<{ kind: 'degraded'; degraded: readonly DegradationReason[] }>
@@ -57,21 +57,17 @@ export async function executePlan(input: {
       // A platform write may change state and then throw (or its readback may
       // fail). Record it before crossing that boundary so it is compensated.
       modified.push({ id: step.id, original });
-      try {
-        await authority.write(input.desired[step.id]);
-        const actual = await authority.read();
-        if (JSON.stringify(actual) !== JSON.stringify(input.desired[step.id])) throw new Error('Readback mismatch');
-      } catch (error) {
-        if (step.disposition === 'degradable' && error instanceof PolicyManagedOrDeniedError) {
-          // This classification is only valid for an authority that reports a
-          // rejected managed/denied policy write (therefore no local mutation).
-          modified.pop();
-          degraded.push({ kind: 'browser_policy_unaligned', slot: error.slot, cause: error.policyCause });
-          await input.journal.transition(step.id, 'verified');
-          continue;
-        }
-        throw error;
+      const outcome = await authority.write(input.desired[step.id]);
+      if (outcome !== undefined) {
+        // 每槽降级（ADR-0011 T2）：只有 planner 标记 degradable 的策略步可以携带拒绝结果；
+        // 已写子集保留不补偿，未对齐槽逐槽记录，随后仍按步骤级 verified 提交。
+        if (step.disposition !== 'degradable') throw new Error(`Unexpected write denials on required step: ${step.id}`);
+        degraded.push(...outcome.unaligned);
+        await input.journal.transition(step.id, 'verified');
+        continue;
       }
+      const actual = await authority.read();
+      if (JSON.stringify(actual) !== JSON.stringify(input.desired[step.id])) throw new Error('Readback mismatch');
       await input.journal.transition(step.id, 'verified');
     }
     return degraded.length === 0

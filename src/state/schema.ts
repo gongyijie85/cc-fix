@@ -6,51 +6,101 @@ import {
 } from '../domain/protection.js';
 import { isRegionCode, type RegionCode } from '../domain/region.js';
 
+export const BROWSER_POLICY_VALUE_NAMES = {
+  acceptLanguage: 'AcceptLanguage',
+  webrtc: 'DefaultWebRtcIPHandlingPolicy',
+  applicationLocale: 'ApplicationLocaleValue',
+} as const;
+
+/** Chromium 官方 WebRTC 防泄漏策略枚举值（ADR-0003）。 */
+export const WEBRTC_POLICY_VALUE = 'disable_non_proxied_udp';
+
+/**
+ * 唯一浏览器策略槽目录（ADR-0011）：槽 id 是唯一规范词汇，检测、persist 期望值、
+ * 备份与迁移全部派生自这里。slotKey 词汇（chrome/AcceptLanguage）仅存在于旧 v3 迁移输入。
+ */
 export const BROWSER_POLICY_SLOTS = [
   {
     id: 'chrome.accept_language',
     browser: 'chrome',
     keyPath: 'HKCU\\Software\\Policies\\Google\\Chrome',
-    valueName: 'AcceptLanguage',
+    valueName: BROWSER_POLICY_VALUE_NAMES.acceptLanguage,
   },
   {
     id: 'chrome.webrtc',
     browser: 'chrome',
     keyPath: 'HKCU\\Software\\Policies\\Google\\Chrome',
-    valueName: 'DefaultWebRtcIPHandlingPolicy',
+    valueName: BROWSER_POLICY_VALUE_NAMES.webrtc,
   },
   {
     id: 'chrome.application_locale',
     browser: 'chrome',
     keyPath: 'HKCU\\Software\\Policies\\Google\\Chrome',
-    valueName: 'ApplicationLocaleValue',
+    valueName: BROWSER_POLICY_VALUE_NAMES.applicationLocale,
   },
   {
     id: 'edge.accept_language',
     browser: 'edge',
     keyPath: 'HKCU\\Software\\Policies\\Microsoft\\Edge',
-    valueName: 'AcceptLanguage',
+    valueName: BROWSER_POLICY_VALUE_NAMES.acceptLanguage,
   },
   {
     id: 'edge.webrtc',
     browser: 'edge',
     keyPath: 'HKCU\\Software\\Policies\\Microsoft\\Edge',
-    valueName: 'DefaultWebRtcIPHandlingPolicy',
+    valueName: BROWSER_POLICY_VALUE_NAMES.webrtc,
   },
   {
     id: 'edge.application_locale',
     browser: 'edge',
     keyPath: 'HKCU\\Software\\Policies\\Microsoft\\Edge',
-    valueName: 'ApplicationLocaleValue',
+    valueName: BROWSER_POLICY_VALUE_NAMES.applicationLocale,
   },
 ] as const;
 
+export type BrowserId = (typeof BROWSER_POLICY_SLOTS)[number]['browser'];
 export type BrowserPolicySlotId = (typeof BROWSER_POLICY_SLOTS)[number]['id'];
+export type BrowserPolicySlot = (typeof BROWSER_POLICY_SLOTS)[number];
+
+/** en_US.UTF-8 → en-US（浏览器 Accept-Language / ApplicationLocale 标签）。 */
+export function acceptLanguageFromLang(lang: string): string {
+  const base = lang.split('.')[0]!;
+  return base.replace('_', '-');
+}
+
+/** HTTP Accept-Language 值：en-US → en-US,en（贴近真实浏览器列表形态）。 */
+export function acceptLanguageHeaderFromLang(lang: string): string {
+  const tag = acceptLanguageFromLang(lang);
+  const primary = tag.split('-')[0]!;
+  return primary === tag ? tag : `${tag},${primary}`;
+}
+
+/** persist on 写入的六槽规范值，键为槽 id（唯一规范词汇）。 */
+export function desiredBrowserPolicies(targetLang: string): Readonly<Record<BrowserPolicySlotId, string>> {
+  const accept = acceptLanguageHeaderFromLang(targetLang);
+  const appLocale = acceptLanguageFromLang(targetLang);
+  const entries = BROWSER_POLICY_SLOTS.map((slot) => {
+    // 穷尽 switch：目录新增 valueName 而未在此登记期望值时，该 IIFE 返回 undefined | string，
+    // 与 string 不兼容 —— 编译期拦截静默回退。
+    const value: string = (() => {
+      switch (slot.valueName) {
+        case BROWSER_POLICY_VALUE_NAMES.acceptLanguage:
+          return accept;
+        case BROWSER_POLICY_VALUE_NAMES.applicationLocale:
+          return appLocale;
+        case BROWSER_POLICY_VALUE_NAMES.webrtc:
+          return WEBRTC_POLICY_VALUE;
+      }
+    })();
+    return [slot.id, value] as const;
+  });
+  return Object.freeze(Object.fromEntries(entries) as Record<BrowserPolicySlotId, string>);
+}
 
 export type DegradationReason = {
   kind: 'browser_policy_unaligned';
   slot: BrowserPolicySlotId;
-  cause: 'managed' | 'access_denied';
+  cause: 'access_denied';
 };
 
 export type ProtectionState = {
@@ -194,7 +244,7 @@ function isDegradationReason(value: unknown): value is DegradationReason {
     hasExactKeys(value, ['kind', 'slot', 'cause']) &&
     value.kind === 'browser_policy_unaligned' &&
     BROWSER_POLICY_SLOTS.some((slot) => slot.id === value.slot) &&
-    (value.cause === 'managed' || value.cause === 'access_denied')
+    value.cause === 'access_denied'
   );
 }
 

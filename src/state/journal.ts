@@ -17,7 +17,7 @@ export type TransactionJournalContext = Readonly<{
     degradation: Array<{
       kind: 'browser_policy_unaligned';
       slot: BrowserPolicySlotId;
-      cause: 'managed' | 'access_denied';
+      cause: 'access_denied';
     }>;
   };
   requestedTarget: JournalProtectionTarget | null;

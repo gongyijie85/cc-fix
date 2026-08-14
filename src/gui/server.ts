@@ -14,6 +14,7 @@ import { resolveProtectionRequest } from "../domain/protection.js";
 import { createPersistRuntime } from "../persist/runtime.js";
 import type { PersistApplicationService } from "../persist/application.js";
 import { GuiSession } from "./session.js";
+import { detectRunningBrowsers } from "../platform/browser.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
@@ -105,6 +106,12 @@ async function handleFixOn(res: http.ServerResponse, url: URL) {
     if (failed) broadcast({ type: "step-fail", stepId: "persist", error: `事务结果: ${result.kind}` });
     else broadcast({ type: "step-ok", stepId: "persist" });
     if (!failed && lastDetectScore !== null) pendingRecheck = lastDetectScore;
+    if (!failed) {
+      // 待生效提示（ADR-0006）：策略写入后探测运行中的浏览器。
+      // setImmediate：探测内部是同步 tasklist，不阻塞本次请求的关键路径；
+      // detectRunningBrowsers 逐浏览器吞掉失败，自身不会抛出。
+      setImmediate(() => { broadcast({ type: "browser-hint", running: detectRunningBrowsers() }); });
+    }
     recordFixSummary("persist-on", summary);
     broadcast(summary);
   } catch (error) {

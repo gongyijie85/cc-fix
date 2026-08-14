@@ -1,9 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BROWSER_POLICY_SLOTS, type BrowserPolicySlotId } from '../../state/schema.js';
-import { PolicyManagedOrDeniedError } from '../../persist/executor.js';
 import { createPersistAuthoritySet } from './adapter-set.js';
-import { createBrowserPolicyProfileAuthority, type BrowserPolicyRegistry } from './browser-policy.js';
+import { createBrowserPolicyProfileAuthority, type BrowserPolicyRegistry, type BrowserPolicyWriteResult } from './browser-policy.js';
 import { createEnvironmentProfileAuthority, type EnvironmentRegistry, type ManagedEnvironmentKey } from './environment.js';
 import { createLocaleAuthorities, type LocaleRegistry } from './locale.js';
 import { createTimezoneAuthority, type ApprovedWindowsTimezone, type TimezoneSystem } from './timezone.js';
@@ -33,14 +32,14 @@ function commandErrorText(error: unknown): string {
   return `${String(candidate.message ?? '')}\n${String(candidate.stderr ?? '')}`;
 }
 
-function isMissingRegistryError(error: unknown): boolean {
-  const text = commandErrorText(error);
-  return /unable to find|cannot find|not found|找不到|不存在/iu.test(text);
-}
-
 function isAccessDeniedError(error: unknown): boolean {
   const text = commandErrorText(error);
   return /access is denied|access denied|拒绝访问|权限/iu.test(text);
+}
+
+function isMissingRegistryError(error: unknown): boolean {
+  const text = commandErrorText(error);
+  return /unable to find|cannot find|not found|找不到|不存在/iu.test(text);
 }
 
 const registryTypeLine = /^[ \t]*\S+[ \t]+REG_SZ(?:[ \t]+(.*))?[ \t]*$/iu;
@@ -124,13 +123,14 @@ export function createNativeBrowserPolicyRegistry(runner: WindowsCommandRunner):
   const slot = (id: BrowserPolicySlotId) => BROWSER_POLICY_SLOTS.find((candidate) => candidate.id === id)!;
   return {
     read: async (id) => { const value = slot(id); return readRegistryString(runner, value.keyPath, value.valueName); },
-    write: async (id, content) => {
+    write: async (id, content): Promise<BrowserPolicyWriteResult> => {
       const value = slot(id);
       try { await writeRegistryString(runner, value.keyPath, value.valueName, content); }
       catch (error) {
-        if (isAccessDeniedError(error)) throw new PolicyManagedOrDeniedError(id, 'access_denied');
+        if (isAccessDeniedError(error)) return 'access_denied';
         throw error;
       }
+      return 'written';
     },
     remove: async (id) => { const value = slot(id); await removeRegistryValue(runner, value.keyPath, value.valueName); },
   };

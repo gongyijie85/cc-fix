@@ -1,23 +1,19 @@
 // 浏览器策略检测插件 — 检查 Chrome/Edge HKCU 策略槽位是否就位（ADR-0003）
-// 规范值与 persist 写入共用 platform/browser.ts 同一事实源
+// 槽事实与期望值全部派生自 state/schema.ts 槽目录（ADR-0011）
 
 import type { DetectionPlugin, DetectionContext } from "../plugin.js";
 import type { SignalResult } from "../types.js";
+import { BROWSER_LABELS, getPolicy } from "../../platform/browser.js";
 import {
-  POLICY_SLOTS,
-  slotKey,
-  getPolicy,
-  targetPolicies,
-  BROWSER_LABELS,
-  ACCEPT_LANGUAGE_NAME,
-  WEBRTC_POLICY_NAME,
-  APPLICATION_LOCALE_NAME,
-} from "../../platform/browser.js";
+  BROWSER_POLICY_SLOTS,
+  BROWSER_POLICY_VALUE_NAMES,
+  desiredBrowserPolicies,
+} from "../../state/schema.js";
 
 const SLOT_LABELS: Record<string, string> = {
-  [ACCEPT_LANGUAGE_NAME]: "AcceptLanguage",
-  [WEBRTC_POLICY_NAME]: "WebRTC 防泄漏",
-  [APPLICATION_LOCALE_NAME]: "ApplicationLocale",
+  [BROWSER_POLICY_VALUE_NAMES.acceptLanguage]: "AcceptLanguage",
+  [BROWSER_POLICY_VALUE_NAMES.webrtc]: "WebRTC 防泄漏",
+  [BROWSER_POLICY_VALUE_NAMES.applicationLocale]: "ApplicationLocale",
 };
 
 export const browserPolicyPlugin: DetectionPlugin = {
@@ -25,20 +21,19 @@ export const browserPolicyPlugin: DetectionPlugin = {
   label: "浏览器策略",
   weight: 5,
   run: async (context: DetectionContext): Promise<SignalResult> => {
-    const targets = targetPolicies(context.targetLang);
+    const targets = desiredBrowserPolicies(context.targetLang);
 
     // 逐槽位比对：缺失或取值不符记为异常，附当前值
     const badSlots: string[] = [];
-    for (const slot of POLICY_SLOTS) {
-      const key = slotKey(slot);
-      const current = getPolicy(slot.browser, slot.name);
-      if (current !== targets[key]) {
-        const name = SLOT_LABELS[slot.name] ?? slot.name;
+    for (const slot of BROWSER_POLICY_SLOTS) {
+      const current = getPolicy(slot.id);
+      if (current !== targets[slot.id]) {
+        const name = SLOT_LABELS[slot.valueName] ?? slot.valueName;
         badSlots.push(`${BROWSER_LABELS[slot.browser]}/${name}=${current ?? "(未设置)"}`);
       }
     }
 
-    const total = POLICY_SLOTS.length;
+    const total = BROWSER_POLICY_SLOTS.length;
     const score = badSlots.length / total;
     const risk: SignalResult["risk"] =
       badSlots.length === 0 ? "low" : badSlots.length <= 2 ? "medium" : "high";

@@ -54,7 +54,8 @@ export async function recoverProtectTransaction(input: {
     try {
       const phase = journal.steps.find((step) => step.id === id)!.phase;
       if (phase !== 'compensating') journal = await input.journalRepository.transition(journal, id, 'compensating');
-      await input.authorities[id].write(original);
+      const outcome = await input.authorities[id].write(original);
+      if (outcome !== undefined) throw new Error(`Compensation write denied on ${id}`);
       const actual = await input.authorities[id].read();
       if (!storedValueEquals(actual, original)) throw new Error('Compensation readback mismatch');
       journal = await input.journalRepository.transition(journal, id, 'compensated');
@@ -86,7 +87,8 @@ export async function recoverRestoreAuthorities(input: {
       const actual = await input.authorities[id].read();
       if (!storedValueEquals(actual, input.daily[id])) {
         if (entry.phase !== 'applying') journal = await input.journalRepository.transition(journal, id, 'applying');
-        await input.authorities[id].write(input.daily[id]);
+        const outcome = await input.authorities[id].write(input.daily[id]);
+        if (outcome !== undefined) throw new Error(`Restore recovery write denied on ${id}`);
       } else if (entry.phase !== 'verified') {
         if (entry.phase !== 'applying') journal = await input.journalRepository.transition(journal, id, 'applying');
       }

@@ -60,6 +60,79 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Fresh install preflight was blocked' }
   if (-not (((Get-ItemProperty 'HKCU:\Environment' -Name Path).Path -split ';') -contains "$InstallRoot\bin")) { throw 'PATH segment was not added' }
 
+  # ── persist on/off 冒烟（ADR-0011 回归：六槽策略曾因两套键空间 INVALID_VALUE 永久回滚） ──
+  function Get-SmokePolicyValue([string]$KeyPath, [string]$ValueName) {
+    try {
+      $Lines = (& reg.exe query $KeyPath /v $ValueName 2>$null)
+      if ($LASTEXITCODE -ne 0) { return $null }
+      $Text = $Lines -join "`n"
+      if ($Text -notmatch 'REG_SZ\s+(.+)$') { return $null }
+      return $Matches[1].Trim()
+    } catch { return $null }
+  }
+  function Get-SmokeEnvValue([string]$Name) {
+    $Key = Get-ItemProperty 'HKCU:\Environment' -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $Key) { return $null }
+    return $Key.$Name
+  }
+  $SmokePolicySlots = [ordered]@{
+    'HKCU\Software\Policies\Google\Chrome' = @('AcceptLanguage', 'DefaultWebRtcIPHandlingPolicy', 'ApplicationLocaleValue')
+    'HKCU\Software\Policies\Microsoft\Edge' = @('AcceptLanguage', 'DefaultWebRtcIPHandlingPolicy', 'ApplicationLocaleValue')
+  }
+  $SmokeEnvBefore = @{}
+  foreach ($Name in @('TZ', 'LANG', 'LC_ALL')) { $SmokeEnvBefore[$Name] = Get-SmokeEnvValue $Name }
+  # 前置条件：干净 CI 上六槽策略键在冒烟前必须不存在（兜底恢复按“删除”而非还原原值，ADR-0003 语义）
+  foreach ($Path in $SmokePolicySlots.Keys) {
+    foreach ($Name in $SmokePolicySlots[$Path]) {
+      if ($null -ne (Get-SmokePolicyValue $Path $Name)) { throw "Persist smoke precondition failed: $Path\$Name already exists" }
+    }
+  }
+  # 用 TimeZoneInfo 规范 id 而非 tzutil /g 的本地化显示名（中文系统输出“东部标准时间”）
+  $SmokeTzBefore = [System.TimeZoneInfo]::Local.Id
+  try {
+    & "$InstallRoot\bin\cc-fix.cmd" persist on --region us --level standard | Out-File -LiteralPath (Join-Path $EvidenceRoot 'persist-on.log') -Encoding utf8
+    if ($LASTEXITCODE -ne 0) { throw "persist on failed with exit code $LASTEXITCODE" }
+    $StatePath = Join-Path $TestAppData 'cc-fix\state.json'
+    if (-not (Test-Path -LiteralPath $StatePath)) { throw 'state.json missing after persist on' }
+    $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    if ($null -eq $State.committedTarget -or $State.committedTarget.mode -ne 'standard' -or $State.committedTarget.region -ne 'us' -or $null -ne $State.activeTransactionId) { throw ('State was not committed: ' + ($State | ConvertTo-Json -Compress)) }
+    if ((Get-SmokeEnvValue 'TZ') -ne 'America/New_York') { throw ('TZ was not committed: ' + (Get-SmokeEnvValue 'TZ')) }
+    if ([System.TimeZoneInfo]::Local.Id -ne 'Eastern Standard Time') { throw ('System timezone was not committed: ' + [System.TimeZoneInfo]::Local.Id) }
+    foreach ($Path in $SmokePolicySlots.Keys) {
+      foreach ($Name in $SmokePolicySlots[$Path]) {
+        $Expected = switch ($Name) { 'AcceptLanguage' { 'en-US,en' } 'DefaultWebRtcIPHandlingPolicy' { 'disable_non_proxied_udp' } 'ApplicationLocaleValue' { 'en-US' } }
+        $Actual = Get-SmokePolicyValue $Path $Name
+        if ($Actual -ne $Expected) { throw ("Policy mismatch ${Path}\${Name}: got '$Actual', expected '$Expected'") }
+      }
+    }
+    & "$InstallRoot\bin\cc-fix.cmd" persist off | Out-File -LiteralPath (Join-Path $EvidenceRoot 'persist-off.log') -Encoding utf8
+    if ($LASTEXITCODE -ne 0) { throw "persist off failed with exit code $LASTEXITCODE" }
+    foreach ($Path in $SmokePolicySlots.Keys) {
+      foreach ($Name in $SmokePolicySlots[$Path]) {
+        if ($null -ne (Get-SmokePolicyValue $Path $Name)) { throw ("Policy was not restored: $Path\$Name") }
+      }
+    }
+    foreach ($Name in @('TZ', 'LANG', 'LC_ALL')) {
+      $Before = $SmokeEnvBefore[$Name]; $After = Get-SmokeEnvValue $Name
+      if ($Before -ne $After) { throw ("Env not restored: $Name before '$Before' after '$After'") }
+    }
+    if ([System.TimeZoneInfo]::Local.Id -ne $SmokeTzBefore) { throw ('System timezone was not restored: ' + [System.TimeZoneInfo]::Local.Id) }
+    $StateAfter = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    if ($null -ne $StateAfter.committedTarget -or $StateAfter.health -ne 'healthy') { throw 'Daily state was not committed after persist off' }
+  } finally {
+    # 收敛兜底：无论断言成败都还原日常配置（幂等）
+    & "$InstallRoot\bin\cc-fix.cmd" persist off *> $null
+    foreach ($Path in $SmokePolicySlots.Keys) {
+      foreach ($Name in $SmokePolicySlots[$Path]) { & reg.exe delete $Path /v $Name /f 2>$null | Out-Null }
+    }
+    foreach ($Name in @('TZ', 'LANG', 'LC_ALL')) {
+      $Before = $SmokeEnvBefore[$Name]
+      if ($null -eq $Before) { Remove-ItemProperty 'HKCU:\Environment' -Name $Name -ErrorAction SilentlyContinue }
+      else { Set-ItemProperty 'HKCU:\Environment' -Name $Name -Value $Before }
+    }
+    if ($SmokeTzBefore) { & tzutil.exe /s $SmokeTzBefore | Out-Null }
+  }
+
   $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C76DF1B-B683-4A77-9B4C-89E3305D2399}_is1'
   Set-ItemProperty -LiteralPath $UninstallKey -Name DisplayVersion -Value '99.0.0'
   $DowngradeExitCode = Invoke-BoundedProcess 'downgrade refusal' $InstallerPath @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallRoot", '/TASKS=addpath,!desktopicon') 60
@@ -104,6 +177,7 @@ try {
     downgradeRefused = $true
     singleInstance = $true
     sidecarReaped = $true
+    persistSmoke = $true
     pathRestored = $true
     networkConfigurationUnchanged = $true
     evidenceRoot = $EvidenceRoot
