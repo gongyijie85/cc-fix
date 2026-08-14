@@ -26,18 +26,33 @@ export function readUserLocale(): string | null {
 }
 
 /**
- * 真实系统时区（IANA）：子进程剥离 TZ 环境变量后由 ICU 解析操作系统时区，
- * 避免常驻进程内 Intl 被 launch-time TZ 快照支配。
+ * 真实系统状态（缓存单飞）：子进程剥离 TZ 环境变量后由 ICU 解析操作系统时区与 UTC 偏移，
+ * 避免常驻进程内 Intl / Date 被 launch-time TZ 快照支配（issue #45）。
  */
-export async function readSystemTimezoneIana(): Promise<string> {
+export type SystemStateSnapshot = Readonly<{ timezone: string; offsetMinutes: number }>;
+
+let systemStatePromise: Promise<SystemStateSnapshot> | undefined;
+
+export function systemState(): Promise<SystemStateSnapshot> {
+  systemStatePromise ??= computeSystemState();
+  return systemStatePromise;
+}
+
+async function computeSystemState(): Promise<SystemStateSnapshot> {
   if (process.platform === 'win32') {
     const env = { ...process.env } as Record<string, string | undefined>;
     delete env.TZ;
     try {
-      const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', 'console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)'], { env, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
-      const zone = stdout.trim();
-      if (zone.length > 0) return zone;
+      const script = 'console.log(JSON.stringify({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offset: -new Date().getTimezoneOffset() }))';
+      const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], { env, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+      const parsed = JSON.parse(stdout.trim()) as SystemStateSnapshot;
+      if (typeof parsed.timezone === 'string' && parsed.timezone.length > 0 && Number.isFinite(parsed.offsetMinutes)) return Object.freeze(parsed);
     } catch { /* 回落 */ }
   }
-  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return Object.freeze({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offsetMinutes: -new Date().getTimezoneOffset() });
+}
+
+/** 真实系统时区（IANA）；兼容旧导出。 */
+export async function readSystemTimezoneIana(): Promise<string> {
+  return (await systemState()).timezone;
 }

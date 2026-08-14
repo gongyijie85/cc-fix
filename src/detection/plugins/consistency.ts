@@ -3,6 +3,7 @@
 import type { DetectionPlugin, DetectionContext } from "../plugin.js";
 import type { SignalResult } from "../types.js";
 import type { IpIntelligence } from "../types.js";
+import { readUserLocale, systemState } from "../../platform/system-state.js";
 
 export function createConsistencyPlugin(ipIntel: IpIntelligence | null): DetectionPlugin {
   return {
@@ -10,8 +11,9 @@ export function createConsistencyPlugin(ipIntel: IpIntelligence | null): Detecti
     label: "信号一致性",
     weight: 15,
     run: async (context: DetectionContext): Promise<SignalResult> => {
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const locale = Intl.DateTimeFormat().resolvedOptions().locale;
+      // 权威读取（issue #45）：真实系统时区与用户 Locale，而非常驻进程的 launch-time 快照
+      const timezone = (await systemState()).timezone;
+      const locale = (await readUserLocale()) ?? Intl.DateTimeFormat().resolvedOptions().locale;
       const ipCountry = ipIntel?.country?.toUpperCase();
 
       const signals: string[] = [];
