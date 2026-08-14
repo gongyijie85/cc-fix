@@ -562,7 +562,7 @@ async function loadStatus() {
     if (policyHint) {
       if (status.health === "degraded" && unaligned.length > 0) {
         const causes = [...new Set((status.degradation || []).map(d => d.cause))].join("/");
-        policyHint.textContent = "⚠️ 策略槽未对齐（可能受组织策略管理）：" + unaligned.join("、") + (causes ? "（原因：" + (causes === "access_denied" ? "写入被拒绝" : causes) + "）" : "");
+        policyHint.textContent = "⚠️ 策略槽未对齐（可能受组织策略管理）：" + unaligned.join("、") + (causes ? "（原因：" + (causes === "access_denied" ? "写入被拒绝——安全软件的注册表防护可能阻止了写入（如火绒的注册表防护），请在防护中心放行或关闭后重试" : causes) + "）" : "");
         policyHint.classList.add("visible", "strong");
       } else {
         policyHint.classList.remove("visible", "strong");
