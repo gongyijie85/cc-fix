@@ -2,6 +2,7 @@
 
 import type { DetectionPlugin, DetectionContext } from "../plugin.js";
 import type { SignalResult } from "../types.js";
+import { readSystemTimezoneIana } from "../../platform/system-state.js";
 
 const HIGH_RISK_TIMEZONES = ["Asia/Shanghai", "Asia/Urumqi", "Asia/Chongqing"];
 
@@ -10,7 +11,8 @@ export const timezonePlugin: DetectionPlugin = {
   label: "系统时区",
   weight: 25,
   run: async (context: DetectionContext): Promise<SignalResult> => {
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    // 权威读取：真实系统时区（不受常驻进程 launch-time TZ 快照影响，issue #45）
+    const timezone = await readSystemTimezoneIana();
     const isHighRisk = HIGH_RISK_TIMEZONES.includes(timezone);
     const isTarget = timezone === context.targetTimezone;
 
