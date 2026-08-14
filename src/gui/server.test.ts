@@ -77,6 +77,23 @@ describe("POST /api/fix/on region validation", () => {
     expect(runtimeMocks.protect.mock.calls[0]?.[0]).toEqual({ mode: "standard", region: "us" });
   });
 
+  it("allows same-origin GET without an Origin header while the session cookie authenticates (issue #43)", async () => {
+    const origin = await baseUrl();
+    const status = await fetch(`${origin}/api/status`, { headers: { Cookie: authHeaders.Cookie } });
+    expect(status.status).toBe(200);
+    const regions = await fetch(`${origin}/api/regions`, { headers: { Cookie: authHeaders.Cookie } });
+    expect(regions.status).toBe(200);
+  });
+
+  it("rejects a mismatched Origin on GET and requires Origin on POST (issue #43)", async () => {
+    const origin = await baseUrl();
+    const wrongOrigin = await fetch(`${origin}/api/status`, { headers: { Cookie: authHeaders.Cookie, Origin: "https://evil.example" } });
+    expect(wrongOrigin.status).toBe(401);
+    const noOriginPost = await fetch(`${origin}/api/fix/recover`, { method: "POST", headers: { Cookie: authHeaders.Cookie } });
+    expect(noOriginPost.status).toBe(401);
+    expect(runtimeMocks.recover).not.toHaveBeenCalled();
+  });
+
   it("rejects empty and invalid regions without mutation or locking the next valid request", async () => {
     const origin = await baseUrl();
 

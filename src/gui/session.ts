@@ -43,7 +43,11 @@ export class GuiSession {
 
   authorize(req: IncomingMessage, expectedOrigin: string, requireOrigin: boolean): boolean {
     if (!this.transportAllowed(req, expectedOrigin)) return false;
-    if (requireOrigin && req.headers.origin !== expectedOrigin) return false;
+    const origin = req.headers.origin;
+    // Origin 出现时必须匹配；缺失时仅放行 GET（浏览器同源 GET fetch 不携带 Origin，
+    // 而读接口无副作用）。POST 等变更请求仍强制 Origin（CSRF 防护，issue #43）。
+    if (origin !== undefined && origin !== expectedOrigin) return false;
+    if (requireOrigin && origin === undefined && (req.method ?? 'GET').toUpperCase() !== 'GET') return false;
     return equalSecret(cookies(req.headers.cookie).cc_fix_session ?? '', this.sessionId);
   }
 
