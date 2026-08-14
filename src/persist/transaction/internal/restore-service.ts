@@ -1,10 +1,11 @@
-import type { JsonValue } from '../state/checksum.js';
-import { TransactionJournalRepository, type TransactionJournalContext } from '../state/journal.js';
-import type { StoredValue } from '../state/schema.js';
+import type { JsonValue } from '../../../state/checksum.js';
+import { TransactionJournalRepository, type TransactionJournalContext } from '../../../state/journal.js';
+import type { StoredValue } from '../../../state/schema.js';
 import { captureJournalPlan, type ExecutableAuthority } from './executor.js';
 import { createJournalReporter } from './journal-reporter.js';
+import { convergeBackupCleanup } from './backup-cleanup.js';
 import { restoreAll } from './restore.js';
-import { ALL_STEP_IDS, type PersistStepId } from './steps.js';
+import { ALL_STEP_IDS, type PersistStepId } from '../../steps.js';
 
 export type RestoreTransactionResult =
   | Readonly<{ kind: 'noop' }>
@@ -46,17 +47,14 @@ export async function runRestoreTransaction(input: {
     return { kind: 'recovery_required', failed: restored.failed };
   }
   await input.stateTransaction.restored(journal.transactionId);
-  let current = await input.journalRepository.read();
+  const current = await input.journalRepository.read();
   if (current === undefined) throw new Error('Restore journal disappeared before backup cleanup');
-  try {
-    current = await input.journalRepository.transition(current, 'backup_cleanup', 'applying');
-    await input.deleteDailySnapshot();
-    await input.journalRepository.transition(current, 'backup_cleanup', 'verified');
-  } catch {
-    current = await input.journalRepository.read();
-    if (current !== undefined) {
-      try { await input.journalRepository.transition(current, 'backup_cleanup', 'recovery_required'); } catch {}
-    }
+  const cleanup = await convergeBackupCleanup({
+    journal: current,
+    journalRepository: input.journalRepository,
+    deleteDailySnapshot: input.deleteDailySnapshot,
+  });
+  if (cleanup.kind === 'recovery_required') {
     await input.stateTransaction.failCleanup(journal.transactionId);
     return { kind: 'recovery_required', failed: ['backup_cleanup'] };
   }

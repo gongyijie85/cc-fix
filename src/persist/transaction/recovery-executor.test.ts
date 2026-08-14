@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TransactionJournalRepository, type TransactionJournal } from '../state/journal.js';
-import { storedValue, type StoredValue } from '../state/schema.js';
-import type { JsonValue } from '../state/checksum.js';
-import type { PersistStepId } from './steps.js';
-import { recoverProtectTransaction, recoverRestoreAuthorities } from './recovery-executor.js';
+import { TransactionJournalRepository, type TransactionJournal } from '../../state/journal.js';
+import { storedValue, type StoredValue } from '../../state/schema.js';
+import type { JsonValue } from '../../state/checksum.js';
+import type { PersistStepId } from '../steps.js';
+import { recoverProtectTransaction, recoverRestoreAuthorities } from './internal/recovery-executor.js';
 
 const ids = ['environment','system_timezone','browser_policies','locale_name','user_languages','user_culture'] as const;
 const values = (prefix: string) => Object.fromEntries(ids.map((id) => [id, storedValue(`${prefix}-${id}`)])) as Record<PersistStepId, StoredValue<JsonValue>>;

@@ -5,7 +5,7 @@ import { createPersistAuthoritySet } from './adapter-set.js';
 import { createBrowserPolicyProfileAuthority, type BrowserPolicyRegistry, type BrowserPolicyWriteResult } from './browser-policy.js';
 import { createEnvironmentProfileAuthority, type EnvironmentRegistry, type ManagedEnvironmentKey } from './environment.js';
 import { createLocaleAuthorities, type LocaleRegistry } from './locale.js';
-import { createTimezoneAuthority, type ApprovedWindowsTimezone, type TimezoneSystem } from './timezone.js';
+import { createTimezoneAuthority, type TimezoneSystem } from './timezone.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -115,7 +115,7 @@ export function createNativeEnvironmentRegistry(runner: WindowsCommandRunner): E
 export function createNativeTimezoneSystem(runner: WindowsCommandRunner): TimezoneSystem {
   return {
     read: async () => (await runner('tzutil.exe', ['/g'])).stdout.trim(),
-    write: async (id: ApprovedWindowsTimezone) => { await runner('tzutil.exe', ['/s', id]); },
+    write: async (id: string) => { await runner('tzutil.exe', ['/s', id]); },
   };
 }
 

@@ -1,8 +1,8 @@
-import type { JsonValue } from '../state/checksum.js';
-import { TransactionJournalRepository, type JournalStep, type TransactionJournal } from '../state/journal.js';
-import { isSafeJsonValue, isStoredValue, storedValueEquals, type StoredValue } from '../state/schema.js';
+import type { JsonValue } from '../../../state/checksum.js';
+import { TransactionJournalRepository, type JournalStep, type TransactionJournal } from '../../../state/journal.js';
+import { isSafeJsonValue, isStoredValue, storedValueEquals, type StoredValue } from '../../../state/schema.js';
 import type { ExecutableAuthority } from './executor.js';
-import { ALL_STEP_IDS, type PersistStepId } from './steps.js';
+import { ALL_STEP_IDS, type PersistStepId } from '../../steps.js';
 
 export type RecoveryExecutionResult = Readonly<{
   kind: 'recovered' | 'recovery_required';

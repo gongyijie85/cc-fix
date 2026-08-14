@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decideRecovery } from './recovery.js';
+import { decideRecovery } from './internal/recovery.js';
 
 describe('recovery decision', () => {
   it('blocks new work behind deterministic protect or restore recovery', () => {

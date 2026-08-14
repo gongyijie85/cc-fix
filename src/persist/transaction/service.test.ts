@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { storedMissing, storedValue } from '../state/schema.js';
-import { TransactionJournalRepository } from '../state/journal.js';
-import { derivePersistStatus, runProtectTransaction } from './service.js';
+import { storedMissing, storedValue } from '../../state/schema.js';
+import { TransactionJournalRepository } from '../../state/journal.js';
+import { derivePersistStatus, runProtectTransaction } from './internal/service.js';
 const state = { schemaVersion: 1 as const, revision: 1, committedTarget: { mode: 'deep' as const, region: 'jp' as const }, preferredRegion: 'jp' as const, health: 'healthy' as const, degradation: [], activeTransactionId: null, updatedAt: '2026-01-01T00:00:00.000Z' };
 describe('persist status', () => {
   it('uses committed target and journal health, never backup existence', () => {

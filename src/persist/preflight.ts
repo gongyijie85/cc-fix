@@ -1,4 +1,4 @@
-import type { PersistStatus } from './service.js';
+import type { PersistStatus } from './transaction/index.js';
 
 export const INSTALLER_PREFLIGHT_BLOCKED_EXIT = 43;
 

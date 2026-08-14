@@ -1,14 +1,14 @@
-import type { DegradationReason, ProtectionState } from '../state/schema.js';
-import type { TransactionJournal, TransactionJournalContext } from '../state/journal.js';
+import type { DegradationReason, ProtectionState } from '../../../state/schema.js';
+import type { TransactionJournal, TransactionJournalContext } from '../../../state/journal.js';
 import { decideRecovery, type RecoveryDecision } from './recovery.js';
-import type { ProtectionTarget } from '../domain/protection.js';
-import type { JsonValue } from '../state/checksum.js';
-import type { StoredValue } from '../state/schema.js';
+import type { ProtectionTarget } from '../../../domain/protection.js';
+import type { JsonValue } from '../../../state/checksum.js';
+import type { StoredValue } from '../../../state/schema.js';
 import { captureDailyAuthorityValues, captureJournalPlan, executePlan, type ExecutableAuthority, type ExecutionResult } from './executor.js';
 import { createJournalReporter } from './journal-reporter.js';
 import { planTransition, type AuthorityObservation } from './planner.js';
-import type { PersistStepId } from './steps.js';
-import { TransactionJournalRepository } from '../state/journal.js';
+import type { PersistStepId } from '../../steps.js';
+import { TransactionJournalRepository } from '../../../state/journal.js';
 
 export type PersistStatus = Readonly<{
   mode: 'daily' | 'standard' | 'deep';

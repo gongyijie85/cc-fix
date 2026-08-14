@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { storedValue } from '../state/schema.js';
-import { restoreAll } from './restore.js';
-import type { PersistStepId } from './steps.js';
+import { storedValue } from '../../state/schema.js';
+import { restoreAll } from './internal/restore.js';
+import type { PersistStepId } from '../steps.js';
 
 describe('convergent restore', () => {
   it('continues after simultaneous failures and remains idempotent on retry', async () => {

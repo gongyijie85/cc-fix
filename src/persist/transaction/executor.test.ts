@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { storedValue } from '../state/schema.js';
-import { captureJournalPlan, executePlan } from './executor.js';
-import type { PersistStepId } from './steps.js';
+import { storedValue } from '../../state/schema.js';
+import { captureJournalPlan, executePlan } from './internal/executor.js';
+import type { PersistStepId } from '../steps.js';
 
 function fixture(fail = new Set<PersistStepId>()) {
   const values: Record<PersistStepId, string> = { environment: 'old-env', system_timezone: 'old-tz', browser_policies: 'old-policy', locale_name: 'old-locale', user_languages: 'old-languages', user_culture: 'old-culture' };

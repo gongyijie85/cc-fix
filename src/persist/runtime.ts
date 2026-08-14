@@ -16,7 +16,7 @@ import {
   type MigrationResult,
 } from '../state/migration.js';
 import { createNativePersistAuthoritySet } from '../platform/windows/native-backend.js';
-import type { ExecutableAuthority } from './executor.js';
+import type { ExecutableAuthority } from './authority.js';
 import { DEEP_ONLY_STEP_IDS, STANDARD_STEP_IDS, type PersistStepId } from './steps.js';
 import { desiredValues } from './targets.js';
 import { storedValueEquals } from '../state/schema.js';

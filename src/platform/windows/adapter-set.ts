@@ -1,4 +1,4 @@
-import type { ExecutableAuthority } from '../../persist/executor.js';
+import type { ExecutableAuthority } from '../../persist/authority.js';
 import type { PersistStepId } from '../../persist/steps.js';
 
 /** Narrows the application boundary to the six approved persist authorities. */

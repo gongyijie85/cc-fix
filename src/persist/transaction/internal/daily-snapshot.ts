@@ -1,8 +1,8 @@
-import type { JsonValue } from '../state/checksum.js';
-import type { StoredValue } from '../state/schema.js';
-import { BackupRepository } from '../state/repository.js';
-import type { PersistStepId } from './steps.js';
-import { createBackupSnapshotV4 } from './backup-mapper.js';
+import type { JsonValue } from '../../../state/checksum.js';
+import type { StoredValue } from '../../../state/schema.js';
+import { BackupRepository } from '../../../state/repository.js';
+import type { PersistStepId } from '../../steps.js';
+import { createBackupSnapshotV4 } from '../../backup-mapper.js';
 
 export function createRepositoryDailySnapshot(
   repository: BackupRepository,

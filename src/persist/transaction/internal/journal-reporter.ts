@@ -1,6 +1,6 @@
 import type { ExecutionJournal } from './executor.js';
-import { TransactionJournalRepository, type JournalPhase, type TransactionJournal } from '../state/journal.js';
-import type { PersistStepId } from './steps.js';
+import { TransactionJournalRepository, type JournalPhase, type TransactionJournal } from '../../../state/journal.js';
+import type { PersistStepId } from '../../steps.js';
 
 /** Serializes executor phase reports into one durable journal generation. */
 export function createJournalReporter(repository: TransactionJournalRepository, initial: TransactionJournal): ExecutionJournal {

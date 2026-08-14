@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planTransition } from './planner.js';
+import { planTransition } from './internal/planner.js';
 
 describe('differential transition planner', () => {
   it('keeps locale/language/culture out of standard plans', () => {

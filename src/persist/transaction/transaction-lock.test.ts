@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { InProcessTestMutationCoordinator } from '../state/test-support/in-process-mutation-coordinator.js';
-import { createMutationCoordinatorCapability } from '../state/repository.js';
-import { withPersistTransactionLock } from './transaction-lock.js';
+import { InProcessTestMutationCoordinator } from '../../state/test-support/in-process-mutation-coordinator.js';
+import { createMutationCoordinatorCapability } from '../../state/repository.js';
+import { withPersistTransactionLock } from './internal/transaction-lock.js';
 
 describe('persist transaction root lock', () => {
   it('holds one root gate across the complete action and releases it', async () => {

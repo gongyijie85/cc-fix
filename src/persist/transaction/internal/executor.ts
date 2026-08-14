@@ -1,17 +1,11 @@
-import type { JsonValue } from '../state/checksum.js';
-import type { StoredValue } from '../state/schema.js';
-import type { PersistStepId, PlannedStep } from './steps.js';
-import { ALL_STEP_IDS } from './steps.js';
-import type { DegradationReason } from '../state/schema.js';
+import type { JsonValue } from '../../../state/checksum.js';
+import type { StoredValue } from '../../../state/schema.js';
+import type { PersistStepId, PlannedStep } from '../../steps.js';
+import { ALL_STEP_IDS } from '../../steps.js';
+import type { DegradationReason } from '../../../state/schema.js';
 
-/** undefined = 全部写入并验证；结构化结果 = 部分策略槽被拒、已写槽保留（ADR-0011 每槽粒度）。 */
-export type WriteOutcome = Readonly<{ unaligned: readonly DegradationReason[] }> | void;
-
-export interface ExecutableAuthority {
-  read(): Promise<StoredValue<JsonValue>>;
-  write(value: StoredValue<JsonValue>): Promise<WriteOutcome>;
-}
-export interface ExecutionJournal { transition(id: PersistStepId, phase: 'applying' | 'verified' | 'compensating' | 'compensated' | 'recovery_required'): Promise<void>; }
+import type { ExecutableAuthority, ExecutionJournal } from '../../authority.js';
+export type { ExecutableAuthority, ExecutionJournal, WriteOutcome } from '../../authority.js';
 export type ExecutionResult =
   | Readonly<{ kind: 'committable'; degraded: readonly [] }>
   | Readonly<{ kind: 'degraded'; degraded: readonly DegradationReason[] }>

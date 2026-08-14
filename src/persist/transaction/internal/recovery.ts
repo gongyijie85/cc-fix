@@ -1,4 +1,4 @@
-import { recoveryAction, type TransactionJournal } from '../state/journal.js';
+import { recoveryAction, type TransactionJournal } from '../../../state/journal.js';
 
 export type RecoveryDecision =
   | { kind: 'none' }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { BackupRepository } from '../state/repository.js';
-import { storedMissing, storedValue } from '../state/schema.js';
-import { createRepositoryDailySnapshot } from './backup-transaction.js';
+import type { BackupRepository } from '../../state/repository.js';
+import { storedMissing, storedValue } from '../../state/schema.js';
+import { createRepositoryDailySnapshot } from './internal/daily-snapshot.js';
 
 describe('repository daily snapshot', () => {
   it('creates one complete v4 snapshot through the immutable repository boundary', async () => {

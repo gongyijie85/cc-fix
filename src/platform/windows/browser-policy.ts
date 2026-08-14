@@ -5,7 +5,7 @@ import {
   type DegradationReason,
   type StoredValue,
 } from '../../state/schema.js';
-import type { ExecutableAuthority, WriteOutcome } from '../../persist/executor.js';
+import type { ExecutableAuthority, WriteOutcome } from '../../persist/authority.js';
 
 export type BrowserPolicyProfile = Record<BrowserPolicySlotId, string | null>;
 export type BrowserPolicyWriteResult = 'written' | 'access_denied';

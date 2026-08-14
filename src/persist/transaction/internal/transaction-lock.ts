@@ -1,4 +1,4 @@
-import { mutationRootGateKey, runWithHeldMutationRoot, type MutationCoordinatorCapability } from '../state/repository.js';
+import { mutationRootGateKey, runWithHeldMutationRoot, type MutationCoordinatorCapability } from '../../../state/repository.js';
 
 export async function withPersistTransactionLock<T>(
   root: string,

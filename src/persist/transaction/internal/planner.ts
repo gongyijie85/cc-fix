@@ -1,5 +1,5 @@
-import type { ProtectionTarget } from '../domain/protection.js';
-import { ALL_STEP_IDS, DEEP_ONLY_STEP_IDS, managedStepIds, type PersistStepId, type PlannedStep } from './steps.js';
+import type { ProtectionTarget } from '../../../domain/protection.js';
+import { ALL_STEP_IDS, DEEP_ONLY_STEP_IDS, managedStepIds, type PersistStepId, type PlannedStep } from '../../steps.js';
 
 export type AuthorityObservation = Readonly<Partial<Record<PersistStepId, boolean>>>;
 export type TransitionPlan = Readonly<{

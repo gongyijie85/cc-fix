@@ -1,6 +1,6 @@
-import type { JsonValue } from '../state/checksum.js';
-import type { StoredValue } from '../state/schema.js';
-import type { PersistStepId } from './steps.js';
+import type { JsonValue } from '../../../state/checksum.js';
+import type { StoredValue } from '../../../state/schema.js';
+import type { PersistStepId } from '../../steps.js';
 import type { ExecutableAuthority, ExecutionJournal } from './executor.js';
 
 export type RestoreResult = Readonly<{ verified: readonly PersistStepId[]; failed: readonly PersistStepId[] }>;

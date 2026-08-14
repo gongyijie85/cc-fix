@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { storedValue, type StoredValue } from '../state/schema.js';
-import type { JsonValue } from '../state/checksum.js';
-import { TransactionJournalRepository } from '../state/journal.js';
-import type { PersistStepId } from './steps.js';
-import { runRestoreTransaction } from './restore-service.js';
+import { storedValue, type StoredValue } from '../../state/schema.js';
+import type { JsonValue } from '../../state/checksum.js';
+import { TransactionJournalRepository } from '../../state/journal.js';
+import type { PersistStepId } from '../steps.js';
+import { runRestoreTransaction } from './internal/restore-service.js';
 
 const ids = ['environment','system_timezone','browser_policies','locale_name','user_languages','user_culture'] as const;
 function values(prefix: string) {
