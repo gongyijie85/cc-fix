@@ -57,6 +57,17 @@ function createGuiOrchestrator(createRuntime: GuiRuntimeFactory) {
     }
   };
 
+  let runtimePromise: Promise<PersistApplicationService> | undefined;
+  // 单飞缓存（issue #44）：并发请求复用同一运行时，避免重复迁移在同进程内撞迁移锁。
+  // 仓库每次操作都重读文件，缓存无状态过期；初始化失败清缓存以允许重试。
+  const getRuntime = (): Promise<PersistApplicationService> => {
+    runtimePromise ??= createRuntime().catch((error: unknown) => {
+      runtimePromise = undefined;
+      throw error;
+    });
+    return runtimePromise;
+  };
+
   return Object.freeze({
     broadcast,
     attachSse: (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -77,7 +88,7 @@ function createGuiOrchestrator(createRuntime: GuiRuntimeFactory) {
       return true;
     },
     releaseLock: () => { busy = false; },
-    getRuntime: createRuntime,
+    getRuntime,
     markPendingRecheckIfKnown: () => { if (lastDetectScore !== null) pendingRecheck = lastDetectScore; },
     checkEventConsumer: (e: StreamEvent) => {
       if (e.type === "detect-done") {

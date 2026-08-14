@@ -77,6 +77,31 @@ describe("POST /api/fix/on region validation", () => {
     expect(runtimeMocks.protect.mock.calls[0]?.[0]).toEqual({ mode: "standard", region: "us" });
   });
 
+  it("initializes the persist runtime exactly once across status and fix requests (issue #44)", async () => {
+    const origin = await baseUrl();
+    let initCount = 0;
+    const oldStatus = runtimeMocks.status;
+    // baseUrl 已用过默认工厂；此用例重启一个带计数工厂的实例
+    await closeServer();
+    server = await startGuiServer(0, {
+      createRuntime: async () => { initCount += 1; return runtimeMocks as never; },
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    const origin2 = `http://127.0.0.1:${address.port}`;
+    const bootstrap = await fetch(server.bootstrapUrl(), { redirect: "manual" });
+    const cookie = bootstrap.headers.get("set-cookie")?.split(";", 1)[0];
+    if (!cookie) throw new Error("no cookie");
+    const headers = { Cookie: cookie };
+    await Promise.all([
+      fetch(`${origin2}/api/status`, { headers }),
+      fetch(`${origin2}/api/fix/recover`, { method: "POST", headers: { ...headers, Origin: origin2 } }),
+    ]);
+    expect(initCount).toBe(1);
+    await closeServer();
+    server = await startGuiServer(0, { createRuntime: async () => runtimeMocks as never });
+  });
+
   it("allows same-origin GET without an Origin header while the session cookie authenticates (issue #43)", async () => {
     const origin = await baseUrl();
     const status = await fetch(`${origin}/api/status`, { headers: { Cookie: authHeaders.Cookie } });
