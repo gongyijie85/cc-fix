@@ -427,15 +427,25 @@ function handleEvent(event) {
 const evtSource = new EventSource("/api/events");
 let sseOpen = false;
 let pendingStart = false;
+let sseFailures = 0;
 evtSource.onopen = () => {
   sseOpen = true;
+  sseFailures = 0;
   // SSE 就绪前发起的检测请求补发，避免事件丢失导致界面停在"检测进行中…"
   if (pendingStart) { pendingStart = false; startCheck(); }
 };
 evtSource.onmessage = (e) => {
   try { handleEvent(JSON.parse(e.data)); } catch (err) { console.error("事件处理错误:", err); }
 };
-evtSource.onerror = () => { sseOpen = false; /* EventSource 自动重连；重连成功后补发积压请求 */ };
+evtSource.onerror = () => {
+  sseOpen = false;
+  sseFailures += 1;
+  // 连续失败：服务不可达或会话失效。EventSource 仍会重连，成功后自动清除提示并补发检测。
+  if (sseFailures === 3) {
+    const loadingText = document.querySelector("#content .loading p");
+    if (loadingText) loadingText.textContent = "无法连接本地服务或会话已失效，请关闭后重新打开应用";
+  }
+};
 
 // ── 操作按钮 ──
 async function persistOn() {
@@ -478,10 +488,14 @@ function startCheck() {
   fetch("/api/check/start", { method: "POST" }).then(res => {
     if (!res.ok) {
       $("#detectCard").classList.remove("visible");
-      // 全局忙（409）：不再让页面停留在无限旋转的"正在检测…"
       const loadingText = document.querySelector("#content .loading p");
-      if (loadingText) loadingText.textContent = "已有操作进行中，请稍候后再试…";
-      showToast("已有操作进行中，请稍候");
+      const message = res.status === 409
+        ? "已有操作进行中，请稍候后再试…"
+        : res.status === 401
+          ? "会话未授权，请关闭后重新打开应用"
+          : `检测启动失败（HTTP ${res.status}）`;
+      if (loadingText) loadingText.textContent = message;
+      showToast(message);
     }
   });
 }
@@ -510,8 +524,19 @@ async function loadRegions() {
 async function loadStatus() {
   try {
     const res = await fetch("/api/status");
+    if (!res.ok) {
+      const dot = $("#statusDot"), txt = $("#statusText");
+      dot.className = "status-dot off";
+      txt.textContent = res.status === 401 ? "会话未授权，请关闭后重新打开应用" : `服务异常（HTTP ${res.status}）`;
+      return;
+    }
     const status = await res.json();
     const dot = $("#statusDot"), txt = $("#statusText");
+    if (!status || typeof status.mode !== "string") {
+      dot.className = "status-dot off";
+      txt.textContent = "状态数据异常";
+      return;
+    }
     if (status.mode !== "daily") { dot.className = "status-dot on"; txt.textContent = `${status.mode} · ${status.health}`; }
     else { dot.className = "status-dot off"; txt.textContent = `daily · ${status.health}`; }
     const sel = document.getElementById("regionSelect");
@@ -523,7 +548,11 @@ async function loadStatus() {
     if (hint) { hint.style.display = needsRecovery ? "" : "none"; hint.textContent = "存在未完成事务，请先恢复"; }
     const recover = document.getElementById("btnRecover");
     if (recover) recover.style.display = needsRecovery ? "" : "none";
-  } catch {}
+  } catch {
+    const dot = $("#statusDot"), txt = $("#statusText");
+    dot.className = "status-dot off";
+    txt.textContent = "无法连接本地服务";
+  }
 }
 
 function render(data) {
