@@ -156,6 +156,13 @@
     <div id="stepList"></div>
     <div class="sum-bar" id="sumBar" style="display:none"></div>
     <div class="browser-hint" id="browserHint"></div>
+<div class="signals" id="fontsPanel" style="display:none; margin-top:12px">
+  <p id="fontsStatus" style="font-size:13px; color:var(--muted); margin-bottom:8px"></p>
+  <div style="display:flex; gap:8px">
+    <button class="btn" id="btnFontsRemove" style="display:none" onclick="fontsRemove()">🈶 备份并移除中文字体</button>
+    <button class="btn" id="btnFontsRestore" style="display:none" onclick="fontsRestore()">🔤 还原中文字体</button>
+  </div>
+</div>
   </div>
 
   <!-- 检测流卡片 -->
@@ -213,7 +220,7 @@ function showToast(msg) {
 
 // ── 按钮禁用 ──
 function setButtonsDisabled(d) {
-  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "regionSelect", "levelSelect"].forEach(id => {
+  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "btnFontsRemove", "btnFontsRestore", "regionSelect", "levelSelect"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = d;
   });
@@ -374,7 +381,7 @@ function showDetectDone(response) {
 }
 
 // ── 最近操作 ──
-const historyActionLabel = { "persist-on": "一键切换到安全环境", "persist-off": "一键还原日常配置", "check": "重新检测" };
+const historyActionLabel = { "persist-on": "一键切换到安全环境", "persist-off": "一键还原日常配置", "check": "重新检测", "font-remove": "移除中文字体", "font-restore": "还原中文字体" };
 
 function renderHistoryRow(entry) {
   const time = new Date(entry.timestamp);
@@ -407,7 +414,56 @@ async function loadHistory() {
 }
 
 // ── 事件处理 ──
+// ── 字体修复流（ADR-0013）──
+async function loadFontsStatus() {
+  try {
+    const res = await fetch("/api/fonts/status");
+    if (!res.ok) return;
+    const s = await res.json();
+    const panel = document.getElementById("fontsPanel");
+    if (!panel) return;
+    if (s.found.length > 0 || s.backedUp) {
+      panel.style.display = "";
+      const txt = document.getElementById("fontsStatus");
+      if (s.found.length > 0) { txt.textContent = "发现 " + s.found.length + " 个中文字体：" + s.found.slice(0, 3).join(", ") + (s.found.length > 3 ? "…" : ""); }
+      else { txt.textContent = "中文字体已移除"; }
+      const pending = s.pendingReboot || [];
+      if (pending.length > 0) txt.textContent += "（" + pending.length + " 个待重启删除）";
+      const btnR = document.getElementById("btnFontsRemove");
+      if (btnR) btnR.style.display = s.found.length > 0 ? "" : "none";
+      const btnRes = document.getElementById("btnFontsRestore");
+      if (btnRes) btnRes.style.display = s.backedUp ? "" : "none";
+    } else { panel.style.display = "none"; }
+  } catch {}
+}
+function handleFontsEvent(event) {
+  const txt = document.getElementById("fontsStatus");
+  if (!txt) return;
+  if (event.type === "step-start") { txt.textContent = "字体处理中…（如弹出 UAC 请确认）"; }
+  else if (event.type === "step-ok") { txt.textContent = "字体操作完成"; loadFontsStatus(); }
+  else if (event.type === "step-fail") { txt.textContent = "字体操作失败：" + (event.error || ""); }
+  else if (event.type === "fonts-done") {
+    if (event.pendingReboot && event.pendingReboot.length > 0) { txt.textContent = "完成；" + event.pendingReboot.length + " 个文件需重启后删除：" + event.pendingReboot.join(", "); }
+    loadFontsStatus();
+  }
+}
+async function fontsRemove() {
+  try {
+    const res = await fetch("/api/fonts/remove", { method: "POST" });
+    if (res.status === 409) { showToast("已有操作进行中，请稍候后再试…"); return; }
+    if (!res.ok) { showToast("字体操作启动失败（HTTP " + res.status + "）"); }
+  } catch { showToast("无法连接本地服务"); }
+}
+async function fontsRestore() {
+  try {
+    const res = await fetch("/api/fonts/restore", { method: "POST" });
+    if (res.status === 409) { showToast("已有操作进行中，请稍候后再试…"); return; }
+    if (!res.ok) { showToast("字体操作启动失败（HTTP " + res.status + "）"); }
+  } catch { showToast("无法连接本地服务"); }
+}
 function handleEvent(event) {
+  if (event.type === "fonts-done") { handleFontsEvent(event); return; }
+  if (event.stepId === "fonts") { handleFontsEvent(event); return; }
   if (event.type === "step-start") {
     if (!fixActive) { ensureFixCard(); fixActive = true; }
     addStepRow(event);
@@ -634,6 +690,7 @@ function render(data) {
 }
 
 loadStatus();
+loadFontsStatus();
 loadHistory();
 startCheck();
 </script>

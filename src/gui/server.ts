@@ -15,6 +15,9 @@ import { createPersistRuntime } from "../persist/runtime.js";
 import type { PersistApplicationService } from "../persist/application.js";
 import { GuiSession } from "./session.js";
 import { detectRunningBrowsers } from "../platform/browser.js";
+import { createFontFixService } from "../fonts/service.js";
+import { defaultPersistRoot } from "../state/paths.js";
+import { recordFontAction } from "../fix/history.js";
 import { signalCatalog } from "../detection/catalog.js";
 
 function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
@@ -58,6 +61,11 @@ function createGuiOrchestrator(createRuntime: GuiRuntimeFactory) {
   };
 
   let runtimePromise: Promise<PersistApplicationService> | undefined;
+  let fontFixPromise: ReturnType<typeof createFontFixService> | undefined;
+  const getFontFix = () => {
+    fontFixPromise ??= createFontFixService({ stateRoot: defaultPersistRoot(process.env) });
+    return fontFixPromise;
+  };
   // 单飞缓存（issue #44）：并发请求复用同一运行时，避免重复迁移在同进程内撞迁移锁。
   // 仓库每次操作都重读文件，缓存无状态过期；初始化失败清缓存以允许重试。
   const getRuntime = (): Promise<PersistApplicationService> => {
@@ -69,6 +77,7 @@ function createGuiOrchestrator(createRuntime: GuiRuntimeFactory) {
   };
 
   return Object.freeze({
+    getFontFix,
     broadcast,
     attachSse: (req: http.IncomingMessage, res: http.ServerResponse) => {
       clients.add(res);
@@ -216,6 +225,55 @@ function handleRegions(res: http.ServerResponse) {
   });
 }
 
+
+async function handleFontsStatus(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse) {
+  sendJson(res, await orchestrator.getFontFix().status());
+}
+
+async function handleFontsRemove(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse) {
+  if (!orchestrator.tryAcquireLock(res)) return;
+  res.writeHead(202); res.end();
+  try {
+    orchestrator.broadcast({ type: "step-start", stepId: "fonts", name: "备份并移除中文字体" });
+    const result = await orchestrator.getFontFix().remove();
+    if (!result.ok) {
+      orchestrator.broadcast({ type: "step-fail", stepId: "fonts", error: result.error });
+      orchestrator.broadcast({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
+    } else {
+      orchestrator.broadcast({ type: "step-ok", stepId: "fonts" });
+      orchestrator.broadcast({ type: "fonts-done", pendingReboot: result.pendingReboot });
+      orchestrator.broadcast({ type: "summary", ok: 1, fail: 0, rolledBack: false, fatal: false });
+    }
+    void recordFontAction("font-remove");
+  } catch (error) {
+    orchestrator.broadcast({ type: "step-fail", stepId: "fonts", error: error instanceof Error ? error.message : String(error) });
+    orchestrator.broadcast({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
+  } finally {
+    orchestrator.releaseLock();
+  }
+}
+
+async function handleFontsRestore(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse) {
+  if (!orchestrator.tryAcquireLock(res)) return;
+  res.writeHead(202); res.end();
+  try {
+    orchestrator.broadcast({ type: "step-start", stepId: "fonts", name: "还原中文字体" });
+    const result = await orchestrator.getFontFix().restore();
+    if (!result.ok) {
+      orchestrator.broadcast({ type: "step-fail", stepId: "fonts", error: result.error });
+      orchestrator.broadcast({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
+    } else {
+      orchestrator.broadcast({ type: "step-ok", stepId: "fonts" });
+      orchestrator.broadcast({ type: "summary", ok: 1, fail: 0, rolledBack: false, fatal: false });
+    }
+    void recordFontAction("font-restore");
+  } catch (error) {
+    orchestrator.broadcast({ type: "step-fail", stepId: "fonts", error: error instanceof Error ? error.message : String(error) });
+    orchestrator.broadcast({ type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true });
+  } finally {
+    orchestrator.releaseLock();
+  }
+}
 // ── 服务器 ──
 
 export type GuiHttpServer = http.Server & Readonly<{
@@ -282,6 +340,12 @@ export function startGuiServer(
         await handleFixOff(orchestrator, res);
       } else if (method === "POST" && url.pathname === "/api/fix/recover") {
         await handleRecover(orchestrator, res);
+      } else if (method === "GET" && url.pathname === "/api/fonts/status") {
+        await handleFontsStatus(orchestrator, res);
+      } else if (method === "POST" && url.pathname === "/api/fonts/remove") {
+        await handleFontsRemove(orchestrator, res);
+      } else if (method === "POST" && url.pathname === "/api/fonts/restore") {
+        await handleFontsRestore(orchestrator, res);
       } else if (method === "POST" && url.pathname === "/api/check/start") {
         await handleCheckStart(orchestrator, res);
       } else {

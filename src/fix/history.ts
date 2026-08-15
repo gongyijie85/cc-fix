@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { defaultPersistRoot } from "../state/paths.js";
 
-export type HistoryAction = "persist-on" | "persist-off" | "check";
+export type HistoryAction = "persist-on" | "persist-off" | "check" | "font-remove" | "font-restore";
 
 export type HistoryEntry = {
   timestamp: string;
@@ -70,6 +70,13 @@ export async function recordFixSummary(
     fail: summary.fail,
     ...(summary.rolledBack ? { rolledBack: true } : {}),
     ...(summary.fatal ? { fatal: true } : {}),
+  }, root);
+}
+
+export async function recordFontAction(action: "font-remove" | "font-restore", root?: string): Promise<void> {
+  await appendHistory({
+    timestamp: new Date().toISOString(),
+    action,
   }, root);
 }
 

@@ -11,7 +11,8 @@ export type FixEvent =
   | { type: "summary";    ok: number; fail: number; rolledBack: boolean; fatal?: boolean }
   | { type: "browser-hint"; running: string[] }
   | { type: "recheck";    before: number; after: number }
-  | { type: "catalog";    signals: ReadonlyArray<{ id: string; label: string }> };
+  | { type: "catalog";    signals: ReadonlyArray<{ id: string; label: string }> }
+  | { type: "fonts-done"; pendingReboot: string[] };
 
 // ── 检测流事件 ──
 
