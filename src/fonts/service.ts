@@ -54,13 +54,27 @@ export function createFontFixService(options: Readonly<{
     } catch { return []; }
   }
 
+  /** 仅当目录同时含 fonts/ 子目录（非空）与 manifest.json 时才视为产品备份（issue #46）。 */
+  async function isCompleteProductBackup(dir: string): Promise<boolean> {
+    try {
+      const fontsSub = join(dir, 'fonts');
+      const entries = await readdir(fontsSub);
+      if (entries.length === 0) return false;
+      await readFile(join(dir, 'manifest.json'), 'utf8');
+      return true;
+    } catch { return false; }
+  }
+
   async function latestBackupDir(): Promise<string | null> {
     try {
       const entries = await readdir(backupRoot, { withFileTypes: true });
       const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-      if (dirs.length === 0) return null;
       dirs.sort().reverse();
-      return join(backupRoot, dirs[0]);
+      for (const name of dirs) {
+        const dir = join(backupRoot, name);
+        if (await isCompleteProductBackup(dir)) return dir;
+      }
+      return null;
     } catch { return null; }
   }
 
@@ -119,7 +133,7 @@ export function createFontFixService(options: Readonly<{
 
   async function restore(): Promise<PrivilegedResult> {
     const dir = await latestBackupDir();
-    if (dir === null) return { ok: false, error: '字体备份不存在' };
+    if (dir === null) return { ok: false, error: '字体备份不存在（或备份不完整）' };
     const result = await runner({ mode: 'restore', backupDir: join(dir, 'fonts'), regFile: join(dir, 'fonts-hklm.reg') });
     if (result.ok) {
       await writeFile(lastMarker, JSON.stringify({ pendingReboot: [] }), 'utf8');

@@ -74,7 +74,7 @@ describe('font fix service', () => {
   });
 
   it('restore requires a backup and delegates with backupDir and regFile', async () => {
-    await expect(service().restore()).resolves.toEqual({ ok: false, error: '字体备份不存在' });
+    await expect(service().restore()).resolves.toEqual({ ok: false, error: '字体备份不存在（或备份不完整）' });
     await service().backup();
     const result = await service().restore();
     expect(result).toEqual({ ok: true, pendingReboot: [] });
@@ -88,5 +88,27 @@ describe('font fix service', () => {
     const result = await service().remove();
     expect(result).toEqual({ ok: false, error: '拒绝访问' });
     await expect(readFile(join(root, 'state', 'font-remove-last.json'), 'utf8')).rejects.toThrow();
+  });
+
+  it('ignores foreign or incomplete backup directories (issue #46 回归)', async () => {
+    const foreign = join(root, 'state', 'font-backup', '20260809-101752');
+    await mkdir(foreign, { recursive: true });
+    await writeFile(join(foreign, 'system__msyh.ttc'), 'foreign');
+    const dir = await service().backup();
+    expect(dir).not.toBe(foreign);
+    const files = await readdir(join(dir, 'fonts'));
+    expect(files.sort()).toEqual(['msyh.ttc', 'simsun.ttc']);
+    const s2 = createFontFixService({
+      stateRoot: join(root, 'state2'),
+      fontsDir,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+      runner: async () => ({ ok: true, pendingReboot: [] }),
+    });
+    const foreign2 = join(root, 'state2', 'font-backup', '20260809-101752');
+    await mkdir(foreign2, { recursive: true });
+    await writeFile(join(foreign2, 'README.txt'), 'foreign');
+    const result = await s2.restore();
+    expect(result).toEqual({ ok: false, error: '字体备份不存在（或备份不完整）' });
+    expect(calls).toHaveLength(0);
   });
 });
