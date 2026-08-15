@@ -135,6 +135,18 @@ const RESTORE_HINT_SCRIPT = [
   '# 请使用 CC-Fix GUI 的「还原中文字体」按钮；本文件仅为备份目录说明。',
 ].join('\n');
 
+/** 解析特权助手结果标记；剥离 Windows PowerShell 5.1 的 UTF-8 BOM（JSON.parse 会因 BOM 抛错）。 */
+export function parsePrivilegedMarker(text: string): PrivilegedResult | undefined {
+  try {
+    const parsed = JSON.parse(text.replace(/^\uFEFF/, '')) as PrivilegedResult & { ok: boolean };
+    if (parsed.ok === true) return { ok: true, pendingReboot: (parsed as { pendingReboot?: string[] }).pendingReboot ?? [] };
+    if (parsed.ok === false) return { ok: false, error: (parsed as { error?: string }).error ?? '特权助手失败' };
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 默认特权执行器：Start-Process -Verb RunAs + 完成标记文件等待。 */
 export function createElevatedFontRunner(stateRoot: string): FontPrivilegedRunner {
   return async (request) => {
@@ -154,13 +166,11 @@ export function createElevatedFontRunner(stateRoot: string): FontPrivilegedRunne
     const deadline = Date.now() + 60_000;
     for (;;) {
       try {
-        const parsed = JSON.parse(await readFile(markerPath, 'utf8')) as PrivilegedResult & { ok: boolean };
-        if (parsed.ok === true) return { ok: true, pendingReboot: (parsed as { pendingReboot?: string[] }).pendingReboot ?? [] };
-        return { ok: false, error: (parsed as { error?: string }).error ?? '特权助手失败' };
-      } catch {
-        if (Date.now() > deadline) return { ok: false, error: '特权助手超时（UAC 未确认？）' };
-        await new Promise((r) => setTimeout(r, 500));
-      }
+        const parsed = parsePrivilegedMarker(await readFile(markerPath, 'utf8'));
+        if (parsed !== undefined) return parsed;
+      } catch { } // 标记尚未写出，继续轮询
+      if (Date.now() > deadline) return { ok: false, error: '特权助手超时（UAC 未确认？）' };
+      await new Promise((r) => setTimeout(r, 500));
     }
   };
 }

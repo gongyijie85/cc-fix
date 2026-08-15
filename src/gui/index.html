@@ -392,6 +392,8 @@ function renderHistoryRow(entry) {
   let result, cls = "";
   if (entry.action === "check") {
     result = `评分 ${entry.score ?? "-"}`;
+  } else if (entry.action === "font-remove" || entry.action === "font-restore") {
+    result = "已记录";
   } else if (entry.fatal) {
     result = "致命错误"; cls = "fail";
   } else if (entry.fail > 0) {
