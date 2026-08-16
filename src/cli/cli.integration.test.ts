@@ -59,7 +59,12 @@ const validRecoveryState = {
 
 beforeAll(() => {
   if (!existsSync(distEntry)) {
-    execFileSync("pnpm", ["build"], { cwd: repoRoot, stdio: "inherit" });
+    // Windows 下 pnpm 是 .cmd shim，spawnSync 需经 cmd.exe 包装（与 scripts/ci/check-runtime-vulns.mjs 同因）。
+    const command = process.platform === "win32" ? "cmd.exe" : "pnpm";
+    const args = process.platform === "win32"
+      ? ["/d", "/s", "/c", "pnpm build"]
+      : ["build"];
+    execFileSync(command, args, { cwd: repoRoot, stdio: "inherit" });
   }
 });
 
