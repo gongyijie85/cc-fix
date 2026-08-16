@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -225,3 +226,151 @@ describe("publish helper", () => {
     expect(commands).toEqual(allCommands.slice(0, allCommands.indexOf(failedCommand) + 1));
   }, 60_000);
 });
+
+describe("release evidence verifier tamper fixtures (T28)", () => {
+  async function fixtureEvidence(overrides: Partial<{
+    installerBytes: Buffer;
+    buildInfoVersion: string;
+    checksumLine: string;
+    sbomFormat: string;
+    missing: "installer" | "build-info" | "checksum" | "sbom";
+  }> = {}) {
+    const root = await makeTemporaryDirectory();
+    await mkdir(path.join(root, "release", "installer"), { recursive: true });
+    await mkdir(path.join(root, "release", "evidence"), { recursive: true });
+    await writeFile(path.join(root, "package.json"), JSON.stringify({ version: "0.2.0-rc.1" }), "utf8");
+
+    const installerBytes = overrides.installerBytes ?? Buffer.from("fake installer payload for tamper tests", "utf8");
+    const installerName = "CC-Fix-Setup-0.2.0-rc.1-x64.exe";
+    await writeFile(path.join(root, "release", "installer", installerName), installerBytes);
+
+    const digest = createHash("sha256").update(installerBytes).digest("hex");
+    const buildInfoVersion = overrides.buildInfoVersion ?? "0.2.0-rc.1";
+    await writeFile(
+      path.join(root, "release", "evidence", "build-info.json"),
+      JSON.stringify({ version: buildInfoVersion, installer: { sha256: digest } }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(root, "release", "evidence", `${installerName}.sha256`),
+      overrides.checksumLine ?? `${digest}  ${installerName}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(root, "release", "evidence", "sbom.cdx.json"),
+      JSON.stringify({
+        bomFormat: overrides.sbomFormat ?? "CycloneDX",
+        specVersion: "1.5",
+        components: [{ type: "application", name: "cc-fix", version: "0.2.0-rc.1" }],
+      }),
+      "utf8",
+    );
+    if (overrides.missing !== undefined) {
+      const target = overrides.missing;
+      const file = target === "installer"
+        ? path.join(root, "release", "installer", installerName)
+        : target === "build-info"
+          ? path.join(root, "release", "evidence", "build-info.json")
+          : target === "checksum"
+            ? path.join(root, "release", "evidence", `${installerName}.sha256`)
+            : path.join(root, "release", "evidence", "sbom.cdx.json");
+      await rm(file, { force: true });
+    }
+    return root;
+  }
+
+  it("passes on an intact evidence set", async () => {
+    const root = await fixtureEvidence();
+    const result = runNodeScript("release/verify-evidence.mjs", ["--root", root]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Release evidence verified");
+  });
+
+  it("fails when the installer bytes are tampered after evidence was generated", async () => {
+    const root = await fixtureEvidence();
+    await writeFile(
+      path.join(root, "release", "installer", "CC-Fix-Setup-0.2.0-rc.1-x64.exe"),
+      Buffer.from("tampered installer bytes 12345", "utf8"),
+    );
+    const result = runNodeScript("release/verify-evidence.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("installer digest mismatch");
+  });
+
+  it("fails when the checksum file is tampered", async () => {
+    const root = await fixtureEvidence({ checksumLine: "deadbeef".repeat(8) + "  CC-Fix-Setup-0.2.0-rc.1-x64.exe" });
+    const result = runNodeScript("release/verify-evidence.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("checksum file mismatch");
+  });
+
+  it("fails when build-info version drifts", async () => {
+    const root = await fixtureEvidence({ buildInfoVersion: "0.2.0-rc.2" });
+    const result = runNodeScript("release/verify-evidence.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("build-info version mismatch");
+  });
+
+  it("fails when the SBOM is tampered or empty", async () => {
+    const root = await fixtureEvidence({ sbomFormat: "SPDX" });
+    const result = runNodeScript("release/verify-evidence.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("invalid or empty CycloneDX SBOM");
+  });
+
+  it("fails closed when evidence files are missing", async () => {
+    for (const missing of ["installer", "build-info", "checksum", "sbom"] as const) {
+      const root = await fixtureEvidence({ missing });
+      const result = runNodeScript("release/verify-evidence.mjs", ["--root", root]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("unreadable");
+    }
+  });
+});
+
+describe("npm pre-publish verification (T29)", () => {
+  async function fixturePackage(overrides: Partial<{
+    files: string[];
+    version: string;
+    binOutput: string;
+  }> = {}) {
+    const root = await makeTemporaryDirectory();
+    const version = overrides.version ?? "1.2.3-test";
+    const files = overrides.files ?? ["dist"];
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "cc-fix", version, files, bin: { "cc-fix": "dist/index.js" } }),
+      "utf8",
+    );
+    await mkdir(path.join(root, "dist"), { recursive: true });
+    // 真实产物带 node shebang（tsup banner）；npm 对无 shebang 的 bin 在 Windows 生成不可直接执行的 shim。
+    await writeFile(
+      path.join(root, "dist", "index.js"),
+      `#!/usr/bin/env node\nconsole.log("${overrides.binOutput ?? version}")\n`,
+      "utf8",
+    );
+    return root;
+  }
+
+  it("passes on a well-formed package", async () => {
+    const root = await fixturePackage();
+    const result = runNodeScript("release/verify-npm.mjs", ["--root", root]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("CC_FIX_NPM_OK");
+  });
+
+  it("fails when dist is missing from the files allowlist", async () => {
+    const root = await fixturePackage({ files: ["README.md"] });
+    const result = runNodeScript("release/verify-npm.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("must include dist");
+  });
+
+  it("fails when the installed CLI reports a different version", async () => {
+    const root = await fixturePackage({ binOutput: "9.9.9-wrong" });
+    const result = runNodeScript("release/verify-npm.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("installed CLI version");
+  }, 120_000);
+});
+

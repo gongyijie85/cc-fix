@@ -35,8 +35,8 @@
 | T25 还原优先卸载 | ✅ 完成 | 卸载实测：精确 PATH 还原 + 网络指纹不变；受保护态/escape 用例待 VM |
 | T26 Windows 生命周期测试台 | ✅ 完成 | 完整生命周期本机实测 passed（完整证据 JSON；CI release 流程亦执行） |
 | T27 持续验证工作流 | ✅ 完成 | scripts/ci/ 四门禁（versions/licenses/secrets/vulns）fail-closed + 14 个门禁测试；verify.yml 接入；真实 pnpm audit 通过 |
-| T28 证据与条件签名 | 🟡 部分 | 证据包生成并验证（SBOM/哈希/build-info/notices）；签名/attestation 依赖 CI 与签名身份 |
-| T29 不可变发布与 npm 发布 | 🟡 部分 | 草稿发布流水线就绪（tag 校验/证据/attest）；npm OIDC 发布与 promote 晋级未实现 |
+| T28 证据与条件签名 | 🟡 部分→🟢 收尾 | 证据包生成并验证；tamper fixtures 落地（installer/sbom/checksum/build-info 篡改全拦截，verify-evidence 支持 --root）；剩余仅签名身份与双干净构建比对（CI/凭据） |
+| T29 不可变发布与 npm 发布 | 🟡 部分→🟢 收尾 | 草稿发布流水线就绪；promote.yml 晋级草稿 + verify:npm 本地包验证（pack/install/版本/泄漏,38 测试）落地；剩余 npm OIDC Trusted Publishing（外部凭据） |
 | T30 文档同步与遗留入口 | ✅ 完成 | README/SPEC/install.ps1/cc-fix.bat 已同步；`check:docs` 通过 |
 | T31 RC 硬化与稳定晋级 | ❌ 未执行 | 需要真实客户端矩阵（25H2 等）+ 人工批准；0.2.0-rc.1 尚未发布 |
 
@@ -635,7 +635,7 @@
 
 ## T28: Generate release evidence and conditional signatures
 
-> 状态：🟡 部分完成 — 证据包已生成并本地验证：`payload.sha256.json`（9 摘要）、`sbom.cdx.json`（CycloneDX）、`THIRD-PARTY-NOTICES.md`、`build-info.json`、安装包 SHA-256；`pnpm verify:evidence` 实测通过。签名/attestation 为条件化（release.yml 无签名 RC 需显式豁免 `ALLOW_UNSIGNED_RC`；attestation 走 `actions/attest@v4`）。"双干净构建可复现比对"与签名身份验证需在 CI/正式发布时执行。
+> 状态：🟡 部分完成（本地项已收尾）— 证据包已生成并本地验证：`payload.sha256.json`（9 摘要）、`sbom.cdx.json`（CycloneDX）、`THIRD-PARTY-NOTICES.md`、`build-info.json`、安装包 SHA-256；`pnpm verify:evidence` 实测通过。**tamper fixtures 已落地**（2026-08-16）：verify-evidence 支持 `--root`，篡改 installer/checksum/build-info/SBOM 与缺失文件全部 fail-closed（release-scripts.test.ts 6 用例）。签名/attestation 为条件化（release.yml 无签名 RC 需显式豁免 `ALLOW_UNSIGNED_RC`；attestation 走 `actions/attest@v4`）。剩余："双干净构建可复现比对"与签名身份验证需 CI/正式发布时执行（外部依赖）。
 
 **Description:** Produce reproducible payload manifests, CycloneDX SBOM, third-party notices, build-info, signatures when configured, hashes and verified attestations.
 
@@ -647,7 +647,7 @@
 **Verification:**
 - [x] `pnpm release:bundle -- --version 0.2.0-rc.1`
 - [x] `pnpm verify:payload`
-- [ ] Tampered payload/SBOM/signature/attestation fixtures fail.
+- [x] Tampered payload/SBOM/signature/attestation fixtures fail（installer 字节/checksum 行/build-info 版本/SBOM 结构/缺失文件，6 用例全拦截）。
 
 **Dependencies:** T23, T27
 
@@ -657,7 +657,7 @@
 
 ## T29: Implement immutable GitHub and npm publishing
 
-> 状态：🟡 部分完成 — `release.yml`（workflow_dispatch + tag 输入）：tag/版本一致性校验、无签名 RC 豁免、release:validate/test/coverage/bundle/evidence/windows 矩阵、attestation、不可变草稿 Release（`--verify-tag --draft --prerelease`，含无签名警告文案）。npm OIDC 发布（`next`/`latest` dist-tag）与 RC→stable 晋级流程（`promote.yml`）未实现。
+> 状态：🟡 部分完成（本地项已收尾）— `release.yml`（workflow_dispatch + tag 输入）：tag/版本一致性校验、无签名 RC 豁免、release:validate/test/coverage/bundle/evidence/windows 矩阵、attestation、不可变草稿 Release（`--verify-tag --draft --prerelease`，含无签名警告文案）。**2026-08-16 收尾：`promote.yml` 晋级草稿落地**（RC 校验/版本元数据 bump/全门禁/不可变 Release/attest；npm publish 步骤标注 TODO 等 OIDC 凭据）；**`scripts/release/verify-npm.mjs` 落地**（pack→隔离安装→CLI 版本 smoke→files 泄漏抽查；真实与 fixture 均验证，38 测试）。剩余：npm OIDC Trusted Publishing 与正式 publish（外部凭据）。
 
 **Description:** Build draft→verify→approve→immutable GitHub Release and subsequent npm OIDC publishing with RC/stable dist-tags.
 
@@ -669,7 +669,8 @@
 **Verification:**
 - [ ] Dry-run/test repository exercise validates workflow decisions without publishing production version.
 - [ ] `gh attestation verify` and release asset verification run in workflow.
-- [ ] npm pack/install smoke and provenance verification pass before publish step.
+- [x] npm pack/install smoke（`verify:npm`：pack→install→CLI 版本→泄漏抽查，含 Windows shim 场景）。
+- [ ] npm provenance verification（需 OIDC 凭据，promote.yml 已预留步骤）。
 
 **Dependencies:** T26, T28
 
