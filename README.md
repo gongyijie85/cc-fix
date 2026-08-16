@@ -152,6 +152,7 @@ Windows 生命周期测试会在隔离的工作区目录和 APPDATA 中完成安
 
 - [SPEC.md](SPEC.md)：规格索引与当前不变量；
 - [docs/spec/windows-productization-v0.2.md](docs/spec/windows-productization-v0.2.md)：Windows 产品化权威规格；
+- [docs/release-guide.md](docs/release-guide.md)：RC/正式版发布操作步骤；
 - [CONTEXT.md](CONTEXT.md)：领域术语与统一事件协议；
 - [docs/adr/](docs/adr/)：架构决策记录；
 - [docs/agents/](docs/agents/)：Agent 工作流与 Issue 约定。

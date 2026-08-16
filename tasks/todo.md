@@ -680,7 +680,7 @@
 
 ## T30: Synchronize docs and retire legacy entry points
 
-> 状态：✅ 完成 — README/SPEC/CLI 帮助已同步（模式/地区/完整还原语义/Windows 支持）；`install.ps1` 与 `cc-fix.bat` 已改为显式"仅遗留 npm CLI、推荐 Windows 安装器"提示；`pnpm check:docs` 实测通过。`docs/release-guide.md` 未创建（非阻塞，建议补）。
+> 状态：✅ 完成 — README/SPEC/CLI 帮助已同步（模式/地区/完整还原语义/Windows 支持）；`install.ps1` 与 `cc-fix.bat` 已改为显式"仅遗留 npm CLI、推荐 Windows 安装器"提示；`pnpm check:docs` 实测通过。`docs/release-guide.md` 已补。
 
 **Description:** Rewrite public behavior/install/upgrade/uninstall/security documentation and remove or turn old Node-global scripts into explicit compatibility notices.
 
