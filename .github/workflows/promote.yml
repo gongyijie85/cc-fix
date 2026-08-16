@@ -1,0 +1,117 @@
+# RC → stable 晋级（T29）：不可变发布语义（ADR-0010/CONTEXT「发布晋级」）。
+# 最后通过的 RC 只允许变更版本元数据与发布说明；任何代码/依赖/安装器变化都必须产生新的 RC。
+# 本工作流由人工在最后一个全部门禁通过的 RC 上触发。
+name: Promote RC to stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: Last passing RC tag (for example v0.2.0-rc.5)
+        required: true
+        type: string
+      stable_version:
+        description: Stable version to promote (for example 0.2.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  promote:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.rc_tag }}
+          fetch-depth: 0
+      - name: Validate promotion inputs
+        shell: pwsh
+        env:
+          RC_TAG: ${{ inputs.rc_tag }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+        run: |
+          if ($env:RC_TAG -notmatch '^v\d+\.\d+\.\d+-rc\.\d+$') { throw "Invalid RC tag: $env:RC_TAG" }
+          $stable = $env:STABLE_VERSION.Trim()
+          if ($stable -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid stable version: $env:STABLE_VERSION" }
+          $rcBase = ($env:RC_TAG.TrimStart('v') -split '-rc\.')[0]
+          if ($rcBase -ne $stable) { throw "Stable version must equal RC base: $rcBase vs $stable" }
+          $pkgVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($pkgVersion -ne $env:RC_TAG.TrimStart('v')) { throw "Checkout version $pkgVersion does not match RC tag" }
+          if ((git status --porcelain).Length -ne 0) { throw 'RC checkout is not clean' }
+      - name: Verify RC release is immutable and attested
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ inputs.rc_tag }}
+        run: |
+          $release = gh release view $env:RC_TAG --json tagName,isDraft,isPrerelease,assets --jq '{tagName,isDraft,isPrerelease,assets:(.assets|length)}'
+          if ($release.isDraft) { throw 'RC release is still a draft' }
+          if (-not $release.isPrerelease) { throw 'RC release is not marked prerelease' }
+          if ($release.assets -lt 1) { throw 'RC release carries no assets' }
+      - name: Bump to stable version metadata only
+        shell: pwsh
+        env:
+          STABLE_VERSION: ${{ inputs.stable_version }}
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $package.version = $env:STABLE_VERSION
+          $package | ConvertTo-Json -Depth 20 | Set-Content package.json -Encoding utf8
+          git add package.json
+          git -c user.name="cc-fix release" -c user.email="actions@users.noreply.github.com" commit -m "chore(release): promote to $env:STABLE_VERSION"
+          git tag "v$env:STABLE_VERSION"
+      - name: Pin toolchain and run full release gates
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.1
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:validate
+      - run: pnpm test
+      - run: pnpm test:coverage
+      - run: pnpm verify:npm
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: |
+          $lock = Get-Content toolchain.lock.json -Raw | ConvertFrom-Json
+          Invoke-WebRequest $lock.tools.innoSetup.source -OutFile inno.exe
+          if ((Get-FileHash inno.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $lock.tools.innoSetup.sha256) { throw 'Inno digest mismatch' }
+          Start-Process .\inno.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER' -WindowStyle Hidden -Wait
+      - run: pnpm release:bundle
+      - run: pnpm verify:evidence
+      - name: Attest stable installer and evidence
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            release/installer/CC-Fix-Setup-*.exe
+            release/installer/CC-Fix-Setup-*.sha256
+            release/evidence/sbom.cdx.json
+            release/evidence/build-info.json
+      - name: Publish immutable stable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+        run: |
+          gh release create "v$env:STABLE_VERSION" --verify-tag --title "CC-Fix $env:STABLE_VERSION" --notes "CC-Fix $env:STABLE_VERSION stable release promoted from ${{ inputs.rc_tag }}." release/installer/CC-Fix-Setup-*.exe release/installer/CC-Fix-Setup-*.sha256 release/evidence/*
+      - name: Publish npm stable (latest)
+        shell: pwsh
+        env:
+          STABLE_VERSION: ${{ inputs.stable_version }}
+        run: |
+          # TODO(T29 外部依赖): 需要 npm org 侧配置 Trusted Publishing（OIDC）。
+          # 配置完成后启用 npm publish --provenance --access public 与 gh attestation verify。
+          # 当前步骤仅验证产物完整性，防止误发布。
+          node scripts/release/verify-npm.mjs

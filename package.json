@@ -24,6 +24,7 @@
     "verify:payload": "node scripts/verify-windows-payload.mjs",
     "test:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Test-InstallerLifecycle.ps1",
     "release:evidence": "node scripts/release/build-evidence.mjs",
+    "verify:npm": "node scripts/release/verify-npm.mjs",
     "verify:evidence": "node scripts/release/verify-evidence.mjs",
     "release:bundle": "pnpm build:installer && pnpm release:evidence",
     "check:version": "node scripts/check-version-consistency.mjs",
