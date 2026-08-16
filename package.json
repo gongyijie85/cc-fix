@@ -43,7 +43,16 @@
     "cursor",
     "claude-desktop",
     "cli",
-    "security"
+    "security",
+    "windows",
+    "desktop-app",
+    "tauri",
+    "webview2",
+    "timezone",
+    "locale",
+    "nodejs",
+    "typescript",
+    "rust"
   ],
   "license": "MIT",
   "author": "cc-fix contributors",

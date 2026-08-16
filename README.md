@@ -2,7 +2,17 @@
 
 CC-Fix 是面向 Windows 的环境一致性检测与可恢复保护工具。它提供独立桌面应用、CLI 和本地 GUI，用同一套耐久事务管理环境变量、系统时区、浏览器策略以及可选的语言/区域画像。
 
-当前版本：`0.2.0-rc.1`。
+当前版本：`0.2.0-rc.1` · 协议：MIT · 目标平台：Windows 10/11 x64
+
+## 功能亮点
+
+- **三档保护模式**：`daily` / `standard` / `deep`，可随时查看健康状态与切换。
+- **耐久事务**：写前计划、写后读回验证、失败自动补偿、完整还原，不依赖“备份文件是否存在”推断安全。
+- **只读网络检测**：VPN、路由、网卡、DNS、hosts 与 DoH 风险只检测、解释和提醒，绝不修改这些网络配置。
+- **浏览器策略**：标准保护管理 Chrome/Edge 各 3 个 HKCU 策略槽（语言与 WebRTC 防泄漏）。
+- **多端一致**：桌面应用、CLI 与本地 GUI 共用同一套核心逻辑和状态语义。
+- **低门槛安装**：当前用户安装、无需管理员权限，自带 Node.js 24 私有运行时与 WebView2 离线安装程序。
+- **可追溯发布**：发布载荷包含 SHA-256、CycloneDX SBOM、第三方声明、构建信息与来源证明。
 
 ## 重要边界
 
@@ -80,6 +90,8 @@ cc-fix run --region eu claude
 
 模式和健康状态彼此独立。`healthy`、`degraded`、`recovery_required` 来自已提交状态和事务日志，不通过“备份文件是否存在”推断。
 
+## 状态与恢复
+
 状态目录为 `%APPDATA%\cc-fix`，主要文件包括：
 
 - `state.json`：已提交目标、偏好地区、健康状态和活动事务；
@@ -87,7 +99,7 @@ cc-fix run --region eu claude
 - `transaction-journal.json`：写前计划、逐项验证和补偿进度；
 - `migration-evidence`：旧 v3 状态迁移的只读证据。
 
-不要在受保护或恢复未完成时手工删除这些文件。
+不要在受保护或恢复未完成时手工删除这些文件。遇到未完成事务时，先运行 `cc-fix persist recover`，不要直接开始新的保护转换。
 
 ## 浏览器策略
 
@@ -135,6 +147,14 @@ Windows 生命周期测试会在隔离的工作区目录和 APPDATA 中完成安
 - 兼容线：Windows 11 24H2 x64；
 - Windows 11 26H1：新设备手工冒烟；
 - Windows 10 22H2：仅作为已结束常规支持的遗留兼容目标。
+
+## 文档
+
+- [SPEC.md](SPEC.md)：规格索引与当前不变量；
+- [docs/spec/windows-productization-v0.2.md](docs/spec/windows-productization-v0.2.md)：Windows 产品化权威规格；
+- [CONTEXT.md](CONTEXT.md)：领域术语与统一事件协议；
+- [docs/adr/](docs/adr/)：架构决策记录；
+- [docs/agents/](docs/agents/)：Agent 工作流与 Issue 约定。
 
 ## 开源协议
 
