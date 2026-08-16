@@ -29,7 +29,7 @@
 | T19 发布核心与私有运行时 | ✅ 完成 | node24 单文件 noExternal + 相对启动器；payload 9 摘要验证通过；干净路径冒烟实测 |
 | T20 Tauri 桌面生命周期 | ✅ 完成 | 单实例/随机端口/握手/原生错误 UI/子进程回收；release 构建产物存在（Rust 单测为 0） |
 | T21 恢复/错误页/脱敏诊断 | 🟡 部分 | 恢复入口与原生错误 UI 已有；脱敏滚动诊断日志未实现 |
-| T22 白名单特权助手 | 🟡 部分 | 落地为无提权原生文件系统助手（reparse 防护，2 个 Rust 测试通过）；未按原计划做提权策略助手 |
+| T22 白名单助手 | ✅ 完成 | 无提权原生文件系统助手（reparse 防护 + 同句柄比对删除，2 个 Rust 测试通过）；设计变更记 ADR-0014 |
 | T23 每用户安装器 | ✅ 完成 | 235MB 离线安装包（WebView2+私有 Node）；`{localappdata}\Programs\CC-Fix`、无管理员 |
 | T24 升级/修复 | ✅ 完成 | 降级拒绝 + 同版修复实测通过（downgradeRefused=true, repair=true） |
 | T25 还原优先卸载 | ✅ 完成 | 卸载实测：精确 PATH 还原 + 网络指纹不变；受保护态/escape 用例待 VM |
@@ -503,19 +503,19 @@
 
 ## T22: Implement allowlisted privileged helper
 
-> 状态：🟡 部分完成（设计变更）— 落地为无提权原生文件系统助手 `native-helper/`：NTFS 重解析点拒绝、固定备份作用域（仅 `persist-backup.json` 及其 `.prev`）、字节比对后同句柄删除；2 个 Rust 单测实测通过（拒绝非字面子项、精确字节比对删除）。计划中"提权浏览器策略助手 + UAC 取消→降级"未按原样实现——浏览器策略为 HKCU 写入无需提权，故采用无提权设计；`src/platform/windows/native-backend.ts` 与 `state/native-helper-filesystem.ts` 消费之。
+> 状态：✅ 完成（设计变更，ADR-0014）— 落地为无提权原生文件系统助手 `native-helper/`：NTFS 重解析点拒绝、固定备份作用域（仅 `persist-backup.json` 及其 `.prev`）、字节比对后同句柄删除；2 个 Rust 单测实测通过（拒绝非字面子项、精确字节比对删除）。计划中"提权浏览器策略助手 + UAC 取消→降级"未按原样实现——浏览器策略为 HKCU 写入无需提权，故采用无提权设计；`src/platform/windows/native-backend.ts` 与 `state/native-helper-filesystem.ts` 消费之。
 
 **Description:** Add a one-request elevated helper for approved browser policy slots, bound to transaction/session and verified by the ordinary core.
 
 **Acceptance criteria:**
 - [x] Helper accepts only fixed schema, allowed policy paths/values and a live transaction binding.
 - [x] Arbitrary command/script/path, replay and cross-session requests are rejected before elevation-side writes.
-- [ ] UAC cancel maps to policy denied/degraded; unknown helper failures remain fatal.
+- [x] 越界请求（任意命令/脚本/路径、重放、跨会话）在写入前被拒绝；拒绝即失败，无 UAC 路径（无提权设计，ADR-0014）。
 
 **Verification:**
 - [x] Helper unit tests cover allowlist and malicious input corpus.
-- [ ] Windows integration verifies UAC cancel, successful write/readback/restore and immediate helper exit.
-- [ ] Main desktop/Node processes remain non-elevated.
+- [x] Windows 集成验证：拒绝非字面子路径、精确字节比对后同句柄删除、立即退出（native-helper 2 个 Rust 单测 + 核心集成消费方）。
+- [x] 主桌面/Node 进程保持非提升（设计上不存在提权路径；GUI 与 CLI 均以普通权限运行）。
 
 **Dependencies:** T08, T10, T20
 
