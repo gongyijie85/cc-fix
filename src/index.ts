@@ -6,7 +6,7 @@ import { runDetection } from "./detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION } from "./detection/regions.js";
 import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
-import { recordCheck } from "./fix/history.js";
+import { recordCheck, recordPersistFacts } from "./fix/history.js";
 import { runWithInjectedEnv, runDesktop } from "./run/injector.js";
 import { startGuiServer } from "./gui/server.js";
 import { spawn } from "node:child_process";
@@ -111,6 +111,19 @@ persistCmd
       ...(result.kind === "degraded" ? { degraded: result.degraded } : {}),
     };
 
+    void recordPersistFacts({
+      action: "persist-on",
+      outcome: result.kind === "noop" ? "noop" : result.kind === "committable" ? "ok" : result.kind,
+      requested: target,
+      committed: after.target,
+      resolvedRegion: region,
+      preferredRegion: after.preferredRegion,
+      health: after.health,
+      counts: result.kind === "noop" ? undefined : result.kind === "compensated" || result.kind === "recovery_required" ? { ok: 0, fail: 1 } : { ok: 1, fail: 0 },
+      rolledBack: result.kind === "compensated",
+      noOp: result.kind === "noop",
+    });
+
     if (result.kind === "recovery_required") {
       throw new CliFailure(
         exitCodeForProtectOutcome(result.kind),
@@ -144,6 +157,13 @@ persistCmd
     const runtime = await createPersistRuntime();
     const result = await runtime.restore();
     if (result.kind === "recovery_required") {
+      void recordPersistFacts({
+        action: "persist-off",
+        outcome: "recovery_required",
+        requested: null,
+        committed: null,
+        counts: { ok: 0, fail: result.failed.length },
+      });
       throw new CliFailure(
         exitCodeForRestoreOutcome(result.kind),
         errorIdForOutcome(result.kind),
@@ -151,6 +171,16 @@ persistCmd
       );
     }
     const after = await runtime.status();
+    void recordPersistFacts({
+      action: "persist-off",
+      outcome: result.kind === "noop" ? "noop" : "ok",
+      requested: null,
+      committed: after.target,
+      preferredRegion: after.preferredRegion,
+      health: after.health,
+      counts: { ok: 1, fail: 0 },
+      noOp: result.kind === "noop",
+    });
     if (options.json) {
       console.log(jsonEnvelope({
         requested: null,
@@ -176,6 +206,13 @@ persistCmd
     const runtime = await createPersistRuntime();
     const result = await runtime.recover();
     if (result.kind === "recovery_required") {
+      void recordPersistFacts({
+        action: "persist-recover",
+        outcome: "recovery_required",
+        requested: null,
+        committed: null,
+        counts: { ok: 0, fail: result.failed.length },
+      });
       throw new CliFailure(
         exitCodeForRecoveryOutcome(result.kind),
         errorIdForOutcome(result.kind),
@@ -183,6 +220,16 @@ persistCmd
       );
     }
     const after = await runtime.status();
+    void recordPersistFacts({
+      action: "persist-recover",
+      outcome: result.kind === "noop" ? "noop" : "ok",
+      requested: null,
+      committed: after.target,
+      preferredRegion: after.preferredRegion,
+      health: after.health,
+      counts: { ok: 1, fail: 0 },
+      noOp: result.kind === "noop",
+    });
     if (options.json) {
       console.log(jsonEnvelope({
         requested: null,
