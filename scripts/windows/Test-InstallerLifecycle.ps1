@@ -175,7 +175,18 @@ try {
   }
   if (Test-Path -LiteralPath $InstallRoot) { throw 'Managed install directory remains after uninstall' }
   $CurrentPath = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
-  if ($CurrentPath -ne $OriginalPath) { throw 'Uninstall did not restore the exact original PATH' }
+  if ($CurrentPath -ne $OriginalPath) {
+    # 诊断输出：精确还原断言失败时记录原始/当前值、注册表类型与 reg 原始输出，避免盲改。
+    $PathProp = Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue
+    $PathType = if ($null -eq $PathProp) { 'missing' } else { $PathProp.PSObject.Properties['Path'].TypeNameOfValue }
+    $RawReg = (& reg.exe query 'HKCU\Environment' /v Path 2>$null) -join " | "
+    Write-Host "[installer-lifecycle] PATH mismatch diagnostic:"
+    Write-Host "  original = '$OriginalPath'"
+    Write-Host "  current  = '$CurrentPath'"
+    Write-Host "  type     = $PathType"
+    Write-Host "  reg      = $RawReg"
+    throw 'Uninstall did not restore the exact original PATH'
+  }
   $NetworkAfter = Get-NetworkFingerprint
   if ($NetworkAfter -ne $NetworkBefore) { throw 'VPN/route/adapter/DNS configuration fingerprint changed during lifecycle' }
 
