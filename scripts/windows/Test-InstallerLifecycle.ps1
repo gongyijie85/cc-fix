@@ -75,9 +75,32 @@ try {
     if ($null -eq $Key) { return $null }
     return $Key.$Name
   }
-  # 语言列表 cmdlet 是 persist on 快照捕获的硬依赖；Server 2025 CI runner 不提供该 cmdlet，
-  # 按 ADR-0010 该冒烟属于客户端测试线，能力缺失时记录跳过而非假失败。
-  $SmokeSupported = $null -ne (Get-Command Get-WinUserLanguageList -ErrorAction SilentlyContinue)
+  # 语言列表 cmdlet 是 persist on 快照捕获的硬依赖；按 ADR-0010 该冒烟属于客户端测试线，
+  # 能力缺失/不可用时记录跳过而非假失败。Get-Command 只证明 cmdlet 存在：
+  # windows-2025-vs2026 镜像（20260810.198 起）上 Get-WinUserLanguageList 存在但查询挂起，
+  # 因此改为带超时的实际试跑探测。
+  function Test-LanguageListCapability {
+    $Probe = New-Object System.Diagnostics.ProcessStartInfo
+    $Probe.FileName = 'powershell.exe'
+    $Probe.Arguments = '-NoProfile -NonInteractive -Command "$tags=@(Get-WinUserLanguageList | ForEach-Object { $_.LanguageTag });ConvertTo-Json -InputObject $tags -Compress"'
+    $Probe.UseShellExecute = $false
+    $Probe.RedirectStandardOutput = $true
+    $Probe.RedirectStandardError = $true
+    $Probe.CreateNoWindow = $true
+    try {
+      $Process = [System.Diagnostics.Process]::Start($Probe)
+      if (-not $Process.WaitForExit(10000)) {
+        $Process.Kill()
+        $Process.WaitForExit()
+        return $false
+      }
+      $null = $Process.StandardOutput.ReadToEnd()
+      return $Process.ExitCode -eq 0
+    } catch {
+      return $false
+    }
+  }
+  $SmokeSupported = Test-LanguageListCapability
   if ($SmokeSupported) {
   $SmokePolicySlots = [ordered]@{
     'HKCU\Software\Policies\Google\Chrome' = @('AcceptLanguage', 'DefaultWebRtcIPHandlingPolicy', 'ApplicationLocaleValue')
@@ -124,8 +147,8 @@ try {
     $StateAfter = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
     if ($null -ne $StateAfter.committedTarget -or $StateAfter.health -ne 'healthy') { throw 'Daily state was not committed after persist off' }
   } finally {
-    # 收敛兜底：无论断言成败都还原日常配置（幂等）
-    & "$InstallRoot\bin\cc-fix.cmd" persist off *> $null
+    # 收敛兜底：无论断言成败都还原日常配置（幂等）；能力缺失时 persist 未启动，无需兜底
+    if ($SmokeSupported) { & "$InstallRoot\bin\cc-fix.cmd" persist off *> $null }
     foreach ($Path in $SmokePolicySlots.Keys) {
       foreach ($Name in $SmokePolicySlots[$Path]) { & reg.exe delete $Path /v $Name /f 2>$null | Out-Null }
     }
