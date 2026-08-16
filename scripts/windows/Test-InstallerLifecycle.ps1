@@ -75,9 +75,12 @@ try {
     if ($null -eq $Key) { return $null }
     return $Key.$Name
   }
-  # 语言列表 cmdlet 是 persist on 快照捕获的硬依赖；Server 2025 CI runner 不提供该 cmdlet，
-  # 按 ADR-0010 该冒烟属于客户端测试线，能力缺失时记录跳过而非假失败。
-  $SmokeSupported = $null -ne (Get-Command Get-WinUserLanguageList -ErrorAction SilentlyContinue)
+  # 语言列表 cmdlet 是 persist on 快照捕获的硬依赖；按 ADR-0010 该冒烟属于客户端测试线，
+  # 能力缺失/不可用时记录跳过而非假失败。曾用 Get-Command 探测存在性——windows-2025-vs2026
+  # 镜像（20260810.198 起）上该 cmdlet 存在但实际查询挂起（超过 core 的 15s execFile 超时），
+  # 导致 CI 假失败。改用显式开关：默认跳过（与旧镜像行为一致），本机/真机验证时设置
+  # CC_FIX_RUN_PERSIST_SMOKE=1。
+  $SmokeSupported = ($env:CC_FIX_RUN_PERSIST_SMOKE -eq '1')
   if ($SmokeSupported) {
   $SmokePolicySlots = [ordered]@{
     'HKCU\Software\Policies\Google\Chrome' = @('AcceptLanguage', 'DefaultWebRtcIPHandlingPolicy', 'ApplicationLocaleValue')
@@ -91,17 +94,20 @@ try {
       if ($null -ne (Get-SmokePolicyValue $Path $Name)) { throw "Persist smoke precondition failed: $Path\$Name already exists" }
     }
   }
-  # 用 TimeZoneInfo 规范 id 而非 tzutil /g 的本地化显示名（中文系统输出“东部标准时间”）
-  $SmokeTzBefore = [System.TimeZoneInfo]::Local.Id
+  # 基线时区用 tzutil /g 捕获：.NET 的 [System.TimeZoneInfo]::Local 会缓存进程启动时的值，
+  # persist on 经 tzutil 跨进程改时区后缓存不刷新，断言会读到旧值而假失败。
+  $SmokeTzBefore = (tzutil /g)
   try {
     & "$InstallRoot\bin\cc-fix.cmd" persist on --region us --level standard | Out-File -LiteralPath (Join-Path $EvidenceRoot 'persist-on.log') -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw "persist on failed with exit code $LASTEXITCODE" }
     $StatePath = Join-Path $TestAppData 'cc-fix\state.json'
     if (-not (Test-Path -LiteralPath $StatePath)) { throw 'state.json missing after persist on' }
     $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    # durable envelope（cc-fix-state-v1）把事实放在 payload 内；旧平铺格式兼容读取。
+    if ($null -ne $State.payload) { $State = $State.payload }
     if ($null -eq $State.committedTarget -or $State.committedTarget.mode -ne 'standard' -or $State.committedTarget.region -ne 'us' -or $null -ne $State.activeTransactionId) { throw ('State was not committed: ' + ($State | ConvertTo-Json -Compress)) }
     if ((Get-SmokeEnvValue 'TZ') -ne 'America/New_York') { throw ('TZ was not committed: ' + (Get-SmokeEnvValue 'TZ')) }
-    if ([System.TimeZoneInfo]::Local.Id -ne 'Eastern Standard Time') { throw ('System timezone was not committed: ' + [System.TimeZoneInfo]::Local.Id) }
+    if ((tzutil /g) -ne 'Eastern Standard Time') { throw ('System timezone was not committed: ' + (tzutil /g)) }
     foreach ($Path in $SmokePolicySlots.Keys) {
       foreach ($Name in $SmokePolicySlots[$Path]) {
         $Expected = switch ($Name) { 'AcceptLanguage' { 'en-US,en' } 'DefaultWebRtcIPHandlingPolicy' { 'disable_non_proxied_udp' } 'ApplicationLocaleValue' { 'en-US' } }
@@ -120,21 +126,28 @@ try {
       $Before = $SmokeEnvBefore[$Name]; $After = Get-SmokeEnvValue $Name
       if ($Before -ne $After) { throw ("Env not restored: $Name before '$Before' after '$After'") }
     }
-    if ([System.TimeZoneInfo]::Local.Id -ne $SmokeTzBefore) { throw ('System timezone was not restored: ' + [System.TimeZoneInfo]::Local.Id) }
+    if ((tzutil /g) -ne $SmokeTzBefore) { throw ('System timezone was not restored: ' + (tzutil /g)) }
     $StateAfter = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    if ($null -ne $StateAfter.payload) { $StateAfter = $StateAfter.payload }
     if ($null -ne $StateAfter.committedTarget -or $StateAfter.health -ne 'healthy') { throw 'Daily state was not committed after persist off' }
   } finally {
-    # 收敛兜底：无论断言成败都还原日常配置（幂等）
-    & "$InstallRoot\bin\cc-fix.cmd" persist off *> $null
+    # 收敛兜底：无论断言成败都还原日常配置（幂等）；能力缺失时 persist 未启动，无需兜底
+    if ($SmokeSupported) { & "$InstallRoot\bin\cc-fix.cmd" persist off *> $null }
     foreach ($Path in $SmokePolicySlots.Keys) {
-      foreach ($Name in $SmokePolicySlots[$Path]) { & reg.exe delete $Path /v $Name /f 2>$null | Out-Null }
+      foreach ($Name in $SmokePolicySlots[$Path]) {
+        # ErrorActionPreference=Stop 下原生命令写 stderr（即使 2>$null）也会抛
+        # NativeCommandError；兜底清理必须整体吞掉，不得掩盖冒烟的原始失败。
+        try { & reg.exe delete $Path /v $Name /f 2>$null | Out-Null } catch { }
+      }
     }
     foreach ($Name in @('TZ', 'LANG', 'LC_ALL')) {
       $Before = $SmokeEnvBefore[$Name]
       if ($null -eq $Before) { Remove-ItemProperty 'HKCU:\Environment' -Name $Name -ErrorAction SilentlyContinue }
       else { Set-ItemProperty 'HKCU:\Environment' -Name $Name -Value $Before }
     }
-    if ($SmokeTzBefore) { & tzutil.exe /s $SmokeTzBefore | Out-Null }
+    if ($SmokeTzBefore) {
+      try { & tzutil.exe /s $SmokeTzBefore 2>$null | Out-Null } catch { }
+    }
   }
 
   } else {
@@ -172,7 +185,24 @@ try {
   }
   if (Test-Path -LiteralPath $InstallRoot) { throw 'Managed install directory remains after uninstall' }
   $CurrentPath = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
-  if ($CurrentPath -ne $OriginalPath) { throw 'Uninstall did not restore the exact original PATH' }
+  if ($CurrentPath -ne $OriginalPath) {
+    # 诊断输出：精确还原断言失败时记录原始/当前值、注册表类型与 reg 原始输出，避免盲改。
+    $PathProp = Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue
+    $PathType = if ($null -eq $PathProp) { 'missing' } else { $PathProp.PSObject.Properties['Path'].TypeNameOfValue }
+    $RawReg = (& reg.exe query 'HKCU\Environment' /v Path 2>$null) -join " | "
+    Write-Host "[installer-lifecycle] PATH mismatch diagnostic:"
+    Write-Host "  original = '$OriginalPath'"
+    Write-Host "  current  = '$CurrentPath'"
+    Write-Host "  type     = $PathType"
+    Write-Host "  reg      = $RawReg"
+    @(
+      "original = $OriginalPath",
+      "current  = $CurrentPath",
+      "type     = $PathType",
+      "reg      = $RawReg"
+    ) | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'path-mismatch.txt') -Encoding utf8
+    throw 'Uninstall did not restore the exact original PATH'
+  }
   $NetworkAfter = Get-NetworkFingerprint
   if ($NetworkAfter -ne $NetworkBefore) { throw 'VPN/route/adapter/DNS configuration fingerprint changed during lifecycle' }
 

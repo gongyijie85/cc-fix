@@ -14,9 +14,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "node scripts/run-coverage.mjs",
-    "test:integration": "vitest run src/persist/runtime.test.ts src/gui/server.test.ts",
-    "test:gui": "vitest run src/gui/server.test.ts src/gui/session.test.ts",
+    "test:integration": "vitest run src/persist/runtime.test.ts src/gui/server.test.ts src/cli/cli.integration.test.ts",
+    "test:gui": "vitest run src/gui/server.test.ts src/gui/session.test.ts && playwright test",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "build:core": "tsup",
     "build:desktop": "cargo build --release --locked --manifest-path src-tauri/Cargo.toml",
     "build:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1",
@@ -28,6 +29,8 @@
     "check:version": "node scripts/check-version-consistency.mjs",
     "check:docs": "node scripts/check-doc-consistency.mjs",
     "check:toolchain": "node scripts/validate-toolchain-lock.mjs",
+    "check:ci-gates": "node scripts/ci/check-versions.mjs && node scripts/ci/check-licenses.mjs && node scripts/ci/check-secrets.mjs",
+    "check:ci-vulns": "node scripts/ci/check-runtime-vulns.mjs",
     "release:validate": "pnpm check:version && pnpm check:toolchain && pnpm check:docs"
   },
   "keywords": [
@@ -68,6 +71,7 @@
     "ora": "^8.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tauri-apps/cli": "2.11.4",
     "@types/node": "^20.17.0",
     "@vitest/coverage-v8": "^2.1.0",

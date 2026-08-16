@@ -1,6 +1,6 @@
 # Implementation Plan: CC-Fix Windows 产品化 0.2
 
-> 状态核对：见 [`tasks/todo.md`](./todo.md) 顶部状态汇总（2026-08-14，基线 main @ aeb7eec）。Phase 0–6 主体已随 PR #28 落地；未完成/部分项：T13 退出码契约、T14 历史扩展、T18 Playwright、T21 脱敏诊断、T22 提权助手（设计变更）、T27 license/vuln 门禁、T28/T29 签名与 npm 发布、T31 未执行。
+> 状态核对：见 [`tasks/todo.md`](./todo.md) 顶部状态汇总（2026-08-14，基线 main @ aeb7eec）。Phase 0–6 主体已随 PR #28 落地；未完成/部分项：T28/T29 签名与 npm 发布、T31 未执行（外部依赖）；T13/T14/T18/T21/T22/T27 已于 2026-08-15 收尾提交（codex/0.2-wrapup）。
 
 ## Overview
 
@@ -114,7 +114,7 @@ T26 + T27 + T28 + T29 + T30 ─> T31 RC and stable promotion
 - [ ] T19: Produce Node 24 single-file noExternal core and relative private-runtime CLI launcher.
 - [ ] T20: Implement production Tauri single-instance/session/service lifecycle.
 - [ ] T21: Implement recovery/error pages and redacted rolling diagnostics.
-- [ ] T22: Implement the transaction-bound allowlisted privileged helper.
+- [x] T22: Implement the transaction-bound allowlisted privileged helper（以无提权原生文件系统助手落地，ADR-0014）。
 
 ### Checkpoint E
 

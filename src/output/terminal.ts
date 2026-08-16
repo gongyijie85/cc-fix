@@ -156,6 +156,6 @@ export function renderCheckResponse(response: CheckResponse): void {
   console.log();
 }
 
-export function renderJsonResponse(response: CheckResponse): void {
+export function renderJsonResponse(response: CheckResponse & { schemaVersion?: number }): void {
   console.log(JSON.stringify(response, null, 2));
 }

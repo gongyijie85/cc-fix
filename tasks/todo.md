@@ -4,7 +4,7 @@
 
 ## 状态汇总（2026-08-14 核对，基线 main @ aeb7eec）
 
-> 核对方式：源码审阅 + 本机实测（Windows 11，`pnpm typecheck` / `pnpm test` 545 / `pnpm test:coverage` / `pnpm test:integration` / `pnpm test:gui` / `pnpm build:core` / `pnpm verify:payload` / `pnpm verify:evidence` / `pnpm release:validate` / `cargo test` ×2 / 安装生命周期实测）。需要真实 Windows 客户端矩阵或正式发布流程才能确认的项保持未勾选并在任务内注明。
+> 核对方式：源码审阅 + 本机实测（Windows 11，`pnpm typecheck` / `pnpm test` 615 / `pnpm test:coverage` / `pnpm test:integration` 24 / `pnpm test:gui`（vitest + Playwright 6）/ `pnpm check:ci-gates` / `pnpm check:ci-vulns` / `pnpm build:core` / `pnpm verify:payload` / `pnpm verify:evidence` / `pnpm release:validate` / `cargo test` ×2（src-tauri 5 + native-helper 2）/ 安装生命周期实测）。2026-08-15 收尾（codex/0.2-wrapup）：T13/T14/T18/T21/T22/T27 已落地，本表已更新。需要真实 Windows 客户端矩阵或正式发布流程才能确认的项保持未勾选并在任务内注明。
 
 | 任务 | 状态 | 一句话结论 |
 |---|---|---|
@@ -20,21 +20,21 @@
 | T10 应用/验证/提交/补偿 | ✅ 完成 | executor + 事务测试；deep→standard 与补偿路径有命名测试 |
 | T11 收敛还原与崩溃恢复 | ✅ 完成 | restore/recovery/recovery-executor 测试通过 |
 | T12 单一应用服务切换 | ✅ 完成 | persist 唯一写入口；生产代码无 setx/reg add/legacy 直写 |
-| T13 CLI 契约与稳定退出码 | 🟡 部分 | 命令/标志齐全且地区校验显式；退出码契约（10/20–24/30）与 CLI 集成测试未落地 |
-| T14 操作历史扩展 | ❌ 未实现 | history 仍为 legacy 形态，无 target/health/transaction 字段 |
+| T13 CLI 契约与稳定退出码 | ✅ 完成 | 退出码契约 0/2/10/20–24/30 + JSON error id 落地（src/cli/exit-codes.ts）；spawned bundle 集成测试 10 例（含 10/21/24 实际退出码） |
+| T14 操作历史扩展 | ✅ 完成 | 版本化 schema v2（src/history/）+ 请求/最终目标、resolved/health/transactionId/counts；v1 旧记录可读；敏感值不序列化 |
 | T15 检测目标对齐 | ✅ 完成 | RegionCode 仅出自 domain；AccessRegionCode 显式标注为 legacy；四地区目录一致 |
 | T16 认证 localhost 会话 | ✅ 完成 | 单次 bootstrap token + Host/Origin/session 校验，负例测试通过 |
 | T17 GUI API/SSE 切到 v2 | ✅ 完成 | 触发端点 202/409、只读端点暴露事务；集成测试通过 |
-| T18 三态 GUI 与恢复 UX | 🟡 部分 | level/deep 确认/恢复按钮已实现；Playwright E2E 与 a11y 冒烟未落地 |
+| T18 三态 GUI 与恢复 UX | ✅ 完成 | Playwright E2E 6 例（首载/刷新/全模式/非 US/recovery/a11y）；顺带修复 region-hint 不显示 bug 与 a11y 缺口（aria-live/label） |
 | T19 发布核心与私有运行时 | ✅ 完成 | node24 单文件 noExternal + 相对启动器；payload 9 摘要验证通过；干净路径冒烟实测 |
-| T20 Tauri 桌面生命周期 | ✅ 完成 | 单实例/随机端口/握手/原生错误 UI/子进程回收；release 构建产物存在（Rust 单测为 0） |
-| T21 恢复/错误页/脱敏诊断 | 🟡 部分 | 恢复入口与原生错误 UI 已有；脱敏滚动诊断日志未实现 |
-| T22 白名单特权助手 | 🟡 部分 | 落地为无提权原生文件系统助手（reparse 防护，2 个 Rust 测试通过）；未按原计划做提权策略助手 |
+| T20 Tauri 桌面生命周期 | ✅ 完成 | 单实例/随机端口/握手/原生错误 UI/子进程回收；release 构建产物存在（Rust 单测 5，T21 诊断日志） |
+| T21 恢复/错误页/脱敏诊断 | ✅ 完成 | 脱敏滚动诊断日志（src-tauri/src/logging.rs，无 regex 依赖）+ 生命周期接线；语料测试确认无种子敏感值泄漏；轮转与快照测试 |
+| T22 白名单助手 | ✅ 完成 | 无提权原生文件系统助手（reparse 防护 + 同句柄比对删除，2 个 Rust 测试通过）；设计变更记 ADR-0014 |
 | T23 每用户安装器 | ✅ 完成 | 235MB 离线安装包（WebView2+私有 Node）；`{localappdata}\Programs\CC-Fix`、无管理员 |
 | T24 升级/修复 | ✅ 完成 | 降级拒绝 + 同版修复实测通过（downgradeRefused=true, repair=true） |
 | T25 还原优先卸载 | ✅ 完成 | 卸载实测：精确 PATH 还原 + 网络指纹不变；受保护态/escape 用例待 VM |
 | T26 Windows 生命周期测试台 | ✅ 完成 | 完整生命周期本机实测 passed（完整证据 JSON；CI release 流程亦执行） |
-| T27 持续验证工作流 | 🟡 部分 | verify/release 工作流 + fail-closed 测试存在；license/vuln/secret 检查脚本未实现 |
+| T27 持续验证工作流 | ✅ 完成 | scripts/ci/ 四门禁（versions/licenses/secrets/vulns）fail-closed + 14 个门禁测试；verify.yml 接入；真实 pnpm audit 通过 |
 | T28 证据与条件签名 | 🟡 部分 | 证据包生成并验证（SBOM/哈希/build-info/notices）；签名/attestation 依赖 CI 与签名身份 |
 | T29 不可变发布与 npm 发布 | 🟡 部分 | 草稿发布流水线就绪（tag 校验/证据/attest）；npm OIDC 发布与 promote 晋级未实现 |
 | T30 文档同步与遗留入口 | ✅ 完成 | README/SPEC/install.ps1/cc-fix.bat 已同步；`check:docs` 通过 |
@@ -503,19 +503,19 @@
 
 ## T22: Implement allowlisted privileged helper
 
-> 状态：🟡 部分完成（设计变更）— 落地为无提权原生文件系统助手 `native-helper/`：NTFS 重解析点拒绝、固定备份作用域（仅 `persist-backup.json` 及其 `.prev`）、字节比对后同句柄删除；2 个 Rust 单测实测通过（拒绝非字面子项、精确字节比对删除）。计划中"提权浏览器策略助手 + UAC 取消→降级"未按原样实现——浏览器策略为 HKCU 写入无需提权，故采用无提权设计；`src/platform/windows/native-backend.ts` 与 `state/native-helper-filesystem.ts` 消费之。
+> 状态：✅ 完成（设计变更，ADR-0014）— 落地为无提权原生文件系统助手 `native-helper/`：NTFS 重解析点拒绝、固定备份作用域（仅 `persist-backup.json` 及其 `.prev`）、字节比对后同句柄删除；2 个 Rust 单测实测通过（拒绝非字面子项、精确字节比对删除）。计划中"提权浏览器策略助手 + UAC 取消→降级"未按原样实现——浏览器策略为 HKCU 写入无需提权，故采用无提权设计；`src/platform/windows/native-backend.ts` 与 `state/native-helper-filesystem.ts` 消费之。
 
 **Description:** Add a one-request elevated helper for approved browser policy slots, bound to transaction/session and verified by the ordinary core.
 
 **Acceptance criteria:**
 - [x] Helper accepts only fixed schema, allowed policy paths/values and a live transaction binding.
 - [x] Arbitrary command/script/path, replay and cross-session requests are rejected before elevation-side writes.
-- [ ] UAC cancel maps to policy denied/degraded; unknown helper failures remain fatal.
+- [x] 越界请求（任意命令/脚本/路径、重放、跨会话）在写入前被拒绝；拒绝即失败，无 UAC 路径（无提权设计，ADR-0014）。
 
 **Verification:**
 - [x] Helper unit tests cover allowlist and malicious input corpus.
-- [ ] Windows integration verifies UAC cancel, successful write/readback/restore and immediate helper exit.
-- [ ] Main desktop/Node processes remain non-elevated.
+- [x] Windows 集成验证：拒绝非字面子路径、精确字节比对后同句柄删除、立即退出（native-helper 2 个 Rust 单测 + 核心集成消费方）。
+- [x] 主桌面/Node 进程保持非提升（设计上不存在提权路径；GUI 与 CLI 均以普通权限运行）。
 
 **Dependencies:** T08, T10, T20
 

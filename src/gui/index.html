@@ -11,6 +11,7 @@
     --green: #22c55e; --yellow: #eab308; --red: #ef4444; --orange: #f97316;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   /* 显式加入中文字体，避免仅 Segoe UI / monospace 时 CJK 字形回退失败（豆腐块/部分丢失） */
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
@@ -145,7 +146,7 @@
     <h1>🛡️ CC-Fix 环境安全检测</h1>
     <p>Claude Code 环境风险可视化面板</p>
   </header>
-  <div class="status-bar">
+  <div class="status-bar" role="status" aria-live="polite" aria-label="环境状态">
     <div class="status-dot" id="statusDot"></div>
     <span id="statusText">检测中...</span>
   </div>
@@ -179,7 +180,7 @@
     <div id="historyList"></div>
   </details>
 </div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-label="通知"></div>
 <script>
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -609,7 +610,7 @@ async function loadStatus() {
     const level = document.getElementById("levelSelect");
     if (level && status.mode !== "daily") level.value = status.mode;
     const needsRecovery = status.transaction?.kind !== "none" || status.health === "recovery_required";
-    if (hint) { hint.style.display = needsRecovery ? "" : "none"; hint.textContent = "存在未完成事务，请先恢复"; }
+    if (hint) { hint.style.display = needsRecovery ? "inline" : "none"; hint.textContent = "存在未完成事务，请先恢复"; }
     // 未对齐策略槽（ADR-0011 每槽降级）：逐槽展示
     const policyHint = $("#browserHint");
     const POLICY_SLOT_LABELS = {
@@ -666,9 +667,11 @@ function render(data) {
 
   html += `<div class="region-select">
     <label for="regionSelect">🌍 目标地区</label>
-    <select id="regionSelect"><option value="us">🇺🇸 美国</option></select>
+    <label for="regionSelect" class="visually-hidden">目标地区</label>
+    <select id="regionSelect" aria-label="目标地区"><option value="us">🇺🇸 美国</option></select>
     <label for="levelSelect">🛡️ 保护强度</label>
-    <select id="levelSelect"><option value="standard">标准（推荐）</option><option value="deep">深度</option></select>
+    <label for="levelSelect" class="visually-hidden">保护强度</label>
+    <select id="levelSelect" aria-label="保护强度"><option value="standard">标准（推荐）</option><option value="deep">深度</option></select>
     <span class="region-hint" id="regionHint">存在未完成事务，请先恢复</span>
   </div>`;
 
