@@ -130,14 +130,22 @@ try {
     # 收敛兜底：无论断言成败都还原日常配置（幂等）；能力缺失时 persist 未启动，无需兜底
     if ($SmokeSupported) { & "$InstallRoot\bin\cc-fix.cmd" persist off *> $null }
     foreach ($Path in $SmokePolicySlots.Keys) {
-      foreach ($Name in $SmokePolicySlots[$Path]) { & reg.exe delete $Path /v $Name /f 2>$null | Out-Null }
+      foreach ($Name in $SmokePolicySlots[$Path]) {
+        # ErrorActionPreference=Stop 下 reg.exe 找不到键时 stderr 会转成终止错误：
+        # 兜底清理必须吞掉（2>$null 只吞 stderr 文本，不吞 NativeCommandError）。
+        $Deleted = & reg.exe delete $Path /v $Name /f 2>$null
+        if ($LASTEXITCODE -ne 0) { $null = $Deleted }
+      }
     }
     foreach ($Name in @('TZ', 'LANG', 'LC_ALL')) {
       $Before = $SmokeEnvBefore[$Name]
       if ($null -eq $Before) { Remove-ItemProperty 'HKCU:\Environment' -Name $Name -ErrorAction SilentlyContinue }
       else { Set-ItemProperty 'HKCU:\Environment' -Name $Name -Value $Before }
     }
-    if ($SmokeTzBefore) { & tzutil.exe /s $SmokeTzBefore | Out-Null }
+    if ($SmokeTzBefore) {
+      $Restored = & tzutil.exe /s $SmokeTzBefore 2>$null
+      if ($LASTEXITCODE -ne 0) { $null = $Restored }
+    }
   }
 
   } else {
@@ -185,6 +193,12 @@ try {
     Write-Host "  current  = '$CurrentPath'"
     Write-Host "  type     = $PathType"
     Write-Host "  reg      = $RawReg"
+    @(
+      "original = $OriginalPath",
+      "current  = $CurrentPath",
+      "type     = $PathType",
+      "reg      = $RawReg"
+    ) | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'path-mismatch.txt') -Encoding utf8
     throw 'Uninstall did not restore the exact original PATH'
   }
   $NetworkAfter = Get-NetworkFingerprint
