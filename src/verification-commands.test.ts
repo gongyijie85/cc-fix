@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,8 +9,6 @@ const packageJson = JSON.parse(
   await readFile(path.join(repositoryRoot, "package.json"), "utf8"),
 ) as { scripts: Record<string, string> };
 
-const notImplementedStages = [
-] as const;
 
 const implementedStages = [
   "test:integration",
@@ -24,12 +21,6 @@ const implementedStages = [
   "release:bundle",
 ] as const;
 
-function runUnavailableStage(stage: string) {
-  return spawnSync(process.execPath, [path.join(repositoryRoot, "scripts", "not-implemented-stage.mjs"), stage], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
-}
 
 describe("verification command contract", () => {
   it("keeps existing commands and provides a real coverage command", () => {
@@ -39,21 +30,6 @@ describe("verification command contract", () => {
     expect(packageJson.scripts["test:coverage"]).toBe("node scripts/run-coverage.mjs");
   });
 
-  it.each(notImplementedStages)("fails unavailable stage %s with its stable identifier", (stage) => {
-    expect(packageJson.scripts[stage]).toBe(`node scripts/not-implemented-stage.mjs ${stage}`);
-
-    const result = runUnavailableStage(stage);
-
-    expect(result.status).toBe(78);
-    expect(result.stderr).toContain(`CC_FIX_STAGE_NOT_IMPLEMENTED: ${stage}`);
-    expect(result.stdout).not.toMatch(/pass|success/i);
-  });
-
-  it("does not classify any target stage as skipped by policy", () => {
-    for (const stage of notImplementedStages) {
-      expect(packageJson.scripts[stage]).not.toMatch(/skip|exit 0/i);
-    }
-  });
 
   it.each(implementedStages)("routes implemented stage %s to a real command", (stage) => {
     expect(packageJson.scripts[stage]).toBeDefined();

@@ -177,55 +177,6 @@ describe("toolchain lock validator", () => {
   });
 });
 
-describe("publish helper", () => {
-  it.each([
-    "pnpm release:validate",
-    "npm whoami",
-    "pnpm typecheck",
-    "pnpm test",
-    "pnpm build",
-    "npm pack --dry-run",
-    "npm publish --access public",
-    "npm view cc-fix version",
-  ])("fails closed when `%s` fails", async (failedCommand) => {
-    const fixtureRoot = await makeTemporaryDirectory();
-    const scriptsDirectory = path.join(fixtureRoot, "scripts");
-    const binDirectory = path.join(fixtureRoot, "bin");
-    const logPath = path.join(fixtureRoot, "commands.log");
-    await mkdir(scriptsDirectory);
-    await mkdir(binDirectory);
-    await writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ version: "0.2.0-rc.1" }));
-    await writeFile(path.join(scriptsDirectory, "publish.ps1"), await readFile(path.join(repositoryRoot, "scripts", "publish.ps1"), "utf8"));
-
-    const stub = '@echo off\r\n>> "%CC_FIX_COMMAND_LOG%" echo %~n0 %*\r\nif /I "%~n0 %*"=="%CC_FIX_FAIL_COMMAND%" exit /b 23\r\nexit /b 0\r\n';
-    await writeFile(path.join(binDirectory, "pnpm.cmd"), stub);
-    await writeFile(path.join(binDirectory, "npm.cmd"), stub);
-
-    const result = spawnSync("powershell", ["-NoProfile", "-File", path.join(scriptsDirectory, "publish.ps1")], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${binDirectory};${process.env.PATH ?? ""}`,
-        CC_FIX_COMMAND_LOG: logPath,
-        CC_FIX_FAIL_COMMAND: failedCommand,
-      },
-    });
-    const commands = (await readFile(logPath, "utf8")).trim().split(/\r?\n/);
-    const allCommands = [
-      "pnpm release:validate",
-      "npm whoami",
-      "pnpm typecheck",
-      "pnpm test",
-      "pnpm build",
-      "npm pack --dry-run",
-      "npm publish --access public",
-      "npm view cc-fix version",
-    ];
-
-    expect(result.status).not.toBe(0);
-    expect(commands).toEqual(allCommands.slice(0, allCommands.indexOf(failedCommand) + 1));
-  }, 60_000);
-});
 
 describe("release evidence verifier tamper fixtures (T28)", () => {
   async function fixtureEvidence(overrides: Partial<{

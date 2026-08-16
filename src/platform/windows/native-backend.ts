@@ -4,7 +4,7 @@ import { BROWSER_POLICY_SLOTS, type BrowserPolicySlotId } from '../../state/sche
 import { createBrowserPolicyProfileAuthority, type BrowserPolicyRegistry, type BrowserPolicyWriteResult } from './browser-policy.js';
 import type { ExecutableAuthority } from '../../persist/authority.js';
 import type { PersistStepId } from '../../persist/steps.js';
-import { createEnvironmentProfileAuthority, type EnvironmentRegistry, type ManagedEnvironmentKey } from './environment.js';
+import { createEnvironmentProfileAuthority, type EnvironmentRegistry } from './environment.js';
 import { createLocaleAuthorities, type LocaleRegistry } from './locale.js';
 import { createTimezoneAuthority, type TimezoneSystem } from './timezone.js';
 
@@ -176,4 +176,3 @@ export function createNativePersistAuthoritySet(runner: WindowsCommandRunner = r
   });
 }
 
-export const NATIVE_MANAGED_ENVIRONMENT_KEYS: readonly ManagedEnvironmentKey[] = ['TZ', 'LANG', 'LC_ALL'];

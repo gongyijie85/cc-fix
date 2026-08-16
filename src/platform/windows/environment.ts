@@ -9,18 +9,6 @@ export interface EnvironmentRegistry {
   remove(key: ManagedEnvironmentKey): Promise<void>;
 }
 
-export function createEnvironmentAuthority(
-  registry: EnvironmentRegistry,
-  key: ManagedEnvironmentKey,
-): WindowsAuthority<string> {
-  if (!MANAGED_ENVIRONMENT_KEYS.includes(key)) throw new Error('Unmanaged environment key');
-  return createWindowsAuthority(`environment.${key}`, {
-    readRaw: () => registry.read(key),
-    writeRaw: (value) => registry.write(key, value),
-    removeRaw: () => registry.remove(key),
-    validate: (value): value is string => typeof value === 'string',
-  });
-}
 
 export type EnvironmentProfile = { TZ: string | null; LANG: string | null; LC_ALL: string | null };
 

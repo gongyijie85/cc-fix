@@ -1,8 +1,5 @@
 import { createWindowsAuthority, type WindowsAuthority } from './authority.js';
 
-/** 地区目录（targets.ts 期望值来源）当前覆盖的 Windows 时区 id；只作目录文档，不作运行时闸门（#35）。 */
-export const APPROVED_WINDOWS_TIMEZONES = ['Eastern Standard Time', 'GMT Standard Time', 'Tokyo Standard Time', 'Singapore Standard Time'] as const;
-export type ApprovedWindowsTimezone = (typeof APPROVED_WINDOWS_TIMEZONES)[number];
 export interface TimezoneSystem { read(): Promise<string | null>; write(id: string): Promise<void>; }
 
 const TIMEZONE_ID_PATTERN = /^[\x20-\x7E]{1,128}$/u;

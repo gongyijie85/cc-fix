@@ -61,12 +61,6 @@ export type CheckResponse = {
   recommendations: string[];
 };
 
-export type LegacyPersistState = {
-  enabled: boolean;
-  region: AccessRegionCode;
-  envVars: Record<string, string | null>;
-  backupFile: string | null;
-};
 
 export type TargetRegion = {
   code: RegionCode;

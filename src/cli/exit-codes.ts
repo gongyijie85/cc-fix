@@ -44,17 +44,6 @@ export type CliErrorId =
   | "STATE_INVALID"
   | "INTERNAL";
 
-export const EXIT_CODE_TABLE: Readonly<Record<number, string>> = Object.freeze({
-  [EXIT_OK]: "healthy success 或 no-op",
-  [EXIT_DEGRADED]: "protection target 已提交，但 health=degraded",
-  [EXIT_INVALID_INPUT]: "非法参数、地区或冲突参数",
-  [EXIT_BUSY]: "活事务/活锁导致 busy",
-  [EXIT_RECOVERY_REQUIRED]: "recovery_required，拒绝新转换",
-  [EXIT_COMPENSATED]: "操作失败但补偿已验证，旧 target 保持",
-  [EXIT_INCOMPLETE_RECOVERY]: "操作失败且补偿/恢复不完整",
-  [EXIT_STATE_INVALID]: "状态、备份或 schema 校验失败",
-  [EXIT_INTERNAL]: "启动/前置组件/内部不可分类错误",
-});
 
 /** 供 CLI 层抛出的已分类失败；顶级 catch 只做机械映射。 */
 export class CliFailure extends Error {

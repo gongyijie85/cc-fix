@@ -60,10 +60,4 @@ describe("public RegionCode naming contract", () => {
     );
   });
 
-  it("labels the pre-v0.2 persistence shape as legacy", () => {
-    const detectionTypes = readFileSync(resolve(SRC_ROOT, "detection/types.ts"), "utf8");
-
-    expect(detectionTypes).toMatch(/export\s+type\s+LegacyPersistState\b/);
-    expect(detectionTypes).not.toMatch(/export\s+type\s+PersistState\b/);
-  });
 });
