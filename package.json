@@ -28,6 +28,8 @@
     "check:version": "node scripts/check-version-consistency.mjs",
     "check:docs": "node scripts/check-doc-consistency.mjs",
     "check:toolchain": "node scripts/validate-toolchain-lock.mjs",
+    "check:ci-gates": "node scripts/ci/check-versions.mjs && node scripts/ci/check-licenses.mjs && node scripts/ci/check-secrets.mjs",
+    "check:ci-vulns": "node scripts/ci/check-runtime-vulns.mjs",
     "release:validate": "pnpm check:version && pnpm check:toolchain && pnpm check:docs"
   },
   "keywords": [

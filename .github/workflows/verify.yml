@@ -35,6 +35,8 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm test:coverage
+      - run: pnpm check:ci-gates
+      - run: pnpm check:ci-vulns
       - run: cargo test --locked --manifest-path native-helper/Cargo.toml
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Install pinned Inno Setup
