@@ -94,17 +94,20 @@ try {
       if ($null -ne (Get-SmokePolicyValue $Path $Name)) { throw "Persist smoke precondition failed: $Path\$Name already exists" }
     }
   }
-  # 用 TimeZoneInfo 规范 id 而非 tzutil /g 的本地化显示名（中文系统输出“东部标准时间”）
-  $SmokeTzBefore = [System.TimeZoneInfo]::Local.Id
+  # 基线时区用 tzutil /g 捕获：.NET 的 [System.TimeZoneInfo]::Local 会缓存进程启动时的值，
+  # persist on 经 tzutil 跨进程改时区后缓存不刷新，断言会读到旧值而假失败。
+  $SmokeTzBefore = (tzutil /g)
   try {
     & "$InstallRoot\bin\cc-fix.cmd" persist on --region us --level standard | Out-File -LiteralPath (Join-Path $EvidenceRoot 'persist-on.log') -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw "persist on failed with exit code $LASTEXITCODE" }
     $StatePath = Join-Path $TestAppData 'cc-fix\state.json'
     if (-not (Test-Path -LiteralPath $StatePath)) { throw 'state.json missing after persist on' }
     $State = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    # durable envelope（cc-fix-state-v1）把事实放在 payload 内；旧平铺格式兼容读取。
+    if ($null -ne $State.payload) { $State = $State.payload }
     if ($null -eq $State.committedTarget -or $State.committedTarget.mode -ne 'standard' -or $State.committedTarget.region -ne 'us' -or $null -ne $State.activeTransactionId) { throw ('State was not committed: ' + ($State | ConvertTo-Json -Compress)) }
     if ((Get-SmokeEnvValue 'TZ') -ne 'America/New_York') { throw ('TZ was not committed: ' + (Get-SmokeEnvValue 'TZ')) }
-    if ([System.TimeZoneInfo]::Local.Id -ne 'Eastern Standard Time') { throw ('System timezone was not committed: ' + [System.TimeZoneInfo]::Local.Id) }
+    if ((tzutil /g) -ne 'Eastern Standard Time') { throw ('System timezone was not committed: ' + (tzutil /g)) }
     foreach ($Path in $SmokePolicySlots.Keys) {
       foreach ($Name in $SmokePolicySlots[$Path]) {
         $Expected = switch ($Name) { 'AcceptLanguage' { 'en-US,en' } 'DefaultWebRtcIPHandlingPolicy' { 'disable_non_proxied_udp' } 'ApplicationLocaleValue' { 'en-US' } }
@@ -123,18 +126,18 @@ try {
       $Before = $SmokeEnvBefore[$Name]; $After = Get-SmokeEnvValue $Name
       if ($Before -ne $After) { throw ("Env not restored: $Name before '$Before' after '$After'") }
     }
-    if ([System.TimeZoneInfo]::Local.Id -ne $SmokeTzBefore) { throw ('System timezone was not restored: ' + [System.TimeZoneInfo]::Local.Id) }
+    if ((tzutil /g) -ne $SmokeTzBefore) { throw ('System timezone was not restored: ' + (tzutil /g)) }
     $StateAfter = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    if ($null -ne $StateAfter.payload) { $StateAfter = $StateAfter.payload }
     if ($null -ne $StateAfter.committedTarget -or $StateAfter.health -ne 'healthy') { throw 'Daily state was not committed after persist off' }
   } finally {
     # 收敛兜底：无论断言成败都还原日常配置（幂等）；能力缺失时 persist 未启动，无需兜底
     if ($SmokeSupported) { & "$InstallRoot\bin\cc-fix.cmd" persist off *> $null }
     foreach ($Path in $SmokePolicySlots.Keys) {
       foreach ($Name in $SmokePolicySlots[$Path]) {
-        # ErrorActionPreference=Stop 下 reg.exe 找不到键时 stderr 会转成终止错误：
-        # 兜底清理必须吞掉（2>$null 只吞 stderr 文本，不吞 NativeCommandError）。
-        $Deleted = & reg.exe delete $Path /v $Name /f 2>$null
-        if ($LASTEXITCODE -ne 0) { $null = $Deleted }
+        # ErrorActionPreference=Stop 下原生命令写 stderr（即使 2>$null）也会抛
+        # NativeCommandError；兜底清理必须整体吞掉，不得掩盖冒烟的原始失败。
+        try { & reg.exe delete $Path /v $Name /f 2>$null | Out-Null } catch { }
       }
     }
     foreach ($Name in @('TZ', 'LANG', 'LC_ALL')) {
@@ -143,8 +146,7 @@ try {
       else { Set-ItemProperty 'HKCU:\Environment' -Name $Name -Value $Before }
     }
     if ($SmokeTzBefore) {
-      $Restored = & tzutil.exe /s $SmokeTzBefore 2>$null
-      if ($LASTEXITCODE -ne 0) { $null = $Restored }
+      try { & tzutil.exe /s $SmokeTzBefore 2>$null | Out-Null } catch { }
     }
   }
 
