@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod logging;
+
+use logging::DiagnosticLog;
 use serde::Deserialize;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -180,18 +183,35 @@ fn main() {
             }
         }))
         .setup(|app| {
+            // T21：脱敏滚动诊断日志（%APPDATA%\cc-fix\logs\desktop.log）
+            let log_directory = configured_path(
+                "CC_FIX_DIAGNOSTIC_DIR",
+                std::env::var_os("APPDATA")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("cc-fix")
+                    .join("logs"),
+            );
+            let diagnostic_log = DiagnosticLog::new(log_directory);
+            app.manage(diagnostic_log);
+            let diagnostic_log = app.state::<DiagnosticLog>();
+            diagnostic_log.record("INFO", "desktop shell starting");
+
             let (mut child, ready) = match spawn_sidecar() {
                 Ok(result) => result,
                 Err(error) => {
+                    diagnostic_log.record("ERROR", &format!("sidecar spawn failed: {error}"));
                     show_native_error(&error);
                     return Err(std::io::Error::other(error).into());
                 }
             };
+            diagnostic_log.record("INFO", "sidecar ready; session established");
             #[cfg(windows)]
             let job = match assign_kill_on_close_job(&child) {
                 Ok(job) => job,
                 Err(error) => {
                     let _ = child.kill();
+                    diagnostic_log.record("ERROR", &format!("sidecar job assignment failed: {error}"));
                     show_native_error(&error);
                     return Err(std::io::Error::other(error).into());
                 }
@@ -221,6 +241,9 @@ fn main() {
             event,
             tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
         ) {
+            if let Some(log) = app.try_state::<DiagnosticLog>() {
+                log.record("INFO", "desktop shell exiting; sidecar termination follows");
+            }
             if let Some(state) = app.try_state::<Sidecar>() {
                 if let Ok(mut child) = state.child.lock() {
                     if let Some(mut process) = child.take() {
