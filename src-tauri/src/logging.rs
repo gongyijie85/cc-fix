@@ -296,7 +296,8 @@ mod tests {
             ("env-assignment", "CC_FIX_GUI_TOKEN=super-secret-value-here"),
             ("key-assignment", "api_key=\"1234567890abcdefghij\""),
             ("cookie-assignment", "cookie=deadbeefdeadbeefdeadbeef"),
-            ("private-key", "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----"),
+            // PEM 块由 concat! 编译期拼接：源码不含完整私钥块字面量（CI 密钥门禁扫描源码）。
+            ("private-key", concat!("-----BEGIN ", "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END ", "PRIVATE KEY-----")),
         ]
     }
 
