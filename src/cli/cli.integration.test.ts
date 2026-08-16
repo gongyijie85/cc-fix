@@ -104,14 +104,23 @@ describe("spawned CLI bundle contract (T13)", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  // 网络敏感用例（多源 IP 情报各带 5s 超时）：偶发慢速时手动重试一次，避免 CI/本机抖动误报。
   it("check --json exits 0 with a schema-versioned envelope (network-tolerant)", async () => {
-    const root = await fixtureRoot();
-    const { exitCode, stdout } = await runCli(["check", "--json"], root);
+    let attempt = 0;
+    let exitCode = -1;
+    let stdout = "";
+    while (attempt < 2 && exitCode !== 0) {
+      const root = await fixtureRoot();
+      const result = await runCli(["check", "--json"], root);
+      exitCode = result.exitCode;
+      stdout = result.stdout;
+      attempt += 1;
+      await rm(root, { recursive: true, force: true });
+    }
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout) as { schemaVersion: number; score: number };
     expect(parsed.schemaVersion).toBe(1);
     expect(typeof parsed.score).toBe("number");
-    await rm(root, { recursive: true, force: true });
   });
 });
 
