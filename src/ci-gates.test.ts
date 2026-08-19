@@ -1,5 +1,5 @@
 // CI 门禁脚本测试（T27）：license / vuln / secret / version 四门禁 fail-closed 行为。
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -150,11 +150,68 @@ describe("check-secrets.mjs (T27)", () => {
     expect(result.stderr).toContain("github-token");
   });
 
-  it("honors --allow substrings", async () => {
+  it("fails on unquoted and JSON-shaped generic assignments (issue #56)", async () => {
+    const root = await makeTemporaryDirectory();
+    // 源码侧拆分拼接：夹具内容不作为完整字面量出现在仓库源码里。
+    const unquoted = "API_" + "KEY=abcdefghij0123456789";
+    const jsonShaped = '"api' + '_key": "abcdefghijklmnop1234"';
+    await writeFile(path.join(root, "env.txt"), `${unquoted}\n`, "utf8");
+    await writeFile(path.join(root, "conf.json"), `${jsonShaped}\n`, "utf8");
+    const result = runCiScript("check-secrets.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("env.txt:1");
+    expect(result.stderr).toContain("generic-assignment");
+    expect(result.stderr).toContain("conf.json:1");
+  });
+
+  it("fails closed on a broken symlink instead of skipping it (issue #56)", async () => {
+    const root = await makeTemporaryDirectory();
+    await symlink(path.join(root, "missing-target"), path.join(root, "stale.link"), "junction");
+    const result = runCiScript("check-secrets.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("unreadable");
+    expect(result.stderr).toContain("stale.link");
+  });
+
+  it("scans secrets reachable through a directory link even when the real directory is skipped (issue #56)", async () => {
+    const token = "ghp_" + "FfEdCbA987654321FfEdCbA987654321FfEdCbA0";
+    const root = await makeTemporaryDirectory();
+    // 真实目录放在按名跳过的 release/ 下；junction 别名不匹配跳过名单 → 必须被扫描。
+    const hidden = path.join(root, "release", "hidden");
+    await mkdir(hidden, { recursive: true });
+    await writeFile(path.join(hidden, "leak.txt"), `const token = \"${token}\";\n`, "utf8");
+    await symlink(hidden, path.join(root, "aliasdir"), "junction");
+    const result = runCiScript("check-secrets.mjs", ["--root", root]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("github-token");
+    expect(result.stderr).toContain("aliasdir");
+  });
+
+  it("honors --allow only for aliases registered in the reviewed allowlist (issue #56)", async () => {
     const token = "ghp_" + "AllowMe0123456789AllowMe0123456789AllowMe00";
     const root = await makeTemporaryDirectory();
+    const allowlist = path.join(root, "secrets-allowlist.txt");
+    await writeFile(allowlist, `fixture-token=${token}\n`, "utf8");
     await writeFile(path.join(root, "fixture.txt"), `const fixture = \"${token}\";\n`, "utf8");
-    const result = runCiScript("check-secrets.mjs", ["--root", root, "--allow", token]);
-    expect(result.status).toBe(0);
+    const allowed = runCiScript("check-secrets.mjs", ["--root", root, "--allowlist", allowlist, "--allow", "fixture-token"]);
+    expect(allowed.status).toBe(0);
+    expect(allowed.stdout).toContain("CC_FIX_SECRETS_OK");
+    // 未知别名（CI 调用行被篡改的形态）fail-closed，且不产生"白名单文件本身泄漏"误报。
+    const unknown = runCiScript("check-secrets.mjs", ["--root", root, "--allowlist", allowlist, "--allow", "attacker-chosen-alias"]);
+    expect(unknown.status).toBe(1);
+    expect(unknown.stderr).toContain("unknown allow alias");
+    // 未登记任何别名时不放行任何内容。
+    const bare = runCiScript("check-secrets.mjs", ["--root", root, "--allowlist", allowlist]);
+    expect(bare.status).toBe(1);
+    expect(bare.stderr).toContain("fixture.txt:1");
+  });
+
+  it("fails closed on a malformed allowlist line (issue #56)", async () => {
+    const root = await makeTemporaryDirectory();
+    const allowlist = path.join(root, "secrets-allowlist.txt");
+    await writeFile(allowlist, "# comment\nnot-a-pair-line\n", "utf8");
+    const result = runCiScript("check-secrets.mjs", ["--root", root, "--allowlist", allowlist]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("malformed allowlist line");
   });
 });
