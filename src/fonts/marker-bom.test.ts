@@ -13,4 +13,20 @@ describe('privileged marker parsing (BOM regression)', () => {
     expect(parsePrivilegedMarker(JSON.stringify({ ok: false, error: 'x' }))).toEqual({ ok: false, error: 'x' });
     expect(parsePrivilegedMarker('not json')).toBeUndefined();
   });
+
+  it('rejects forged markers whose nonce does not match (issue #49)', () => {
+    const forged = JSON.stringify({ ok: true, pendingReboot: [], nonce: 'attacker-guess' });
+    expect(parsePrivilegedMarker(forged, 'real-nonce')).toBeUndefined();
+    const authentic = JSON.stringify({ ok: true, pendingReboot: ['msyh.ttc'], nonce: 'real-nonce' });
+    expect(parsePrivilegedMarker(String.fromCharCode(0xFEFF) + authentic, 'real-nonce')).toEqual({ ok: true, pendingReboot: ['msyh.ttc'] });
+  });
+
+  it('filters unsafe pendingReboot names and truncates oversized errors (issue #49)', () => {
+    const hostile = JSON.stringify({ ok: true, pendingReboot: ['..\\evil.ttc', 'a.ttf.exe', 'msyh.ttc'], nonce: 'n' });
+    expect(parsePrivilegedMarker(hostile, 'n')).toEqual({ ok: true, pendingReboot: ['msyh.ttc'] });
+    const longError = JSON.stringify({ ok: false, error: 'x'.repeat(900), nonce: 'n' });
+    const parsed = parsePrivilegedMarker(longError, 'n');
+    expect(parsed?.ok).toBe(false);
+    if (parsed?.ok === false) expect(parsed.error.length).toBeLessThanOrEqual(501);
+  });
 });

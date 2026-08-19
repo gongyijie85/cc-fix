@@ -26,3 +26,11 @@
   - M1（与 H1 同批落地）：PowerShell 探测改为 `SilentlyContinue` + `MISSING` 标记——"进程确认不存在"与"查询失败"分离；`isSameProcess` 查询失败一律上抛，接管路径不会把活着的持锁进程误判为死亡（避免双持锁并发写）
   - L1：`acquireStateMutationLock` 递归重试上限 16 次，持续竞争收敛为显式失败；L2：瞬时心跳失败被后续成功清除，release 不再误抛旧错误
   - 测试：新增 10 个用例——真实文件锁 + 真实 PowerShell 的 kill -9 等价模拟（死 PID 残留锁 → recover 接管 → 锁文件删除 → 后续操作直接成功）、1ms 心跳持续竞态 release、store 层并发 claim 串行化、lockId 匹配、查询失败上抛、递归上限、仅 recover 操作接管的编排契约、root 持有下 scoped 接管授权；全量 63 文件 627 用例通过
+
+- **fix(fonts): 关闭字体特权助手的 UAC 提权代理攻击面（issue #49）**
+  - **签名方案决策**：采用零落盘 EncodedCommand 方案（无 Authenticode 依赖）——个人开发者无证书渠道（CA 基本停发个人 OV、EV 需组织主体），且"释放签名脚本再执行"仍有释放-执行篡改窗口；脚本与参数以 base64(UTF-16LE) 编入命令行快照，磁盘上不存在可替换的 `font-helper.ps1`/`font-helper-args.json`，攻击窗口从"任意时间替换常驻文件"缩小为零
+  - **提权端纵深防御**：备份目录与注册表 JSON 必须 `GetFullPath` 后锚定 `font-backup` 子树（拒绝 `..` 与前缀碰撞）；备份内容拒绝 reparse point（符号链接逃逸）；移除名单不传输——提权端按同一 catalog 模式自行枚举
+  - **弃用 `reg.exe import`**（任意 HKLM 写入 → IFEO/Run 键/服务持久化提权链）：注册表还原改为白名单 JSON 逐值 `New-ItemProperty` 写回固定 Fonts 键（值名/数据形状校验，数据含路径时前缀必须为 Fonts 目录）；备份格式改为 `fonts-hklm.json`（非提权读键 + 中文字体项过滤），旧版 `.reg` 备份还原时自动转换（Node 端解析 REGEDIT5，同样过滤）
+  - **结果标记防伪造**：marker 写随机文件名（`font-helper-result-<uuid>.json`）+ 一次性 256 位 nonce，伪造 marker（含预写 `font-helper-result.json` 旧路径）被忽略；pendingReboot 逐项过文件名白名单、error 截断 500 字符
+  - ADR-0013 决策 3-6 更新，残余风险（UAC 弹窗仍显示 powershell.exe、nonce 对能读他进程命令行者不保密）已记录
+  - 测试：新增 17 个用例（脚本组装结构断言、Node 端锚定预检、reg 解析含非 Fonts 段忽略/转义、nonce 拒绝与内容过滤、旧 .reg 转换、真实 PS 5.1 冒烟——非提权运行验证语法/锚定/错误 marker 通道）；全量 65 文件 641 用例通过

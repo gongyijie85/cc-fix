@@ -1,0 +1,78 @@
+import { describe, expect, it } from 'vitest';
+import { buildElevationLauncherArgs, composeElevatedFontScript, encodePowerShellCommand } from './elevated-script.js';
+
+const anchor = 'C:\\Users\\user\\AppData\\Roaming\\cc-fix\\font-backup';
+
+function compose(request: Parameters<typeof composeElevatedFontScript>[0]['request']) {
+  return composeElevatedFontScript({
+    request,
+    anchorRoot: anchor,
+    markerPath: 'C:\\Users\\user\\AppData\\Roaming\\cc-fix\\font-helper-result-abc.json',
+    nonce: 'deadbeef'.repeat(8),
+  });
+}
+
+describe('elevated font script composition (issue #49)', () => {
+  it('never touches disk-based script or args files (-File / reg.exe import 消失)', () => {
+    for (const script of [compose({ mode: 'remove' }), compose({ mode: 'restore', backupDir: anchor + '\\2026\\fonts', regJsonPath: anchor + '\\2026\\fonts-hklm.json' })]) {
+      expect(script).not.toContain('reg.exe import');
+      expect(script).not.toContain('-File');
+      expect(script).not.toContain('font-helper.ps1');
+      expect(script).not.toContain('font-helper-args.json');
+    }
+  });
+
+  it('embeds the anchor, nonce, marker path and request as read-only literals', () => {
+    const script = compose({ mode: 'restore', backupDir: anchor + '\\2026\\fonts', regJsonPath: anchor + '\\2026\\fonts-hklm.json' });
+    expect(script).toContain(`$anchor = '${anchor}\\'`);
+    expect(script).toContain("$nonce = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'");
+    expect(script).toContain('font-helper-result-abc.json');
+    expect(script).toContain(`| ConvertFrom-Json`);
+    // 锚定与白名单校验齐全
+    expect(script).toContain('Assert-Anchored');
+    expect(script).toContain('GetFullPath');
+    expect(script).toContain('ReparsePoint');
+    expect(script).toContain('unsafe registry value name');
+    expect(script).toContain('unsafe registry value data');
+    expect(script).toContain('New-ItemProperty -Path $fontKey');
+    // nonce 随 marker 写出
+    expect(script).toContain('$m.nonce = $nonce');
+  });
+
+  it('enumerates the removal list inside the elevated context from the shared catalog', () => {
+    const script = compose({ mode: 'remove' });
+    expect(script).toContain('Get-ChildItem -LiteralPath $fontsDir');
+    expect(script).toMatch(/msyh/);
+    expect(script).toMatch(/simsun/);
+    // 名单不再作为参数传输
+    expect(script).not.toContain('fonts":[');
+  });
+
+  it('escapes single quotes in embedded literals', () => {
+    const script = composeElevatedFontScript({
+      request: { mode: 'restore', backupDir: "C:\\dir with ' quote\\fonts" },
+      anchorRoot: anchor,
+      markerPath: 'C:\\m.json',
+      nonce: 'n',
+    });
+    // 参数经 JSON 内嵌：路径里的单引号在 PS 单引号字符串中转义为 ''
+    expect(script).toContain('"backupDir":"C:\\\\dir with \'\' quote\\\\fonts"');
+  });
+
+  it('builds a launcher argv well under the Windows command-line limit', () => {
+    const script = compose({ mode: 'restore', backupDir: anchor + '\\2026\\fonts', regJsonPath: anchor + '\\2026\\fonts-hklm.json' });
+    const argv = buildElevationLauncherArgs(script);
+    expect(argv.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
+    const total = argv.join(' ').length;
+    expect(total).toBeLessThan(20_000);
+    // 内层 base64 经 UTF-16LE 编码可无损往返（EncodedCommand 约定）
+    const inner = /-EncodedCommand','([A-Za-z0-9+/=]+)'\)/.exec(argv[3]!)!;
+    expect(inner).not.toBeNull();
+    expect(Buffer.from(inner[1]!, 'base64').toString('utf16le')).toBe(script);
+  });
+
+  it('round-trips the script through the encoded command transport', () => {
+    const script = compose({ mode: 'remove' });
+    expect(Buffer.from(encodePowerShellCommand(script), 'base64').toString('utf16le')).toBe(script);
+  });
+});
