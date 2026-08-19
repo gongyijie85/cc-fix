@@ -17,6 +17,7 @@ import { parseRegionCode, resolveRegion } from "./domain/region.js";
 import { resolveProtectionRequest } from "./domain/protection.js";
 import {
   CLI_SCHEMA_VERSION,
+  EXIT_DEGRADED,
   EXIT_INVALID_INPUT,
   CliFailure,
   classifyError,
@@ -138,13 +139,20 @@ persistCmd
         "保护转换失败，已完整回滚；系统仍保持原模式",
       );
     }
+    // degraded 非错误：事务已提交，仅健康降级（契约退出码 2）；不 throw，正常输出后以退出码示意。
+    if (result.kind === "degraded") {
+      process.exitCode = EXIT_DEGRADED;
+    }
 
     if (options.json) {
       console.log(jsonEnvelope(facts));
       return;
     }
-    const suffix = result.kind === "degraded" ? `（降级：${result.degraded.length} 个浏览器策略槽未对齐）` : "";
-    console.log(chalk.green(`✓ 已提交 ${target.mode} / ${target.region} ${suffix}`));
+    if (result.kind === "degraded") {
+      console.log(chalk.yellow(`✓ 已提交 ${target.mode} / ${target.region}（降级：${result.degraded.length} 个浏览器策略槽未对齐）`));
+    } else {
+      console.log(chalk.green(`✓ 已提交 ${target.mode} / ${target.region}`));
+    }
     console.log(chalk.dim("运行 `cc-fix check` 验证效果；浏览器可能需要重启"));
   });
 

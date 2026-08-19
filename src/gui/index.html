@@ -99,6 +99,7 @@
   .sum-ok { background: rgba(34,197,94,.15); color: var(--green); }
   .sum-fail { background: rgba(239,68,68,.15); color: var(--red); }
   .sum-rollback { background: rgba(249,115,22,.15); color: var(--orange); }
+  .sum-degraded { background: rgba(249,115,22,.15); color: var(--orange); }
   .score-delta { margin-left: auto; font-weight: 700; font-size: 15px; color: var(--green); }
 
   /* 浏览器重启生效提示（ADR-0003）：浏览器运行中时加强显示 */
@@ -296,6 +297,7 @@ function showSummary(event) {
   let html = `<span class="count sum-ok">${event.ok} 成功</span>`;
   if (event.fail > 0) html += `<span class="count sum-fail">${event.fail} 失败</span>`;
   if (event.rolledBack) html += `<span class="count sum-rollback">已回滚</span>`;
+  if (event.degraded && event.degraded.length > 0) html += `<span class="count sum-degraded">降级 ${event.degraded.length} 项</span>`;
   bar.innerHTML = html;
 
   const title = $("#fixTitle");
@@ -304,6 +306,9 @@ function showSummary(event) {
     title.style.color = "var(--red)";
   } else if (event.rolledBack) {
     title.textContent = "修复失败，已恢复原状";
+    title.style.color = "var(--orange)";
+  } else if (event.degraded && event.degraded.length > 0) {
+    title.textContent = "修复完成（部分浏览器策略降级）";
     title.style.color = "var(--orange)";
   } else {
     title.textContent = "修复完成";

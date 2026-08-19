@@ -8,7 +8,7 @@ export type FixEvent =
   | { type: "step-start"; stepId: string; name: string; oldValue?: string; newValue?: string; rollback?: boolean }
   | { type: "step-ok";    stepId: string; rollback?: boolean }
   | { type: "step-fail";  stepId: string; error: string; rollback?: boolean }
-  | { type: "summary";    ok: number; fail: number; rolledBack: boolean; fatal?: boolean }
+  | { type: "summary";    ok: number; fail: number; rolledBack: boolean; fatal?: boolean; degraded?: readonly string[] }
   | { type: "browser-hint"; running: string[] }
   | { type: "recheck";    before: number; after: number }
   | { type: "catalog";    signals: ReadonlyArray<{ id: string; label: string }> }

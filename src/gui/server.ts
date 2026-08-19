@@ -133,7 +133,16 @@ async function handleFixOn(orchestrator: ReturnType<typeof createGuiOrchestrator
     orchestrator.broadcast({ type: "step-start", stepId: "persist", name: `切换到 ${target.mode} / ${target.region}` });
     const result = await runtime.protect(target);
     const failed = result.kind === "compensated" || result.kind === "recovery_required";
-    const summary = { type: "summary" as const, ok: failed ? 0 : 1, fail: failed ? 1 : 0, rolledBack: result.kind === "compensated", fatal: result.kind === "recovery_required" };
+    // degraded：事务已提交、非失败（ok=1），但浏览器策略槽有未对齐项，随 summary 单独呈现（issue #50）。
+    const degradedSlots = result.kind === "degraded" ? result.degraded.map((reason) => reason.slot) : undefined;
+    const summary = {
+      type: "summary" as const,
+      ok: failed ? 0 : 1,
+      fail: failed ? 1 : 0,
+      rolledBack: result.kind === "compensated",
+      fatal: result.kind === "recovery_required",
+      ...(degradedSlots ? { degraded: degradedSlots } : {}),
+    };
     if (failed) orchestrator.broadcast({ type: "step-fail", stepId: "persist", error: `事务结果: ${result.kind}` });
     else orchestrator.broadcast({ type: "step-ok", stepId: "persist" });
     if (!failed) orchestrator.markPendingRecheckIfKnown();

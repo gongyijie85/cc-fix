@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runtimeMocks = vi.hoisted(() => ({
-  protect: vi.fn(async () => ({ kind: "committable", degraded: [] })),
+  protect: vi.fn(async (): Promise<{ kind: string; degraded: Array<{ kind: string; slot: string; cause: string }> }> => ({ kind: "committable", degraded: [] })),
   restore: vi.fn(async () => ({ kind: "restored" })),
   recover: vi.fn(async () => ({ kind: "recovered", failed: [] })),
   status: vi.fn(async () => ({ mode: "daily", target: null, preferredRegion: "us", health: "healthy", transaction: { kind: "none" } })),
@@ -166,6 +166,43 @@ describe("POST /api/fix/on region validation", () => {
     expect(text).toContain("browser-hint");
     expect(text).toContain("chrome");
     expect(text).toContain("edge");
+  });
+
+  it("broadcasts a degraded summary carrying unaligned slots without marking failure (issue #50)", async () => {
+    runtimeMocks.protect.mockResolvedValueOnce({
+      kind: "degraded",
+      degraded: [
+        { kind: "browser_policy_unaligned", slot: "edge.accept_language", cause: "access_denied" },
+        { kind: "browser_policy_unaligned", slot: "edge.webrtc", cause: "access_denied" },
+      ],
+    });
+    const origin = await baseUrl();
+    const eventsRes = await fetch(`${origin}/api/events`, { headers: authHeaders });
+    const reader = eventsRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    const deadline = Date.now() + 5000;
+    const readTask = (async () => {
+      while (Date.now() < deadline && !text.includes('"summary"')) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+    })();
+    const response = await fetch(`${origin}/api/fix/on`, { method: "POST", headers: authHeaders });
+    expect(response.status).toBe(202);
+    await readTask;
+    await reader.cancel();
+    const summaryLine = text.split("\n").find((line) => line.startsWith("data: ") && line.includes('"summary"'));
+    expect(summaryLine).toBeDefined();
+    const summary = JSON.parse(summaryLine!.slice("data: ".length)) as {
+      ok: number; fail: number; rolledBack: boolean; fatal: boolean; degraded?: string[];
+    };
+    expect(summary.ok).toBe(1);
+    expect(summary.fail).toBe(0);
+    expect(summary.rolledBack).toBe(false);
+    expect(summary.fatal).toBe(false);
+    expect(summary.degraded).toEqual(["edge.accept_language", "edge.webrtc"]);
   });
 
   it("accepts an explicit deep level and reports committed state status", async () => {
