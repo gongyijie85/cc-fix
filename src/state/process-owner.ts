@@ -7,7 +7,12 @@ export type ProcessOwner = Readonly<{
 
 export interface ProcessInspector {
   current(): Promise<Pick<ProcessOwner, 'pid' | 'startedAtMs'>>;
-  /** Returns false for a missing PID or a process whose creation time differs. */
+  /**
+   * Returns false for a missing PID or a process whose creation time differs.
+   * Throws when liveness cannot be determined (issue #51 M1) — an unknown
+   * state must never be reported as "dead", or the takeover path would
+   * displace a live owner.
+   */
   isSameProcess(owner: Pick<ProcessOwner, 'pid' | 'startedAtMs'>): Promise<boolean>;
 }
 
@@ -29,10 +34,17 @@ export function createWindowsProcessInspector(
   let currentIdentity: Promise<Pick<ProcessOwner, 'pid' | 'startedAtMs'>> | undefined;
   return {
     current: async () => currentIdentity ??= (async () => {
-      const startedAtMs = await queryStartedAtMs(process.pid);
+      let startedAtMs: number | undefined;
+      try {
+        startedAtMs = await queryStartedAtMs(process.pid);
+      } catch (error) {
+        throw new Error('Cannot establish current process start time', { cause: error });
+      }
       if (startedAtMs === undefined) throw new Error('Cannot establish current process start time');
       return { pid: process.pid, startedAtMs };
     })(),
+    // 查询失败必须上抛（issue #51 M1）："无法确认存活"绝不等于"进程已死"，
+    // 否则接管路径会把活着的持锁进程误判为死亡，造成双持锁并发写。
     isSameProcess: async (owner) => (await queryStartedAtMs(owner.pid)) === owner.startedAtMs,
   };
 }

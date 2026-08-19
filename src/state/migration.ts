@@ -19,6 +19,7 @@ import {
   runWithHeldMutationRoot,
   type MutationCoordinatorCapability,
 } from './repository.js';
+import { MutationRecoveryRequiredError } from './mutation-coordinator.js';
 import { statePaths } from './paths.js';
 import {
   BACKUP_AUTHORITY_IDS,
@@ -464,8 +465,22 @@ export async function migrateLegacyProtection(options: LegacyMigrationOptions): 
       lockKey: mutationRootGateKey(options.root), stateRoot: options.root,
       filePath: options.root, operation: 'migration.run',
     });
-  } catch {
-    return result('failed', 'lock_failed', null, false);
+  } catch (error) {
+    // issue #51：崩溃若发生在持锁期间，残留的 root 锁会让任何命令（包括
+    // `persist recover`）在 runtime 创建时死于 lock_failed。迁移自身幂等且
+    // 只在死锁持有者被确认后接管，与恢复流程同批闭环。
+    if (!(error instanceof MutationRecoveryRequiredError)) {
+      return result('failed', 'lock_failed', null, false);
+    }
+    try {
+      lock = await options.coordinator.acquire({
+        lockKey: mutationRootGateKey(options.root), stateRoot: options.root,
+        filePath: options.root, operation: 'migration.run',
+        recoveryComplete: true,
+      });
+    } catch {
+      return result('failed', 'lock_failed', null, false);
+    }
   }
   let migrationResult: MigrationResult;
   let releaseFailed = false;

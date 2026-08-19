@@ -22,7 +22,9 @@ import {
 import {
   BackupRepository,
   backupSnapshotFingerprint,
+  mutationRootGateKey,
   RepositoryError,
+  runWithHeldMutationRoot,
   StateRepository,
   type RepositoryOptions,
   type VerifiedRestoreProof,
@@ -1159,5 +1161,34 @@ describe('BackupRepository immutable snapshots', () => {
     await repository.create(snapshot);
     await repository.deleteAfterVerifiedRestore(verifier.issue(snapshot));
     expect(await readFile(evidence, 'utf8')).toBe('keep');
+  });
+});
+
+describe('scoped-lock takeover under a held root gate (issue #51)', () => {
+  it('authorizes recoveryComplete on scoped locks only while the root gate is held', async () => {
+    const requests: Array<{ lockKey: string; recoveryComplete?: boolean }> = [];
+    const coordinator = issueMutationCoordinatorCapability({
+      acquire: async (request) => {
+        requests.push({ lockKey: request.lockKey, recoveryComplete: request.recoveryComplete });
+        return { release: async () => undefined };
+      },
+    });
+
+    // 场景 A：未持 root 的普通 mutate —— root 与 scoped 请求都不携带 recoveryComplete（fail-closed）。
+    const rootA = await makeRoot();
+    await new StateRepository({ root: rootA, mutationCoordinator: coordinator }).initialize('us');
+    expect(requests.length).toBeGreaterThan(0);
+    expect(requests.every((request) => request.recoveryComplete !== true)).toBe(true);
+
+    // 场景 B：恢复流持 root（runWithHeldMutationRoot）—— root 不重复获取，scoped 请求携带 recoveryComplete。
+    requests.length = 0;
+    const rootB = await makeRoot();
+    await runWithHeldMutationRoot(rootB, () =>
+      new StateRepository({ root: rootB, mutationCoordinator: coordinator }).initialize('us'),
+    );
+    expect(requests.some((request) => request.lockKey === mutationRootGateKey(rootB))).toBe(false);
+    const scoped = requests.filter((request) => request.lockKey !== mutationRootGateKey(rootB));
+    expect(scoped.length).toBeGreaterThan(0);
+    expect(scoped.every((request) => request.recoveryComplete === true)).toBe(true);
   });
 });

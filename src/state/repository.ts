@@ -298,7 +298,13 @@ abstract class RepositoryBase {
       let lock: MutationLockContext;
       try {
         if (!isMutationRootHeld(this.root)) rootLock = await this.mutationCoordinator!.acquire(rootRequest);
-        lock = await this.mutationCoordinator!.acquire(request);
+        // issue #51：scoped 锁只在 root gate 之下获取，因此"scoped 锁持有者已
+        // 死"必然意味着更早的 root 持有者已死。当本进程已合法持有 root（恢复
+        // 流程或迁移），接管其残留 scoped 锁与 root 接管同等安全；未持 root
+        // 的路径保持 fail-closed。
+        lock = await this.mutationCoordinator!.acquire(
+          isMutationRootHeld(this.root) ? { ...request, recoveryComplete: true } : request,
+        );
       } catch (error) {
         await rootLock?.release().catch(() => undefined);
         if (error instanceof CapabilityError && error.code === 'LOCK_REENTRY') {

@@ -15,6 +15,30 @@ function parse(text: string): LockRecord | undefined {
 function missing(error: unknown): boolean { return error instanceof Error && 'code' in error && error.code === 'ENOENT'; }
 function exists(error: unknown): boolean { return error instanceof Error && 'code' in error && error.code === 'EEXIST'; }
 
+/**
+ * 进程内按锁路径串行化 claim 保护段（issue #51 H2）。协调器每次 acquire 都
+ * 新建 store 实例，因此队列必须挂在模块层：同进程的 heartbeat（replace）与
+ * release（remove）会争用同一个 claim 文件，未串行化时 release 会误判
+ * "Lock ownership was lost"，锁文件永不删除，最终落入永久锁死。跨进程互斥
+ * 仍由 claim 文件本身承担。
+ */
+const claimTurns = new Map<string, Promise<unknown>>();
+
+async function withClaimTurn<T>(lockPath: string, action: () => Promise<T>): Promise<T> {
+  const predecessor = claimTurns.get(lockPath) ?? Promise.resolve();
+  let releaseTurn: () => void = () => undefined;
+  const turn = new Promise<void>((resolve) => { releaseTurn = resolve; });
+  const tail = predecessor.catch(() => undefined).then(() => turn);
+  claimTurns.set(lockPath, tail);
+  await predecessor.catch(() => undefined);
+  try {
+    return await action();
+  } finally {
+    releaseTurn();
+    if (claimTurns.get(lockPath) === tail) claimTurns.delete(lockPath);
+  }
+}
+
 export class FileLockStore implements LockStore {
   private readonly claimPath: string;
   constructor(private readonly path: string, private readonly inspector: ProcessInspector) { this.claimPath = `${path}.claim`; }
@@ -42,17 +66,22 @@ export class FileLockStore implements LockStore {
     try { if (serialized(parse(await readFile(this.claimPath, 'utf8'))!) === serialized(claim)) await unlink(this.claimPath); } catch {}
   }
   async replace(expected: LockRecord, next: LockRecord): Promise<boolean> {
-    const claim = await this.claim(); if (claim === undefined) return false;
-    const temp = `${this.path}.${claim.lockId}.tmp`;
-    try {
-      if (serialized((await this.read())!) !== serialized(expected)) return false;
-      const handle = await open(temp, 'wx'); try { await handle.writeFile(serialized(next), 'utf8'); await handle.sync(); } finally { await handle.close(); }
-      await rename(temp, this.path); return true;
-    } finally { try { await unlink(temp); } catch {} await this.releaseClaim(claim); }
+    return withClaimTurn(this.path, async () => {
+      const claim = await this.claim(); if (claim === undefined) return false;
+      const temp = `${this.path}.${claim.lockId}.tmp`;
+      try {
+        // 按 lockId 匹配锁身份：expected 的 heartbeatAtMs 可能因并发心跳而过期（issue #51 H2）。
+        if ((await this.read())?.lockId !== expected.lockId) return false;
+        const handle = await open(temp, 'wx'); try { await handle.writeFile(serialized(next), 'utf8'); await handle.sync(); } finally { await handle.close(); }
+        await rename(temp, this.path); return true;
+      } finally { try { await unlink(temp); } catch {} await this.releaseClaim(claim); }
+    });
   }
   async remove(expected: LockRecord): Promise<boolean> {
-    const claim = await this.claim(); if (claim === undefined) return false;
-    try { if (serialized((await this.read())!) !== serialized(expected)) return false; await unlink(this.path); return true; }
-    finally { await this.releaseClaim(claim); }
+    return withClaimTurn(this.path, async () => {
+      const claim = await this.claim(); if (claim === undefined) return false;
+      try { if ((await this.read())?.lockId !== expected.lockId) return false; await unlink(this.path); return true; }
+      finally { await this.releaseClaim(claim); }
+    });
   }
 }

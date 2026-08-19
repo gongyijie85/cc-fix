@@ -6,8 +6,9 @@ class MemoryLockStore implements LockStore {
   value: LockRecord | undefined;
   async read() { return this.value; }
   async create(record: LockRecord) { if (this.value !== undefined) return false; this.value = record; return true; }
+  // 契约（issue #51 H2）：replace/remove 按锁身份 lockId 匹配，heartbeatAtMs 过期不影响所有权判定。
   async replace(expected: LockRecord, next: LockRecord) {
-    if (this.value?.lockId !== expected.lockId || this.value.heartbeatAtMs !== expected.heartbeatAtMs) return false;
+    if (this.value?.lockId !== expected.lockId) return false;
     this.value = next; return true;
   }
   async remove(expected: LockRecord) { if (this.value?.lockId !== expected.lockId) return false; this.value = undefined; return true; }
@@ -31,6 +32,25 @@ describe('state mutation lock', () => {
     expect(acquired).toMatchObject({ kind: 'acquired', previousOwner: { lockId: 'dead' } });
     if (acquired.kind === 'acquired') { await acquired.lock.heartbeat(22); await acquired.lock.release(); }
     expect(store.value).toBeUndefined();
+  });
+
+  it('bounds acquisition retries so persistent contention cannot spin forever (issue #51 L1)', async () => {
+    const store = new MemoryLockStore();
+    // create 永远失败且 read 永远 undefined：每次重试都扑空，必须收敛为显式失败。
+    store.create = async () => false;
+    store.read = async () => undefined;
+    const inspector = { current: async () => ({ pid: 1, startedAtMs: 1 }), isSameProcess: async () => false };
+    await expect(acquireStateMutationLock({ store, now: 1, inspector })).rejects.toThrow(/did not converge/);
+  });
+
+  it('propagates inspection failure instead of reporting the owner as dead (issue #51 M1)', async () => {
+    const store = new MemoryLockStore();
+    store.value = { pid: 7, startedAtMs: 10, heartbeatAtMs: 10, lockId: 'unknown-liveness' };
+    const inspector = {
+      current: async () => ({ pid: 9, startedAtMs: 20 }),
+      isSameProcess: async () => { throw new Error('query failed'); },
+    };
+    await expect(acquireStateMutationLock({ store, now: 21, inspector, recoveryComplete: true })).rejects.toThrow('query failed');
   });
 });
 

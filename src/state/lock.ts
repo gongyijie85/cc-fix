@@ -11,9 +11,13 @@ export interface LockStore {
   read(): Promise<LockRecord | undefined>;
   /** Must create only when absent, atomically. */
   create(record: LockRecord): Promise<boolean>;
-  /** Must replace only the exact existing record, atomically. */
+  /**
+   * Must replace only the lock currently identified by `expected.lockId`,
+   * atomically.  匹配锁身份（lockId）而非整条记录：heartbeat 会推进
+   * heartbeatAtMs，用过期的 expected 仍须能完成替换（issue #51 H2）。
+   */
   replace(expected: LockRecord, next: LockRecord): Promise<boolean>;
-  /** Must remove only the exact existing record, atomically. */
+  /** Must remove only the lock currently identified by `expected.lockId`, atomically. */
   remove(expected: LockRecord): Promise<boolean>;
 }
 
@@ -37,22 +41,32 @@ export class StateMutationLock {
 
 /**
  * The age of a file is deliberately never used to steal a live lock.  A dead
- * owner produces recovery_required first; callers must inspect its journal
- * before retrying acquire with `recoveryComplete`.
+ * owner produces recovery_required first; only the recovery flow may retry
+ * acquire with `recoveryComplete` to take over the dead owner's lock, after
+ * which the journal-driven recovery converges the interrupted mutation under
+ * the taken-over lock (issue #51).
  */
+const MAX_ACQUIRE_ATTEMPTS = 16;
+
 export async function acquireStateMutationLock(options: {
   store: LockStore;
   inspector: ProcessInspector;
   now: number;
   recoveryComplete?: boolean;
+  /** Internal: bounds retry recursion so contention can never spin forever (L1). */
+  attempts?: number;
 }): Promise<LockAcquireResult> {
+  const attempts = options.attempts ?? 0;
+  if (attempts >= MAX_ACQUIRE_ATTEMPTS) {
+    throw new Error('Lock acquisition did not converge after repeated contention');
+  }
   const own = await options.inspector.current();
   const proposed: LockRecord = Object.freeze({ ...own, heartbeatAtMs: options.now, lockId: randomUUID() });
   if (await options.store.create(proposed)) return { kind: 'acquired', lock: new StateMutationLock(options.store, proposed) };
   const existing = await options.store.read();
-  if (existing === undefined) return acquireStateMutationLock(options);
+  if (existing === undefined) return acquireStateMutationLock({ ...options, attempts: attempts + 1 });
   if (await options.inspector.isSameProcess(existing)) return { kind: 'busy', owner: existing };
   if (!options.recoveryComplete) return { kind: 'recovery_required', owner: existing };
-  if (!(await options.store.replace(existing, proposed))) return acquireStateMutationLock(options);
+  if (!(await options.store.replace(existing, proposed))) return acquireStateMutationLock({ ...options, attempts: attempts + 1 });
   return { kind: 'acquired', lock: new StateMutationLock(options.store, proposed), previousOwner: existing };
 }

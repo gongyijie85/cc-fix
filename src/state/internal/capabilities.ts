@@ -17,6 +17,12 @@ export type MutationLockRequest = Readonly<{
   stateRoot: string;
   filePath: string;
   operation: MutationAuditOperation;
+  /**
+   * 允许接管"持有者已确认死亡"的残留锁（issue #51）。只有恢复流程
+   * （persist.recover）可以置位；普通变更必须保持 fail-closed，让用户
+   * 被引导到 `cc-fix persist recover`。
+   */
+  recoveryComplete?: boolean;
 }>;
 
 const heldRootGates = new AsyncLocalStorage<ReadonlySet<string>>();
