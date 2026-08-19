@@ -209,7 +209,8 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
     return withPersistTransactionLock(dependencies.root, dependencies.coordinator, 'persist.recover', async () => {
       const stateRead = await dependencies.stateRepository.read();
       const state = stateRead.value;
-      let journal = await dependencies.journalRepository.read();
+      const journalRead = await dependencies.journalRepository.readWithDegradation();
+      let journal = journalRead.journal;
       if (journal === undefined) {
         if (state.activeTransactionId === null && state.health !== 'recovery_required') {
           return { kind: 'noop', failed: [] };
@@ -232,6 +233,8 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
           journal,
           journalRepository: dependencies.journalRepository,
           authorities: dependencies.authorities,
+          // issue #57：journal 走 .prev 回退时 phase 滞后于崩溃现场，恢复按最保守解释执行。
+          journalDegraded: journalRead.degraded,
         });
         if (result.kind === 'recovered') {
           await transition.recover.publishPrevious(context.previousState, context.previousState.health);

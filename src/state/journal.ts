@@ -80,11 +80,25 @@ function validContext(value: unknown): value is TransactionJournalContext {
   return context.requestedTarget === null || isProtectionState(targetProbe);
 }
 
+export type JournalReadResult = Readonly<{
+  journal: TransactionJournal | undefined;
+  /**
+   * true = current 代损坏、内容来自 .prev 回退（issue #57）。.prev 是**旧**代：
+   * 其中的 phase 只可能滞后于崩溃现场——恢复决策必须按最保守方向解释
+   * （planned 视为"可能已写入"），绝不能据其跳过补偿写回。
+   */
+  degraded: boolean;
+}>;
+
 export class TransactionJournalRepository {
   constructor(private readonly root: string, private readonly path: string, private readonly filesystem?: DurableFileSystem) {}
   async read(): Promise<TransactionJournal | undefined> {
+    return (await this.readWithDegradation()).journal;
+  }
+  async readWithDegradation(): Promise<JournalReadResult> {
     const result = await readCheckedFile<TransactionJournal>({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, validatePayload: validJournal });
-    return result.kind === 'missing' ? undefined : result.payload;
+    if (result.kind === 'missing') return { journal: undefined, degraded: false };
+    return { journal: result.payload, degraded: result.degraded === true };
   }
   async plan(
     kind: TransactionJournal['kind'],

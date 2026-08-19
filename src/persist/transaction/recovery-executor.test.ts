@@ -36,6 +36,23 @@ describe('persist crash recovery executor', () => {
     expect((await repository.read())?.steps.every((step) => step.phase === 'compensated')).toBe(true);
   });
 
+  it('treats planned steps as possibly-written when the journal read was degraded (issue #57)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-recover-degraded-'));
+    const repository = new TransactionJournalRepository(root, join(root, 'transaction.json'));
+    const originals = values('daily');
+    // 崩溃现场：current 代（applying/verified）损坏，.prev 回退后全部步骤读作 planned。
+    const journal = await repository.plan('protect', ids.map((id) => ({ id, original: originals[id], desired: storedValue(`target-${id}`) })));
+    const current = new Map(Object.entries(values('target')) as Array<[PersistStepId, StoredValue<JsonValue>]>);
+    const writes: string[] = [];
+    const authorities = Object.fromEntries(ids.map((id) => [id, { read: async () => current.get(id)!, write: async (value: StoredValue<JsonValue>) => { writes.push(id); current.set(id, value); } }])) as never;
+    const result = await recoverProtectTransaction({ journal, journalRepository: repository, authorities, journalDegraded: true });
+    expect(result).toEqual({ kind: 'recovered', failed: [] });
+    // 降级解释：planned 视为"可能已写入"，全部回写 original（而非无写关闭）
+    expect([...writes].sort()).toEqual([...ids].sort());
+    expect((await repository.read())?.steps.every((step) => step.phase === 'compensated')).toBe(true);
+    expect([...current.values()]).toEqual([...Object.values(originals)]);
+  });
+
   it('converges every restore authority and rechecks a previously verified value', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cc-fix-recover-restore-'));
     const repository = new TransactionJournalRepository(root, join(root, 'transaction.json'));

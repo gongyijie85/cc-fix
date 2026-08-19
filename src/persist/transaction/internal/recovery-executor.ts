@@ -29,11 +29,15 @@ async function markRecoveryRequired(
   catch { return journal; }
 }
 
-/** Reverse-compensates every possibly modified protect step; planned steps need no write. */
+/** Reverse-compensates every possibly modified protect step.
+ * 权威读取下 planned 步骤无需写回（executor 在权威写之前先落 applying）；journal
+ * 降级（.prev 回退，issue #57）时 planned 只可能滞后于崩溃现场，必须按
+ * "可能已写入"的最保守解释回写 original，绝不能直接标记 compensated。 */
 export async function recoverProtectTransaction(input: {
   journal: TransactionJournal;
   journalRepository: TransactionJournalRepository;
   authorities: Readonly<Record<PersistStepId, ExecutableAuthority>>;
+  journalDegraded?: boolean;
 }): Promise<RecoveryExecutionResult> {
   if (input.journal.kind !== 'protect') throw new Error('Protect recovery requires a protect journal');
   let journal = input.journal;
@@ -42,9 +46,13 @@ export async function recoverProtectTransaction(input: {
     const id = stepId(entry);
     if (id === undefined || entry.phase === 'compensated') continue;
     if (entry.phase === 'planned') {
-      try { journal = await input.journalRepository.transition(journal, id, 'compensated'); }
-      catch { failed.push(id); journal = await markRecoveryRequired(input.journalRepository, journal, id); }
-      continue;
+      if (input.journalDegraded !== true) {
+        try { journal = await input.journalRepository.transition(journal, id, 'compensated'); }
+        catch { failed.push(id); journal = await markRecoveryRequired(input.journalRepository, journal, id); }
+        continue;
+      }
+      // 降级读取：先推进到 recovery_required（未知状态），再走补偿写回路径。
+      journal = await markRecoveryRequired(input.journalRepository, journal, id);
     }
     const original = stored(entry.original);
     if (original === undefined) {

@@ -34,3 +34,36 @@
   - **结果标记防伪造**：marker 写随机文件名（`font-helper-result-<uuid>.json`）+ 一次性 256 位 nonce，伪造 marker（含预写 `font-helper-result.json` 旧路径）被忽略；pendingReboot 逐项过文件名白名单、error 截断 500 字符
   - ADR-0013 决策 3-6 更新，残余风险（UAC 弹窗仍显示 powershell.exe、nonce 对能读他进程命令行者不保密）已记录
   - 测试：新增 17 个用例（脚本组装结构断言、Node 端锚定预检、reg 解析含非 Fonts 段忽略/转义、nonce 拒绝与内容过滤、旧 .reg 转换、真实 PS 5.1 冒烟——非提权运行验证语法/锚定/错误 marker 通道）；全量 65 文件 641 用例通过
+
+- **fix(persist): 关闭 native-helper 路径的环境变量与 CWD 劫持面（issue #53）**
+  - `resolveNativeHelperPath` 重写：移除 `join(process.cwd(), 'native-helper', ...)` 回退（在下载目录/网络共享运行 CLI 时会执行攻击者预置的同名路径）；解析顺序改为 显式参数 → bundle 相对布局 `<dist>/../native/`（npm 与桌面载荷的正式位置）→ 环境变量（仅接受绝对路径、排在 bundle 之后——合法安装永远命中 bundle，env 退化为开发兜底）
+  - 桌面壳（main.rs）：可执行/脚本组件路径（node/sidecar）在 release 构建对环境变量覆盖 fail-closed（debug 保留以支持仓库开发布局）；不再向 sidecar 传递 `CC_FIX_NATIVE_HELPER`（sidecar 以 bundle 相对布局解析，与安装目录一致）
+  - 哈希 sidecar（纵深防御）：打包脚本为 helper 写 `cc-fix-native-helper.exe.sha256`，运行期解析时校验、不匹配 fail-closed（INITIALIZATION_FAILED）——为无 Authenticode 的分发提供篡改可见性；`cc-fix.cmd` 移除冗余 env 设置
+  - 残余风险：便携解压布局下模块相对路径本身位于不可信目录（无代码签名不可解，ADR-0010 层面）；sidecar 与 exe 同目录，防不了有写权限的定向替换
+  - 测试：runtime.test.ts 新增 4 用例（CWD 回退移除回归、绝对/相对 env 区分、sidecar 不匹配 fail-closed、匹配/缺失容忍）；main.rs 新增 3 用例（release 拒绝覆盖/debug 允许/缺省回落安装目录）
+
+- **fix(desktop): 日志脱敏规则补齐 JSON 键值、截断 PEM 与标准 base64 绕过面（issue #54）**
+  - 新增规则 7：JSON 键值形态 `"api_key": "value"`（键后允许闭引号，值扫描到闭引号/逗号/右花括号），敏感键与值整体替换为 `[redacted]`
+  - 截断 PEM：`-----BEGIN` 出现但无 `-----END` 时替换至消息末尾（旧规则要求找到 END 才整块替换，截断块主体泄漏）
+  - base64 run 字符集扩展为标准 base64（含 `+` `/` `=`）：旧 base64url 字符集会把 64 字符 PEM 行切成不足 43 的短段逃逸掩码（一行 PEM body 约 86% 概率含 `+` 或 `/`）
+  - 测试：corpus 扩充 4 个形态（截断 PEM、含 +/ 的标准 base64、JSON 键值、嵌套 JSON）+ 占位符形状断言（`[redacted]`/`[private key]` 出现、普通键 `"mode": "standard"` 保留）；9 个 Rust 测试通过
+
+- **fix(installer): 升级/卸载执行 HKCU 记录的启动器前做一致性核验（issue #55）**
+  - `InitializeSetup`（升级 preflight 前）：`TrustedInstallRecord` 三重核验 fail-closed——UninstallString 目录与 InstallLocation 一致（检出单值篡改）、安装目录存在完整产品布局（bin/core/runtime/CC-Fix.exe，伪造目录需复制全套载荷）、`cc-fix.cmd` 形状符合产品启动器（首行 `@echo off` 且引用 `runtime\node.exe` 与 `core\index.js`）
+  - `InitializeUninstall`（persist off 前）：同样的布局与启动器核验；失败时跳过该步骤（等价 /PRESERVESTATE 语义）并提示，绝不执行形状异常的启动器
+  - 残余风险：无 Authenticode 时非密码学信任根——同用户持久攻击者可一致地伪造注册表与目录；DisplayVersion 降级防护同属可篡改面（已记录）
+  - 验证：ISCC 哑载荷编译通过（Pascal 语法与常量展开端到端）
+
+- **fix(ci): 密钥扫描门禁 fail-open 面与规则盲区收口（issue #56）**
+  - 不可读文件不再静默跳过：readFile 失败记 `unreadable` 发现项并判失败（fail-closed）
+  - `generic-assignment` 规则放宽补盲：值不再要求引号包裹（`API_KEY=xxx`）、键后允许闭引号覆盖 JSON 形态、字符集补 `.` `/` `+`、阈值 24→16
+  - 符号链接不再静默跳过：文件链接扫目标；目录链接仅递归指向仓库内部者（realpath 前缀 + 已访问集合防环）；损坏链接记 `unreadable` 判失败
+  - `--allow` 改为别名制：只接受 `scripts/ci/secrets-allowlist.txt` 登记的别名（`别名=子串`，随仓库评审）——CI 调用行被篡改也无法放行任意子串；白名单文件本身不作为扫描对象；未知别名/损坏白名单行 fail-closed
+  - sidecar.ts 局部变量改名 `sessionToken`（放宽后的规则按关键词扫描赋值形态，裸 `token = process.env.XXX` 会误报）
+  - 测试：ci-gates 新增 5 用例（未引号/JSON 赋值、损坏链接、目录链接引入的密钥、别名制白名单含篡改形态、损坏白名单行）；全仓库门禁扫描通过
+
+- **fix(persist): journal 代回退读取的恢复决策保守化（issue #57）**
+  - `TransactionJournalRepository.readWithDegradation()` 暴露降级标志：current 代损坏、内容来自 `.prev` 回退时 `degraded: true`（`.prev` 是旧代，phase 只可能滞后于崩溃现场）
+  - `recover()` 将降级标志传入 `recoverProtectTransaction`：降级时 planned 步骤不再走"无写关闭"捷径（旧实现直接标记 compensated——而现实中该步骤可能已写入 desired，导致系统停留在 desired 而状态机认为已回滚），改为先推进 `recovery_required` 再走补偿写回 original 的最保守路径
+  - 非 degraded 路径不变：权威读取下 executor 在权威写之前先落 applying，planned 步骤确未开始写、无写关闭安全；restore 恢复本就全量重验（无需改动）
+  - 测试：journal.test.ts 新增降级读取用例（损坏 current → .prev 滞后 phase + degraded 标志）；recovery-executor.test.ts 新增降级 planned 全量回写用例（与权威 planned 无写关闭形成对照）
