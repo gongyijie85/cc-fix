@@ -63,7 +63,71 @@ Filename: "{app}\CC-Fix.exe"; Description: "启动 CC-Fix"; Flags: nowait postin
 const
   WebViewClientId = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   InstallerStateKey = 'Software\CC-Fix\Installer';
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C76DF1B-B683-4A77-9B4C-89E3305D2399}_is1';
   CurrentReleaseVersion = '{#AppVersion}';
+
+function StripQuotes(Value: String): String;
+begin
+  Result := Value;
+  if (Length(Result) >= 2) and (Result[1] = '"') and (Result[Length(Result)] = '"') then
+    Result := Copy(Result, 2, Length(Result) - 2);
+end;
+
+{ issue #55：HKCU 卸载键可被同用户篡改。执行其中的 cc-fix.cmd 之前先做三重核验：
+  1) UninstallString 的目录与 InstallLocation 一致（单一值篡改可检出）
+  2) InstallLocation 下存在完整产品布局（伪造目录需复制全套载荷）
+  3) cc-fix.cmd 形状符合产品启动器（引用 runtime\node.exe 与 core\index.js）
+  无 Authenticode 时的纵深防御：不构成密码学信任根，残余风险记录于 issue #55。 }
+function UninstallRecordConsistent(Location: String): Boolean;
+var
+  UninstallString, UninstallerDir: String;
+begin
+  Result := False;
+  if not RegQueryStringValue(HKCU, UninstallKey, 'UninstallString', UninstallString) then exit;
+  UninstallerDir := ExtractFilePath(StripQuotes(UninstallString));
+  if UninstallerDir = '' then exit;
+  Result := CompareText(RemoveBackslashUnlessRoot(UninstallerDir), RemoveBackslashUnlessRoot(Trim(Location))) = 0;
+end;
+
+function InstallLayoutLooksLegit(Location: String): Boolean;
+var
+  Base: String;
+begin
+  Base := AddBackslash(Trim(Location));
+  Result := (Base <> '')
+    and FileExists(Base + 'bin\cc-fix.cmd')
+    and FileExists(Base + 'core\index.js')
+    and FileExists(Base + 'core\sidecar.js')
+    and FileExists(Base + 'runtime\node.exe')
+    and FileExists(Base + 'CC-Fix.exe');
+end;
+
+function LauncherLooksLegit(Location: String): Boolean;
+var
+  Lines: TArrayOfString;
+  Index, LineCount: Integer;
+  MentionsNode, MentionsCore: Boolean;
+begin
+  Result := False;
+  if not LoadStringsFromFile(AddBackslash(Trim(Location)) + 'bin\cc-fix.cmd', Lines) then exit;
+  LineCount := GetArrayLength(Lines);
+  if (LineCount < 3) or (LineCount > 8) then exit;
+  if CompareText(Trim(Lines[0]), '@echo off') <> 0 then exit;
+  MentionsNode := False;
+  MentionsCore := False;
+  for Index := 0 to LineCount - 1 do begin
+    if Pos('runtime\node.exe', Lines[Index]) > 0 then MentionsNode := True;
+    if Pos('core\index.js', Lines[Index]) > 0 then MentionsCore := True;
+  end;
+  Result := MentionsNode and MentionsCore;
+end;
+
+function TrustedInstallRecord(Location: String): Boolean;
+begin
+  Result := UninstallRecordConsistent(Location)
+    and InstallLayoutLooksLegit(Location)
+    and LauncherLooksLegit(Location);
+end;
 
 function ParseReleaseVersion(Value: String; var Major, Minor, Patch, Stability, PreNumber: Integer): Boolean;
 var
@@ -133,8 +197,8 @@ end;
 
 function ExistingInstallLocation(var Location, Version: String): Boolean;
 begin
-  Result := RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C76DF1B-B683-4A77-9B4C-89E3305D2399}_is1', 'InstallLocation', Location);
-  RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C76DF1B-B683-4A77-9B4C-89E3305D2399}_is1', 'DisplayVersion', Version);
+  Result := RegQueryStringValue(HKCU, UninstallKey, 'InstallLocation', Location);
+  RegQueryStringValue(HKCU, UninstallKey, 'DisplayVersion', Version);
 end;
 
 procedure ReportSetupError(Message: String);
@@ -164,6 +228,12 @@ begin
   end;
   Launcher := AddBackslash(Location) + 'bin\cc-fix.cmd';
   if not FileExists(Launcher) then begin Result := False; exit; end;
+  { issue #55：执行 HKCU 记录的启动器前先核验注册表一致性与安装布局，防止单值篡改把升级/修复流程导向未知程序。 }
+  if not TrustedInstallRecord(Location) then begin
+    ReportSetupError('CC-Fix 的安装记录（注册表或安装布局）不一致，已停止升级/修复以避免执行未知程序。请先通过「设置-应用」完整卸载，再重新安装。');
+    Result := False;
+    exit;
+  end;
   Parameters := '/D /S /C ""' + Launcher + '" persist preflight"';
   Result := Exec(ExpandConstant('{cmd}'), Parameters, Location, SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
   if not Result then
@@ -295,6 +365,7 @@ var
   ResultCode: Integer;
   Parameters: String;
   Index: Integer;
+  AppDir: String;
 begin
   for Index := 1 to ParamCount do begin
     if CompareText(ParamStr(Index), '/PRESERVESTATE') = 0 then begin
@@ -304,8 +375,17 @@ begin
       exit;
     end;
   end;
-  Parameters := '/D /S /C ""' + ExpandConstant('{app}\bin\cc-fix.cmd') + '" persist off"';
-  Result := Exec(ExpandConstant('{cmd}'), Parameters, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  // issue #55：{app} 虽来自卸载日志，执行 persist off 前仍核验布局与启动器形状；
+  // 核验失败时跳过该步骤（等价 /PRESERVESTATE 语义），绝不执行形状异常的启动器。
+  AppDir := ExpandConstant('{app}');
+  if not InstallLayoutLooksLegit(AppDir) or not LauncherLooksLegit(AppDir) then begin
+    if not UninstallSilent then
+      MsgBox('CC-Fix 安装布局不完整或启动器形状异常，已跳过「还原日常配置」步骤。程序文件仍将移除；如需还原系统设置，请重新安装后运行 cc-fix persist recover。', mbInformation, MB_OK);
+    Result := True;
+    exit;
+  end;
+  Parameters := '/D /S /C ""' + AppDir + '\bin\cc-fix.cmd" persist off"';
+  Result := Exec(ExpandConstant('{cmd}'), Parameters, AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
   if (not Result) and (not UninstallSilent) then
     MsgBox('CC-Fix 无法完整还原日常配置，因此已停止卸载。请运行 cc-fix persist recover，确认状态健康后再卸载。', mbError, MB_OK);
 end;
