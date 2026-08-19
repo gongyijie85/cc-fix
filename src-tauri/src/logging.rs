@@ -26,21 +26,37 @@ fn is_hex_digit(byte: u8) -> bool {
     byte.is_ascii_hexdigit()
 }
 
-fn is_base64url(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
+/// 标准 base64 字符集（含 URL 变体的 - _ 与填充 =）——PEM 主体是标准 base64，
+/// 不含 + / 的旧字符集会把 64 字符的 PEM 行切成不足 43 的短段而逃逸掩码（issue #54）。
+fn is_base64(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' || byte == b'+' || byte == b'/' || byte == b'='
 }
 
 fn is_word(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.'
 }
 
+/// 键名是否属于敏感词表（大小写不敏感），或形如全大写环境变量名。
+fn is_sensitive_key(key: &str) -> bool {
+    let key_upper = key.to_ascii_uppercase();
+    key_upper.contains("TOKEN")
+        || key_upper.contains("SECRET")
+        || key_upper.contains("PASSWORD")
+        || key_upper.contains("API_KEY")
+        || key_upper.contains("API-KEY")
+        || key_upper.contains("COOKIE")
+        || key_upper.contains("SESSION")
+        || (key_upper.len() >= 2 && key_upper.chars().all(|character| character.is_ascii_uppercase() || character == '_' || character == '.') && key_upper.contains('_'))
+}
+
 /// 把输入中的敏感形态替换为占位符。规则按优先级应用：
-/// 1. PEM 私钥块整体删除
+/// 1. PEM 私钥块整体删除（含无 END 标记的截断块——替换至消息末尾）
 /// 2. 64 位十六进制（bootstrap 令牌 = 2×uuid simple）
-/// 3. 43+ 位 base64url（会话令牌）
+/// 3. 43+ 位 base64（会话令牌 / PEM 主体）
 /// 4. IPv4 地址
 /// 5. 大写环境变量赋值（保留变量名，掩码值）
 /// 6. token/secret/password/api key/cookie 赋值（掩码值）
+/// 7. JSON 键值形态 `"api_key": "value"`（掩码键与值——issue #54）
 pub fn redact(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut output = String::with_capacity(bytes.len());
@@ -54,6 +70,10 @@ pub fn redact(input: &str) -> String {
                 index = block_end;
                 continue;
             }
+            // 截断的 PEM（无 END 标记）：剩余主体同样是私钥内容，替换至消息末尾（issue #54）。
+            output.push_str("[private key]");
+            index = bytes.len();
+            continue;
         }
         // 2. 64 位十六进制
         if bytes[index].is_ascii_hexdigit()
@@ -66,14 +86,14 @@ pub fn redact(input: &str) -> String {
             index += 64;
             continue;
         }
-        // 3. 43+ 位 base64url
-        if is_base64url(bytes[index])
+        // 3. 43+ 位 base64
+        if is_base64(bytes[index])
             && index + 43 <= bytes.len()
-            && bytes[index..index + 43].iter().all(|byte| is_base64url(*byte))
-            && (index == 0 || !is_base64url(bytes[index - 1]))
+            && bytes[index..index + 43].iter().all(|byte| is_base64(*byte))
+            && (index == 0 || !is_base64(bytes[index - 1]))
         {
             let mut run = 43usize;
-            while index + run < bytes.len() && is_base64url(bytes[index + run]) {
+            while index + run < bytes.len() && is_base64(bytes[index + run]) {
                 run += 1;
             }
             output.push_str("[secret]");
@@ -88,34 +108,27 @@ pub fn redact(input: &str) -> String {
                 continue;
             }
         }
-        // 5/6. 赋值掩码：先检查关键词是否落在当前位置之前紧邻（token=, API_KEY= 等）
+        // 5/6. 赋值掩码：key=value 形态（token=, API_KEY= 等）
         if bytes[index] == b'=' {
             if let Some(prefix_len) = sensitive_assignment_prefix(input, index) {
-                let value_start = index + 1;
-                let mut cursor = value_start;
-                // 引号包裹的值：跳过开引号，扫到配对的闭引号或空白为止。
-                let quote = if cursor < bytes.len() && (bytes[cursor] == b'"' || bytes[cursor] == b'\'') {
-                    let marker = bytes[cursor];
-                    cursor += 1;
-                    Some(marker)
-                } else {
-                    None
-                };
-                while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
-                    if let Some(marker) = quote {
-                        if bytes[cursor] == marker {
-                            cursor += 1;
-                            break;
-                        }
-                    }
-                    cursor += 1;
-                }
-                let value_len = cursor - value_start;
-                if value_len >= 4 {
+                if let Some(next) = mask_assignment_value(input, index + 1) {
                     output.truncate(output.len() - prefix_len);
                     output.push_str("[redacted]");
-                    index = cursor;
+                    index = next;
                     continue;
+                }
+            }
+        }
+        // 7. JSON 键值形态："sensitive_key": value（issue #54）
+        if bytes[index] == b':' && index > 0 && bytes[index - 1] == b'"' {
+            if let Some((key_start, key)) = json_key_before(input, index) {
+                if is_sensitive_key(key) {
+                    if let Some(next) = mask_json_value(input, index + 1) {
+                        output.truncate(output.len() - (index - key_start));
+                        output.push_str("[redacted]");
+                        index = next;
+                        continue;
+                    }
                 }
             }
         }
@@ -126,6 +139,78 @@ pub fn redact(input: &str) -> String {
     output
 }
 
+/// 从 value_start 起扫描赋值值（引号包裹或到空白），值长度 >= 4 才值得掩码；
+/// 返回消费到的下一个索引。
+fn mask_assignment_value(input: &str, value_start: usize) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut cursor = value_start;
+    // 引号包裹的值：跳过开引号，扫到配对的闭引号或空白为止。
+    let quote = if cursor < bytes.len() && (bytes[cursor] == b'"' || bytes[cursor] == b'\'') {
+        let marker = bytes[cursor];
+        cursor += 1;
+        Some(marker)
+    } else {
+        None
+    };
+    while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
+        if let Some(marker) = quote {
+            if bytes[cursor] == marker {
+                cursor += 1;
+                break;
+            }
+        }
+        cursor += 1;
+    }
+    (cursor - value_start >= 4).then_some(cursor)
+}
+
+/// JSON 值扫描：跳过空白，双引号值扫到闭引号，裸值扫到空白/逗号/右花括号。
+fn mask_json_value(input: &str, value_start: usize) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut cursor = value_start;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    if cursor >= bytes.len() {
+        return None;
+    }
+    if bytes[cursor] == b'"' {
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor] != b'"' {
+            cursor += 1;
+        }
+        if cursor < bytes.len() {
+            cursor += 1; // 闭引号
+        }
+    } else {
+        while cursor < bytes.len()
+            && !bytes[cursor].is_ascii_whitespace()
+            && bytes[cursor] != b','
+            && bytes[cursor] != b'}'
+            && bytes[cursor] != b']'
+        {
+            cursor += 1;
+        }
+    }
+    (cursor - value_start >= 4).then_some(cursor)
+}
+
+/// colon_index 前紧邻的双引号键（`"key":`）：返回开引号位置与键名。
+fn json_key_before(input: &str, colon_index: usize) -> Option<(usize, &str)> {
+    let bytes = input.as_bytes();
+    if colon_index == 0 || bytes[colon_index - 1] != b'"' {
+        return None;
+    }
+    let mut scan = colon_index - 1;
+    while scan > 0 {
+        scan -= 1;
+        if bytes[scan] == b'"' {
+            return Some((scan, &input[scan + 1..colon_index - 1]));
+        }
+    }
+    None
+}
+
 /// 检查 bytes[index]（'='）前面的紧邻片段是否是敏感键名，返回键名长度（含分隔符前的下划线等）。
 fn sensitive_assignment_prefix(input: &str, equal_index: usize) -> Option<usize> {
     let bytes = input.as_bytes();
@@ -133,17 +218,7 @@ fn sensitive_assignment_prefix(input: &str, equal_index: usize) -> Option<usize>
     while start > 0 && is_word(bytes[start - 1]) {
         start -= 1;
     }
-    let key = &input[start..equal_index];
-    let key_upper = key.to_ascii_uppercase();
-    let sensitive = key_upper.contains("TOKEN")
-        || key_upper.contains("SECRET")
-        || key_upper.contains("PASSWORD")
-        || key_upper.contains("API_KEY")
-        || key_upper.contains("API-KEY")
-        || key_upper.contains("COOKIE")
-        || key_upper.contains("SESSION")
-        || (key_upper.len() >= 2 && key_upper.chars().all(|character| character.is_ascii_uppercase() || character == '_' || character == '.') && key_upper.contains('_'));
-    if sensitive {
+    if is_sensitive_key(&input[start..equal_index]) {
         Some(equal_index - start)
     } else {
         None
@@ -298,6 +373,11 @@ mod tests {
             ("cookie-assignment", "cookie=deadbeefdeadbeefdeadbeef"),
             // PEM 块由 concat! 编译期拼接：源码不含完整私钥块字面量（CI 密钥门禁扫描源码）。
             ("private-key", concat!("-----BEGIN ", "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END ", "PRIVATE KEY-----")),
+            // issue #54：截断 PEM（无 END 标记）、标准 base64（含 + /）、JSON 键值形态。
+            ("truncated-private-key", concat!("-----BEGIN ", "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC")),
+            ("standard-base64-with-slash", "payload ABCDEFGHIJKLMNOP+qrstuvwxyz0123456789/ABCDEFGHIJ tail"),
+            ("json-key-value", "\"api_key\": \"1234567890abcdefghij\""),
+            ("json-nested", "{\"token\": \"a1b2c3d4e5f6a1b2c3d4e5f6\", \"mode\": \"standard\"}"),
         ]
     }
 
@@ -312,7 +392,23 @@ mod tests {
             assert!(!output.contains("deadbeefdeadbeefdeadbeef"), "{label}: cookie leaked");
             assert!(!output.contains("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"), "{label}: private key leaked");
             assert!(!output.contains("Kz8xQm9rTXlOcHZRd0Z2VGd5SmVuQzE0U2VjcmV0S2V5MTIzNDU2Nzg5"), "{label}: session leaked");
+            assert!(!output.contains("ABCDEFGHIJKLMNOP+qrstuvwxyz"), "{label}: standard base64 leaked");
+            assert!(!output.contains("a1b2c3d4e5f6a1b2c3d4e5f6"), "{label}: json token leaked");
         }
+    }
+
+    #[test]
+    fn redact_masks_json_and_truncated_pem_placeholders() {
+        // JSON 形态：敏感键与值整体替换为 [redacted]，普通键保留（issue #54）。
+        let json = redact("{\"api_key\": \"1234567890abcdefghij\", \"mode\": \"standard\"}");
+        assert!(json.contains("[redacted]"));
+        assert!(!json.contains("api_key"));
+        assert!(json.contains("\"mode\": \"standard\""));
+        // 截断 PEM：无 END 标记时替换至消息末尾（issue #54）。
+        let truncated = redact(concat!("prefix -----BEGIN ", "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC"));
+        assert!(truncated.contains("prefix"));
+        assert!(truncated.contains("[private key]"));
+        assert!(!truncated.contains("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"));
     }
 
     #[test]
