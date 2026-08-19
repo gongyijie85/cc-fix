@@ -363,8 +363,17 @@ program
     console.log("🛡️  CC-Fix Web 面板已启动");
     console.log(`🌐 打开浏览器访问: ${url}`);
     console.log("   按 Ctrl+C 退出");
-    // 自动打开浏览器
-    const opener = spawn("rundll32.exe", ["url.dll,FileProtocolHandler", url], { detached: true, stdio: "ignore", windowsHide: true });
+    // 自动打开浏览器：按平台选择 opener；打开失败不影响已启动的服务（URL 已打印）
+    const openerCommand = process.platform === "win32"
+      ? "rundll32.exe"
+      : process.platform === "darwin"
+        ? "open"
+        : "xdg-open";
+    const openerArgs = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
+    const opener = spawn(openerCommand, openerArgs, { detached: true, stdio: "ignore", windowsHide: true });
+    opener.on("error", () => {
+      console.log(chalk.dim(`（无法自动打开浏览器，请手动访问上方地址）`));
+    });
     opener.unref();
   });
 
