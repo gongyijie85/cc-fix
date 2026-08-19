@@ -1,5 +1,6 @@
-import { isAbsolute, join } from 'node:path';
-import { access, mkdir } from 'node:fs/promises';
+import { isAbsolute, join, resolve } from 'node:path';
+import { access, mkdir, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { REGION_CODES, type RegionCode } from '../domain/region.js';
 import { StateRepository, BackupRepository, type MutationCoordinatorCapability } from '../state/repository.js';
@@ -63,18 +64,50 @@ export type PersistRuntimeOptions = Readonly<{
   nativeHelperPath?: string;
 }>;
 
-async function resolveNativeHelperPath(explicit?: string): Promise<string | undefined> {
-  const candidates = [
-    explicit,
-    process.env.CC_FIX_NATIVE_HELPER,
-    join(fileURLToPath(new URL('.', import.meta.url)), '..', 'native', 'cc-fix-native-helper.exe'),
-    join(process.cwd(), 'native-helper', 'target', 'release', 'cc-fix-native-helper.exe'),
-  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+/**
+ * 解析 native-helper 可执行文件路径（issue #53 安全强化）：
+ *
+ * 1. 显式参数（开发/测试，相对路径按 CWD 解析——调用方自担）
+ * 2. bundle 相对布局 `<dist>/../native/cc-fix-native-helper.exe`（npm 与桌面载荷的正式位置）
+ * 3. 环境变量 `CC_FIX_NATIVE_HELPER`——仅接受**绝对路径**，且排在 bundle 之后：
+ *    合法安装永远命中 bundle，环境变量退化为开发兜底；同用户持久攻击者设置的
+ *    相对路径（配合不可信 CWD 的预置目录）不再被解析
+ *
+ * 已移除 `join(process.cwd(), 'native-helper', ...)` 回退：在下载目录/网络共享等
+ * 不可信目录运行 CLI 时，攻击者预置的同名路径会被直接执行。
+ *
+ * 若候选旁存在 `<candidate>.sha256` sidecar（打包脚本生成），先做字节级哈希校验，
+ * 不匹配即 fail-closed——为无 Authenticode 的分发提供篡改可见性（纵深防御，
+ * 非信任根：sidecar 本身与 exe 同目录，防不了有写权限的定向替换）。
+ */
+export async function resolveNativeHelperPath(explicit?: string): Promise<string | undefined> {
+  const candidates: string[] = [];
+  if (typeof explicit === 'string' && explicit.length > 0) candidates.push(resolve(explicit));
+  candidates.push(join(fileURLToPath(new URL('.', import.meta.url)), '..', 'native', 'cc-fix-native-helper.exe'));
+  const fromEnv = process.env.CC_FIX_NATIVE_HELPER;
+  if (typeof fromEnv === 'string' && fromEnv.length > 0 && isAbsolute(fromEnv)) candidates.push(fromEnv);
   for (const candidate of candidates) {
-    const absolute = isAbsolute(candidate) ? candidate : join(process.cwd(), candidate);
-    try { await access(absolute); return absolute; } catch {}
+    try { await access(candidate); } catch { continue; }
+    await assertHelperMatchesSidecar(candidate);
+    return candidate;
   }
   return undefined;
+}
+
+async function assertHelperMatchesSidecar(candidate: string): Promise<void> {
+  let expected: string;
+  try {
+    expected = (await readFile(`${candidate}.sha256`, 'utf8')).trim().toLowerCase();
+  } catch {
+    return; // 无 sidecar（npm/dev 布局）：跳过校验
+  }
+  const actual = createHash('sha256').update(await readFile(candidate)).digest('hex');
+  if (!/^[0-9a-f]{64}$/.test(expected) || actual !== expected) {
+    throw new PersistRuntimeError(
+      'INITIALIZATION_FAILED',
+      `Native helper digest mismatch for ${candidate}: sidecar says ${expected || '(malformed)'}, binary is ${actual}`,
+    );
+  }
 }
 
 /** Opens and safely initializes/migrates the production persist state. */

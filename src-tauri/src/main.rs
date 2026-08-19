@@ -44,30 +44,91 @@ fn configured_path(variable: &str, fallback: PathBuf) -> PathBuf {
         .unwrap_or(fallback)
 }
 
+/// issue #53：可执行/脚本组件路径的解析。release 构建对环境变量覆盖 fail-closed
+/// （拒绝并把桌面壳留在安装目录内），debug 构建保留覆盖以支持仓库开发布局。
+fn decide_install_path(
+    env_value: Option<std::ffi::OsString>,
+    allow_override: bool,
+    variable: &str,
+    fallback: PathBuf,
+) -> Result<PathBuf, String> {
+    match env_value {
+        Some(_) if !allow_override => Err(format!(
+            "{variable} override is not allowed in release builds; the desktop shell only \
+             runs components inside its install directory"
+        )),
+        Some(value) => Ok(PathBuf::from(value)),
+        None => Ok(fallback),
+    }
+}
+
+fn resolve_component_path(variable: &str, fallback: PathBuf) -> Result<PathBuf, String> {
+    decide_install_path(
+        std::env::var_os(variable),
+        cfg!(debug_assertions),
+        variable,
+        fallback,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_builds_reject_env_overrides_for_exec_paths() {
+        let error = decide_install_path(
+            Some(std::ffi::OsString::from("C:\\evil\\node.exe")),
+            false,
+            "CC_FIX_NODE_EXE",
+            PathBuf::from("C:\\Program Files\\CC-Fix\\runtime\\node.exe"),
+        )
+        .unwrap_err();
+        assert!(error.contains("CC_FIX_NODE_EXE"));
+        assert!(error.contains("release builds"));
+    }
+
+    #[test]
+    fn debug_builds_honor_env_overrides_for_the_repo_layout() {
+        let path = decide_install_path(
+            Some(std::ffi::OsString::from("D:\\repo\\.wayfinder\\temp\\node.exe")),
+            true,
+            "CC_FIX_NODE_EXE",
+            PathBuf::from("C:\\Program Files\\CC-Fix\\runtime\\node.exe"),
+        )
+        .unwrap();
+        assert_eq!(path, PathBuf::from("D:\\repo\\.wayfinder\\temp\\node.exe"));
+    }
+
+    #[test]
+    fn absent_overrides_fall_back_to_the_install_directory() {
+        let fallback = PathBuf::from("C:\\Program Files\\CC-Fix\\core\\sidecar.js");
+        let path = decide_install_path(None, false, "CC_FIX_GUI_SIDECAR", fallback.clone()).unwrap();
+        assert_eq!(path, fallback);
+    }
+}
+
 fn spawn_sidecar() -> Result<(Child, ReadyMessage), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let install_root = executable
         .parent()
         .ok_or("desktop executable has no parent")?;
-    let node = configured_path(
+    let node = resolve_component_path(
         "CC_FIX_NODE_EXE",
         install_root.join("runtime").join("node.exe"),
-    );
-    let script = configured_path(
+    )?;
+    let script = resolve_component_path(
         "CC_FIX_GUI_SIDECAR",
         install_root.join("core").join("sidecar.js"),
-    );
-    let helper = configured_path(
-        "CC_FIX_NATIVE_HELPER",
-        install_root.join("native").join("cc-fix-native-helper.exe"),
-    );
+    )?;
+    // helper 不经环境变量传递：sidecar 内的 runtime 以 bundle 相对布局解析
+    // （core/../native），与安装目录内路径一致（issue #53）。
     let bootstrap = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let session_id = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let mut child = Command::new(&node)
         .arg(&script)
         .env("CC_FIX_GUI_TOKEN", &bootstrap)
         .env("CC_FIX_GUI_SESSION_ID", &session_id)
-        .env("CC_FIX_NATIVE_HELPER", &helper)
         .env("CC_FIX_DESKTOP", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

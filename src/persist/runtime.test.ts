@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { InProcessTestMutationCoordinator } from '../state/test-support/in-process-mutation-coordinator.js';
 import { storedValue, type StoredValue } from '../state/schema.js';
 import type { JsonValue } from '../state/checksum.js';
 import type { PersistStepId } from './steps.js';
 import { desiredValues } from './targets.js';
-import { createAuthorityLegacyClassifier, createPersistRuntime, defaultPersistRoot } from './runtime.js';
+import { createAuthorityLegacyClassifier, createPersistRuntime, defaultPersistRoot, resolveNativeHelperPath } from './runtime.js';
 import { completeLegacyV3 } from '../state/fixtures/legacy-v3.js';
 
 const roots: string[] = [];
@@ -95,5 +96,55 @@ describe('persist runtime composition', () => {
     await expect(service.status()).resolves.toMatchObject({ mode: 'daily', health: 'healthy' });
     expect(existsSync(join(root, 'persist-backup.json'))).toBe(false);
     expect(existsSync(join(root, 'persist-backup.json.prev'))).toBe(false);
+  });
+});
+
+describe('native helper path resolution (issue #53)', () => {
+  const savedEnv = process.env.CC_FIX_NATIVE_HELPER;
+
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env.CC_FIX_NATIVE_HELPER;
+    else process.env.CC_FIX_NATIVE_HELPER = savedEnv;
+  });
+
+  async function tempHelper(content: string): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-helper-resolve-'));
+    roots.push(root);
+    const path = join(root, 'cc-fix-native-helper.exe');
+    await writeFile(path, content, 'utf8');
+    return path;
+  }
+
+  it('never resolves via the removed CWD fallback, even when a repo build exists there', async () => {
+    delete process.env.CC_FIX_NATIVE_HELPER;
+    // 旧实现在此场景会命中 <cwd>/native-helper/target/release（仓库里真实存在）；
+    // bundle 候选在 vitest 下指向 src/native（不存在）→ 新实现必须返回 undefined。
+    await expect(resolveNativeHelperPath()).resolves.toBeUndefined();
+  });
+
+  it('accepts an absolute env override and ignores relative values', async () => {
+    const helper = await tempHelper('fake');
+    process.env.CC_FIX_NATIVE_HELPER = helper;
+    await expect(resolveNativeHelperPath()).resolves.toBe(helper);
+    // 相对路径环境值（配合不可信 CWD 的预置目录）不再参与解析
+    process.env.CC_FIX_NATIVE_HELPER = join('native-helper', 'target', 'release', 'cc-fix-native-helper.exe');
+    await expect(resolveNativeHelperPath()).resolves.toBeUndefined();
+  });
+
+  it('fails closed when the sidecar digest does not match the binary', async () => {
+    const helper = await tempHelper('tampered');
+    await writeFile(`${helper}.sha256`, '0'.repeat(64), 'utf8');
+    process.env.CC_FIX_NATIVE_HELPER = helper;
+    await expect(resolveNativeHelperPath()).rejects.toMatchObject({ code: 'INITIALIZATION_FAILED' });
+  });
+
+  it('resolves when the sidecar digest matches and tolerates a missing sidecar', async () => {
+    const helper = await tempHelper('ok');
+    await writeFile(`${helper}.sha256`, `${createHash('sha256').update('ok').digest('hex')}\n`, 'utf8');
+    process.env.CC_FIX_NATIVE_HELPER = helper;
+    await expect(resolveNativeHelperPath()).resolves.toBe(helper);
+    const bare = await tempHelper('no-sidecar');
+    process.env.CC_FIX_NATIVE_HELPER = bare;
+    await expect(resolveNativeHelperPath()).resolves.toBe(bare);
   });
 });

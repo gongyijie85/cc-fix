@@ -72,6 +72,9 @@ try {
   Copy-Item -LiteralPath 'dist\index.js' -Destination (Join-Path $PayloadRoot 'core\index.js')
   Copy-Item -LiteralPath 'dist\gui\sidecar.js' -Destination (Join-Path $PayloadRoot 'core\sidecar.js')
   Copy-Item -LiteralPath 'native-helper\target\release\cc-fix-native-helper.exe' -Destination (Join-Path $PayloadRoot 'native\cc-fix-native-helper.exe')
+  # issue #53：helper 哈希 sidecar——运行期 resolveNativeHelperPath 校验（篡改可见性，fail-closed）
+  $HelperDigest = Get-Sha256 (Join-Path $PayloadRoot 'native\cc-fix-native-helper.exe')
+  [IO.File]::WriteAllText((Join-Path $PayloadRoot 'native\cc-fix-native-helper.exe.sha256'), "$HelperDigest`n")
   Copy-Item -LiteralPath 'src-tauri\target\release\cc-fix-desktop.exe' -Destination (Join-Path $PayloadRoot 'CC-Fix.exe')
   Copy-Item -LiteralPath 'packaging\cc-fix.cmd' -Destination (Join-Path $PayloadRoot 'bin\cc-fix.cmd')
   Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $PayloadRoot 'LICENSE.txt')
