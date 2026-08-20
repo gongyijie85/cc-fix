@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { readCheckedFile, writeCheckedFile, type DurableFileSystem } from './durable-file.js';
+import { DurableFileError, readCheckedFile, writeCheckedFile, type DurableFileSystem } from './durable-file.js';
 import type { JsonValue } from './checksum.js';
 import { isProtectionState, type ProtectionState } from './schema.js';
 import type { RegionCode } from '../domain/region.js';
 import type { BrowserPolicySlotId } from './schema.js';
 
 export const TRANSACTION_JOURNAL_SCHEMA = 'cc-fix-transaction-journal-v1';
+/** 快照值文件 schema（issue #59）：steps 的 original/desired 在 plan 时一次性落盘，
+ * 随后的 phase 转换只重写 journal.json 的 phase 表，不再全量携带快照值。 */
+export const TRANSACTION_JOURNAL_VALUES_SCHEMA = 'cc-fix-transaction-journal-values-v1';
 export type JournalPhase = 'planned' | 'applying' | 'verified' | 'compensating' | 'compensated' | 'recovery_required';
 export type JournalStep = { id: string; phase: JournalPhase; original?: JsonValue; desired?: JsonValue };
 export type JournalProtectionTarget = { mode: 'standard' | 'deep'; region: RegionCode };
@@ -92,14 +95,46 @@ export type JournalReadResult = Readonly<{
 
 export class TransactionJournalRepository {
   constructor(private readonly root: string, private readonly path: string, private readonly filesystem?: DurableFileSystem) {}
+
+  private get valuesPath(): string {
+    return `${this.path}.values`;
+  }
+
+  /** 从 journal.json 读 phase 表，缺失值步骤从 values 文件补全（issue #59）。
+   * 旧格式（单文件带值）直接返回；新格式无值步骤需匹配的 values 文件，缺失即视为损坏。 */
+  private async mergeValues(journal: TransactionJournal): Promise<TransactionJournal> {
+    if (journal.steps.some((step) => step.original !== undefined || step.desired !== undefined)) {
+      return journal; // 旧格式：值内嵌于 steps
+    }
+    const valuesResult = await readCheckedFile<JsonValue>({
+      stateRoot: this.root,
+      filePath: this.valuesPath,
+      schema: TRANSACTION_JOURNAL_VALUES_SCHEMA,
+      filesystem: this.filesystem,
+      validatePayload: validJournalValues,
+    });
+    if (valuesResult.kind !== 'ok') {
+      throw new DurableFileError('CORRUPT', 'Journal phase table exists but its values snapshot is missing or invalid');
+    }
+    const doc = valuesResult.payload as unknown as JournalValuesDocument;
+    if (doc.transactionId !== journal.transactionId) {
+      throw new DurableFileError('CORRUPT', 'Journal values snapshot belongs to a different transaction');
+    }
+    return { ...journal, steps: journal.steps.map((step) => ({ ...step, ...(doc.values[step.id] ?? {}) })) };
+  }
+
   async read(): Promise<TransactionJournal | undefined> {
     return (await this.readWithDegradation()).journal;
   }
   async readWithDegradation(): Promise<JournalReadResult> {
     const result = await readCheckedFile<TransactionJournal>({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, validatePayload: validJournal });
     if (result.kind === 'missing') return { journal: undefined, degraded: false };
-    return { journal: result.payload, degraded: result.degraded === true };
+    return { journal: await this.mergeValues(result.payload), degraded: result.degraded === true };
   }
+
+  /** plan 拆两步：先写 values 快照（含完整 original/desired），再写 phase 表（剥值）。
+   * 崩溃窗口安全：values 写完 journal 未写 → journal 缺失，下次 plan 以新 transactionId 覆盖；
+   * journal 写完 values 未写不可能（values 先写）。 */
   async plan(
     kind: TransactionJournal['kind'],
     steps: readonly (string | Readonly<{ id: string; original?: JsonValue; desired?: JsonValue }>)[],
@@ -112,23 +147,49 @@ export class TransactionJournalRepository {
       throw new Error('An unfinished transaction requires recovery before a new plan');
     }
     if (context !== undefined && !validContext(context)) throw new Error('Journal context is invalid');
+    const transactionId = randomUUID();
+    const values: Record<string, { original?: JsonValue; desired?: JsonValue }> = {};
+    for (const step of steps) {
+      if (typeof step === 'string') continue;
+      values[step.id] = {
+        ...(step.original === undefined ? {} : { original: step.original }),
+        ...(step.desired === undefined ? {} : { desired: step.desired }),
+      };
+    }
+    const valuesDocument: JournalValuesDocument = { transactionId, values };
+    await writeCheckedFile({ stateRoot: this.root, filePath: this.valuesPath, schema: TRANSACTION_JOURNAL_VALUES_SCHEMA, filesystem: this.filesystem, payload: valuesDocument as never, validatePayload: validJournalValues });
     const journal: TransactionJournal = {
-      transactionId: randomUUID(),
+      transactionId,
       kind,
-      steps: steps.map((step) => typeof step === 'string' ? ({ id: step, phase: 'planned' }) : ({ id: step.id, phase: 'planned', ...(step.original === undefined ? {} : { original: step.original }), ...(step.desired === undefined ? {} : { desired: step.desired }) })),
+      steps: steps.map((step) => typeof step === 'string' ? ({ id: step, phase: 'planned' }) : ({ id: step.id, phase: 'planned' })),
       ...(context === undefined ? {} : { context: structuredClone(context) }),
     };
     await writeCheckedFile({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, payload: journal, validatePayload: validJournal });
-    return journal;
+    return this.mergeValues(journal);
   }
+
   async transition(journal: TransactionJournal, id: string, phase: JournalPhase): Promise<TransactionJournal> {
     const index = journal.steps.findIndex((step) => step.id === id);
     if (index < 0) throw new Error('Journal step is not planned');
     if (!legalTransitions[journal.steps[index]!.phase].includes(phase)) {
       throw new Error(`Illegal journal transition: ${journal.steps[index]!.phase} -> ${phase}`);
     }
-    const next: TransactionJournal = { ...journal, steps: journal.steps.map((step, i) => i === index ? { ...step, phase } : { ...step }) };
-    await writeCheckedFile({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, payload: next, validatePayload: validJournal });
-    return next;
+    // issue #59：写盘只落 phase 表（剥去快照值），避免每次转换全量重写系统配置
+    const stripped: TransactionJournal = { ...journal, steps: journal.steps.map((step, i) => i === index ? { id: step.id, phase } : { id: step.id, phase: step.phase }) };
+    await writeCheckedFile({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, payload: stripped, validatePayload: validJournal });
+    return { ...journal, steps: journal.steps.map((step, i) => i === index ? { ...step, phase } : { ...step }) };
   }
+}
+
+/** 快照值文件形状：transactionId + 每步 original/desired。 */
+export type JournalValuesDocument = Readonly<{
+  transactionId: string;
+  values: Readonly<Record<string, { original?: JsonValue; desired?: JsonValue }>>;
+}>;
+
+function validJournalValues(value: JsonValue): value is JournalValuesDocument {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && typeof (value as JournalValuesDocument).transactionId === 'string'
+    && typeof (value as JournalValuesDocument).values === 'object'
+    && (value as JournalValuesDocument).values !== null;
 }
