@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve } from 'node:path';
-import { access, mkdir, readFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { REGION_CODES, type RegionCode } from '../domain/region.js';
 import { StateRepository, BackupRepository, type MutationCoordinatorCapability } from '../state/repository.js';
@@ -131,14 +131,28 @@ export async function createPersistRuntime(options: PersistRuntimeOptions = {}):
     ...(filesystem === undefined ? {} : { filesystem }),
     ...(deleteAuthority === undefined ? {} : { verifiedRestoreAuthority: deleteAuthority.capability }),
   });
-  const migration = await migrateLegacyProtection({
-    root,
-    coordinator,
-    stateStore: new RepositoryMigrationStateStore(stateRepository),
-    backupStore: new NodeLegacyBackupConversionStore({ root, ...(filesystem === undefined ? {} : { filesystem }) }),
-    evidenceStore: new NodeLegacyEvidenceStore(),
-    classifier: createAuthorityLegacyClassifier(authorities),
-  });
+  // issue #58：迁移哨兵。迁移一旦收敛（migrated/noop）就原子写哨兵；此后每次
+  // runtime 创建先无锁 stat 哨兵，命中即跳过 migrateLegacyProtection——已迁移用户
+  // 的每条 persist 子命令不再付"拿 root 锁 + 查询进程 StartTime + classifier 读全部
+  // 权威"的开销。哨兵只在收敛后写；recovery_required/failed 不写（下次重试）。
+  // 哨兵含版本号：将来 schema 升级改版本即可强制重新迁移。哨兵被删只会触发一次
+  // 幂等重迁移，无正确性风险。
+  let migration: MigrationResult;
+  if (await readMigrationSentinel(root)) {
+    migration = Object.freeze({ kind: 'noop' as const, reason: 'already_initialized' as const, committedTarget: null, stateWritten: false });
+  } else {
+    migration = await migrateLegacyProtection({
+      root,
+      coordinator,
+      stateStore: new RepositoryMigrationStateStore(stateRepository),
+      backupStore: new NodeLegacyBackupConversionStore({ root, ...(filesystem === undefined ? {} : { filesystem }) }),
+      evidenceStore: new NodeLegacyEvidenceStore(),
+      classifier: createAuthorityLegacyClassifier(authorities),
+    });
+    if (migration.kind === 'migrated' || migration.kind === 'noop') {
+      await writeMigrationSentinel(root);
+    }
+  }
   if (migration.kind === 'recovery_required') {
     throw new PersistRuntimeError(
       'MIGRATION_RECOVERY_REQUIRED',
@@ -160,4 +174,30 @@ export async function createPersistRuntime(options: PersistRuntimeOptions = {}):
       deleteDailySnapshot: createVerifiedBackupDelete(backupRepository, deleteAuthority),
     }),
   });
+}
+
+const MIGRATION_SENTINEL_VERSION = 1;
+
+function migrationSentinelPath(root: string): string {
+  return join(root, 'legacy-migration.json');
+}
+
+async function readMigrationSentinel(root: string): Promise<boolean> {
+  try {
+    const parsed = JSON.parse(await readFile(migrationSentinelPath(root), 'utf8')) as { schemaVersion?: unknown };
+    return parsed.schemaVersion === MIGRATION_SENTINEL_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+async function writeMigrationSentinel(root: string): Promise<void> {
+  try {
+    const sentinel = migrationSentinelPath(root);
+    const tmp = `${sentinel}.${randomUUID()}.tmp`;
+    await writeFile(tmp, JSON.stringify({ schemaVersion: MIGRATION_SENTINEL_VERSION, migratedAt: new Date().toISOString() }), 'utf8');
+    await rename(tmp, sentinel);
+  } catch {
+    // 哨兵写失败不阻断：下次运行重新迁移（幂等 noop），无正确性影响。
+  }
 }

@@ -32,11 +32,23 @@ export function createWindowsProcessInspector(
   queryStartedAtMs: (pid: number) => Promise<number | undefined>,
 ): ProcessInspector {
   let currentIdentity: Promise<Pick<ProcessOwner, 'pid' | 'startedAtMs'>> | undefined;
+  // issue #58：同一 pid 的 StartTime 查询短时缓存——PowerShell 冷启动百毫秒级，
+  // 锁竞争路径（acquire + isSameProcess 对同一持有者）与 GUI 常驻进程的多次
+  // 操作会重复查询同一 pid。缓存 5s 足以覆盖一次事务的生命周期。
+  const QUERY_CACHE_TTL_MS = 5_000;
+  const queryCache = new Map<number, { at: number; value: number | undefined }>();
+  const cachedQuery = async (pid: number): Promise<number | undefined> => {
+    const hit = queryCache.get(pid);
+    if (hit !== undefined && Date.now() - hit.at < QUERY_CACHE_TTL_MS) return hit.value;
+    const value = await queryStartedAtMs(pid);
+    queryCache.set(pid, { at: Date.now(), value });
+    return value;
+  };
   return {
     current: async () => currentIdentity ??= (async () => {
       let startedAtMs: number | undefined;
       try {
-        startedAtMs = await queryStartedAtMs(process.pid);
+        startedAtMs = await cachedQuery(process.pid);
       } catch (error) {
         throw new Error('Cannot establish current process start time', { cause: error });
       }
@@ -45,6 +57,6 @@ export function createWindowsProcessInspector(
     })(),
     // 查询失败必须上抛（issue #51 M1）："无法确认存活"绝不等于"进程已死"，
     // 否则接管路径会把活着的持锁进程误判为死亡，造成双持锁并发写。
-    isSameProcess: async (owner) => (await queryStartedAtMs(owner.pid)) === owner.startedAtMs,
+    isSameProcess: async (owner) => (await cachedQuery(owner.pid)) === owner.startedAtMs,
   };
 }

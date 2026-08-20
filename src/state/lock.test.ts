@@ -74,4 +74,18 @@ describe('Windows process identity', () => {
     expect(await nodeProcessInspector.isSameProcess({ ...current, pid: current.pid + 1 })).toBe(false);
     expect(await nodeProcessInspector.isSameProcess({ ...current, startedAtMs: current.startedAtMs + 1 })).toBe(false);
   });
+
+  it('caches the start-time query per pid within the TTL window (issue #58)', async () => {
+    let queries = 0;
+    const inspector = createWindowsProcessInspector(async () => { queries += 1; return 100; });
+    const owner = { pid: 7, startedAtMs: 100 };
+    expect(await inspector.isSameProcess(owner)).toBe(true);
+    expect(await inspector.isSameProcess(owner)).toBe(true);
+    expect(await inspector.current()).toEqual({ pid: process.pid, startedAtMs: 100 });
+    expect(queries).toBe(2); // pid=7 一次 + process.pid 一次，第二次 isSameProcess 命中缓存
+    // 缓存过期后重新查询
+    await new Promise((resolve) => setTimeout(resolve, 5_100));
+    expect(await inspector.isSameProcess(owner)).toBe(true);
+    expect(queries).toBe(3);
+  });
 });

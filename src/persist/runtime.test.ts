@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -146,5 +146,45 @@ describe('native helper path resolution (issue #53)', () => {
     const bare = await tempHelper('no-sidecar');
     process.env.CC_FIX_NATIVE_HELPER = bare;
     await expect(resolveNativeHelperPath()).resolves.toBe(bare);
+  });
+});
+
+describe('migration sentinel fast path (issue #58)', () => {
+  async function fixtureRuntime() {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-sentinel-'));
+    roots.push(root);
+    const values = desiredValues({ mode: 'deep', region: 'us' }) as Record<PersistStepId, StoredValue<JsonValue>>;
+    const options = {
+      root,
+      platform: 'linux' as const,
+      coordinator: new InProcessTestMutationCoordinator().capability,
+      authorities: authorities(values),
+    };
+    return { root, options };
+  }
+
+  it('writes the sentinel once migration converges and short-circuits later runtime creation', async () => {
+    const { root, options } = await fixtureRuntime();
+    await createPersistRuntime(options);
+    const sentinel = join(root, 'legacy-migration.json');
+    const first = JSON.parse(await readFile(sentinel, 'utf8')) as { schemaVersion: number };
+    expect(first.schemaVersion).toBe(1);
+    // 第二次创建同一 root：哨兵命中，直接收敛（不抛错），幂等
+    await expect(createPersistRuntime(options)).resolves.toBeDefined();
+  });
+
+  it('re-migrates (idempotently) when the sentinel is missing or versioned differently', async () => {
+    const { root, options } = await fixtureRuntime();
+    await createPersistRuntime(options);
+    // 删除哨兵 → 重新迁移（noop）→ 哨兵重建
+    await rm(join(root, 'legacy-migration.json'), { force: true });
+    await expect(createPersistRuntime(options)).resolves.toBeDefined();
+    const rebuilt = JSON.parse(await readFile(join(root, 'legacy-migration.json'), 'utf8')) as { schemaVersion: number };
+    expect(rebuilt.schemaVersion).toBe(1);
+    // 版本不符的哨兵 → 同样触发重新迁移并覆盖
+    await writeFile(join(root, 'legacy-migration.json'), JSON.stringify({ schemaVersion: 999 }), 'utf8');
+    await expect(createPersistRuntime(options)).resolves.toBeDefined();
+    const overwritten = JSON.parse(await readFile(join(root, 'legacy-migration.json'), 'utf8')) as { schemaVersion: number };
+    expect(overwritten.schemaVersion).toBe(1);
   });
 });
