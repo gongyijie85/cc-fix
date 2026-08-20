@@ -7,12 +7,8 @@ import { getTargetRegion, DEFAULT_REGION } from "./detection/regions.js";
 import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
 import { recordCheck, recordPersistFacts } from "./fix/history.js";
-import { runWithInjectedEnv, runDesktop } from "./run/injector.js";
-import { startGuiServer } from "./gui/server.js";
 import { spawn } from "node:child_process";
 import { version } from "./version.js";
-import { createPersistRuntime } from "./persist/runtime.js";
-import { installerPreflightExitCode } from "./persist/preflight.js";
 import { parseRegionCode, resolveRegion } from "./domain/region.js";
 import { resolveProtectionRequest } from "./domain/protection.js";
 import {
@@ -28,6 +24,14 @@ import {
 } from "./cli/exit-codes.js";
 
 const program = new Command();
+
+/** 惰性加载持久化运行时：check/run 等命令不在启动路径加载 persist 全家桶（issue #60）。
+ * 动态 import 的模块图（native-backend/migration/authorities/durable-file 等）
+ * 只在 persist/gui 命令真正需要时才解析。 */
+async function openPersistRuntime() {
+  const { createPersistRuntime } = await import("./persist/runtime.js");
+  return createPersistRuntime();
+}
 
 program
   .name("cc-fix")
@@ -84,7 +88,7 @@ persistCmd
   .action(async (options) => {
     jsonOutput = options.json === true;
     if (options.region !== undefined) parseRegionCode(options.region, "explicit");
-    const runtime = await createPersistRuntime();
+    const runtime = await openPersistRuntime();
     const status = await runtime.status();
     const region = resolveRegion({
       explicit: options.region,
@@ -162,7 +166,7 @@ persistCmd
   .option("--json", "JSON 格式输出")
   .action(async (options) => {
     jsonOutput = options.json === true;
-    const runtime = await createPersistRuntime();
+    const runtime = await openPersistRuntime();
     const result = await runtime.restore();
     if (result.kind === "recovery_required") {
       void recordPersistFacts({
@@ -211,7 +215,7 @@ persistCmd
   .option("--json", "JSON 格式输出")
   .action(async (options) => {
     jsonOutput = options.json === true;
-    const runtime = await createPersistRuntime();
+    const runtime = await openPersistRuntime();
     const result = await runtime.recover();
     if (result.kind === "recovery_required") {
       void recordPersistFacts({
@@ -260,7 +264,7 @@ persistCmd
   .option("--json", "JSON 格式输出")
   .action(async (options) => {
     jsonOutput = options.json === true;
-    const status = await (await createPersistRuntime()).status();
+    const status = await (await openPersistRuntime()).status();
     if (options.json) {
       console.log(jsonEnvelope({ status }));
       return;
@@ -279,7 +283,8 @@ persistCmd
   .option("--json", "JSON 格式输出")
   .action(async (options) => {
     jsonOutput = options.json === true;
-    const status = await (await createPersistRuntime()).status();
+    const status = await (await openPersistRuntime()).status();
+    const { installerPreflightExitCode } = await import("./persist/preflight.js");
     const exitCode = installerPreflightExitCode(status);
     if (options.json) console.log(jsonEnvelope({ allowed: exitCode === 0, status, preflightExitCode: exitCode }));
     else console.log(exitCode === 0 ? chalk.green("✓ 可以安全升级或修复") : chalk.yellow("当前存在未完成恢复，禁止替换程序文件"));
@@ -295,6 +300,7 @@ program
   .action(async (commandArgs, options) => {
     jsonOutput = options.json === true;
     const target = getTargetRegion(options.region);
+    const { runWithInjectedEnv, runDesktop } = await import("./run/injector.js");
 
     if (options.desktop) {
       const code = await runDesktop(target);
@@ -358,6 +364,7 @@ program
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       throw new CliFailure(EXIT_INVALID_INPUT, "INVALID_COMMAND", `非法端口号: ${options.port}`);
     }
+    const { startGuiServer } = await import("./gui/server.js");
     const server = await startGuiServer(port);
     const url = server.bootstrapUrl();
     console.log("🛡️  CC-Fix Web 面板已启动");
