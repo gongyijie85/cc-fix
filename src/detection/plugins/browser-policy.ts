@@ -26,7 +26,7 @@ export const browserPolicyPlugin: DetectionPlugin = {
     // 逐槽位比对：缺失或取值不符记为异常，附当前值
     const badSlots: string[] = [];
     for (const slot of BROWSER_POLICY_SLOTS) {
-      const current = getPolicy(slot.id);
+      const current = await getPolicy(slot.id);
       if (current !== targets[slot.id]) {
         const name = SLOT_LABELS[slot.valueName] ?? slot.valueName;
         badSlots.push(`${BROWSER_LABELS[slot.browser]}/${name}=${current ?? "(未设置)"}`);

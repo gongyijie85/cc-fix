@@ -67,3 +67,27 @@
   - `recover()` 将降级标志传入 `recoverProtectTransaction`：降级时 planned 步骤不再走"无写关闭"捷径（旧实现直接标记 compensated——而现实中该步骤可能已写入 desired，导致系统停留在 desired 而状态机认为已回滚），改为先推进 `recovery_required` 再走补偿写回 original 的最保守路径
   - 非 degraded 路径不变：权威读取下 executor 在权威写之前先落 applying，planned 步骤确未开始写、无写关闭安全；restore 恢复本就全量重验（无需改动）
   - 测试：journal.test.ts 新增降级读取用例（损坏 current → .prev 滞后 phase + degraded 标志）；recovery-executor.test.ts 新增降级 planned 全量回写用例（与权威 planned 无写关闭形成对照）
+
+- **perf(cli): 启动路径按命令惰性加载 GUI/persist/injector 全家桶（issue #60）**
+  - `cc-fix check`/`run` 等高频命令不再在启动路径加载 `gui/server.js`（含 index.html 文本内联 + fonts/session 全家桶）、`persist/runtime.js`（native-backend/migration/authorities/durable-file）、`persist/preflight.js`、`run/injector.js`——顶层静态导入改为命令 action 内 `await import(...)`
+  - 新增 `openPersistRuntime()` 惰性 loader：persist 五个子命令共用；preflight 的 `installerPreflightExitCode`、run 的 `runWithInjectedEnv/runDesktop`、gui 的 `startGuiServer` 均按需动态加载
+  - 收益：`check`/`status` 冷启动不再解析 30+ 个多余模块（估 50~150ms）；改动局限 index.ts 单文件
+
+- **perf(state): 迁移哨兵跳过 noop 迁移 + 进程 StartTime 查询缓存（issue #58）**
+  - 迁移哨兵 `legacy-migration.json`：迁移收敛（migrated/noop）后原子写；此后 runtime 创建先无锁 stat 哨兵、命中即跳过 `migrateLegacyProtection`——已迁移用户的每条 persist 子命令不再付"拿 root 锁 + PowerShell 查进程 StartTime + classifier 读全部权威"的开销（估每条 150~600ms）
+  - 哨兵含版本号（当前 1），将来 schema 升级改版本强制重迁移；哨兵被删只触发一次幂等重迁移；recovery_required/failed 不写哨兵（下次重试）
+  - `createWindowsProcessInspector` 的 StartTime 查询按 pid 加 5s TTL 缓存：锁竞争路径（acquire + isSameProcess 对同一持有者）与 GUI 常驻进程重复查询同一 pid 时只 spawn 一次 PowerShell
+  - 测试：runtime.test.ts 新增哨兵写入/幂等跳过/删除与版本不符重迁移 2 用例；lock.test.ts 新增查询缓存计数用例（TTL 内 1 次、过期重查）
+
+- **perf(persist): journal 拆分 phase 表与快照值文件，transition 只重写小文件（issue #59）**
+  - 原实现：每次 phase 转换把带全部步骤 original/desired（完整系统配置）的 journal 全量重写——10 步事务 ≈ 21 次全量写 + 84 次 fsync（估 300~600ms）
+  - 新实现：`plan` 先写 values 快照（`transaction-journal.json.values`，含完整快照值，schema `cc-fix-transaction-journal-values-v1`）再写 phase 表（剥值）；`transition` 只重写 phase 表（KB 级）；读取时 `mergeValues` 透明合并，`TransactionJournal` 对外形状不变
+  - 崩溃安全：values 先写后 journal 缺失 → 下次 plan 以新 transactionId 覆盖；journal 写后 values 必然已存在；合并时校验 transactionId 匹配
+  - 向后兼容：旧格式（值内嵌 steps 的单文件）读取直接返回，不触碰 values 文件
+  - 测试：新增 phase 表剥值断言（journal.json 不含 original/desired、values 文件含快照）、transition 后读回合并完整值、旧格式 envelope 兼容读取；全量 persist/state 349 用例通过
+
+- **perf(gui): 探测/查询全面异步化，不再阻塞事件循环（issue #61）**
+  - `detectRunningBrowsers`：逐浏览器 `execSync tasklist /FI`（每次阻塞 30-100ms × 2，GUI SSE 常驻服务里冻结全部请求）→ 一次异步 `tasklist /NH` 列全量 + 内存匹配多个镜像名
+  - `getPolicy`/`readUserEnvVar`/`readUserLocale`：`execSync reg query` → 异步 `execFile`（返回 Promise，调用方已 await）
+  - `computeSystemState` 子进程探测失败：从静默回落改为 `console.warn`（常驻进程用 launch-time TZ 快照打分的退化可观测，issue #45 根因场景）
+  - 测试：browser.test.ts 重写为 execFile 回调 mock（全量输出多镜像匹配/失败降级/空结果 + getPolicy 成功/失败/目录外拒绝）；server.test.ts browser-hint 用例经 `Promise.resolve` 包装兼容同步 mock

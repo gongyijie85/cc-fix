@@ -148,9 +148,12 @@ async function handleFixOn(orchestrator: ReturnType<typeof createGuiOrchestrator
     if (!failed) orchestrator.markPendingRecheckIfKnown();
     if (!failed) {
       // 待生效提示（ADR-0006）：策略写入后探测运行中的浏览器。
-      // setImmediate：探测内部是同步 tasklist，不阻塞本次请求的关键路径；
-      // detectRunningBrowsers 逐浏览器吞掉失败，自身不会抛出。
-      setImmediate(() => { orchestrator.broadcast({ type: "browser-hint", running: detectRunningBrowsers() }); });
+      // 异步探测（issue #61）：不阻塞事件循环；detectRunningBrowsers 内部吞掉失败，不会抛出。
+      setImmediate(() => {
+        void Promise.resolve(detectRunningBrowsers()).then((running) => {
+          orchestrator.broadcast({ type: "browser-hint", running });
+        });
+      });
     }
     void recordFixSummary("persist-on", summary);
     orchestrator.broadcast(summary);

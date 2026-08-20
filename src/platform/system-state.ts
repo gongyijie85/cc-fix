@@ -1,26 +1,26 @@
 // 检测侧的权威系统状态读取（issue #45）：常驻进程不能依赖启动时 env 快照。
 
-import { execFile, execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-function regQueryString(keyPath: string, valueName: string): string | null {
+async function regQueryString(keyPath: string, valueName: string): Promise<string | null> {
   try {
-    const result = execSync(`reg query "${keyPath}" /v ${valueName}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-    const match = result.match(/REG_SZ\s+(.+)/);
+    const { stdout } = await execFileAsync('reg', ['query', keyPath, '/v', valueName], { encoding: 'utf8', windowsHide: true });
+    const match = stdout.match(/REG_SZ\s+(.+)/);
     return match ? match[1].trim() : null;
   } catch { return null; }
 }
 
-/** HKCU\\Environment 用户环境变量（persist 的权威存储）。 */
-export function readUserEnvVar(name: string): string | null {
+/** HKCU\\Environment 用户环境变量（persist 的权威存储）。异步（issue #61）：不在事件循环同步阻塞。 */
+export async function readUserEnvVar(name: string): Promise<string | null> {
   if (process.platform === 'win32') return regQueryString('HKCU\\Environment', name);
   return process.env[name] ?? null;
 }
 
-/** 用户 Locale 名称（Windows 区域格式的权威存储）。 */
-export function readUserLocale(): string | null {
+/** 用户 Locale 名称（Windows 区域格式的权威存储）。异步（issue #61）。 */
+export async function readUserLocale(): Promise<string | null> {
   if (process.platform === 'win32') return regQueryString('HKCU\\Control Panel\\International', 'LocaleName');
   return null;
 }
@@ -52,7 +52,11 @@ async function computeSystemState(): Promise<SystemStateSnapshot> {
       const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], { env, encoding: 'utf8', windowsHide: true, timeout: 10_000 });
       const parsed = JSON.parse(stdout.trim()) as SystemStateSnapshot;
       if (typeof parsed.timezone === 'string' && parsed.timezone.length > 0 && Number.isFinite(parsed.offsetMinutes)) return Object.freeze(parsed);
-    } catch { /* 回落 */ }
+    } catch (error) {
+      // issue #61：子进程探测失败时回落进程内 Intl 是可观测的降级——常驻进程会继续用
+      // launch-time TZ 快照打分（issue #45 的根因场景），必须告警而非静默吞掉。
+      console.warn('[system-state] 子进程时区探测失败，回落到进程内 Intl：', error instanceof Error ? error.message : String(error));
+    }
   }
   return Object.freeze({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offsetMinutes: -new Date().getTimezoneOffset() });
 }
