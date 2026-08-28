@@ -69,15 +69,26 @@ try {
   $NodeRoot = Get-ChildItem -LiteralPath $NodeExtract -Directory | Select-Object -First 1
   Copy-Item -LiteralPath (Join-Path $NodeRoot.FullName 'node.exe') -Destination (Join-Path $PayloadRoot 'runtime\node.exe')
   Copy-Item -LiteralPath (Join-Path $NodeRoot.FullName 'LICENSE') -Destination (Join-Path $PayloadRoot 'runtime\NODE-LICENSE.txt')
-  Copy-Item -LiteralPath 'dist\index.js' -Destination (Join-Path $PayloadRoot 'core\index.js')
-  Copy-Item -LiteralPath 'dist\gui\sidecar.js' -Destination (Join-Path $PayloadRoot 'core\sidecar.js')
+  # splitting 启用后 dist 含共享 chunk；整个 JS 树镜像到 core/，保持 index.js/gui/sidecar.js 相对导入可用。
+  Get-ChildItem -LiteralPath 'dist' -Recurse -Filter '*.js' | ForEach-Object {
+    $Relative = $_.FullName.Substring((Resolve-Path 'dist').Path.Length + 1)
+    $Destination = Join-Path $PayloadRoot "core\$Relative"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
+    Copy-Item -LiteralPath $_.FullName -Destination $Destination
+  }
   Copy-Item -LiteralPath 'native-helper\target\release\cc-fix-native-helper.exe' -Destination (Join-Path $PayloadRoot 'native\cc-fix-native-helper.exe')
   # issue #53：helper 哈希 sidecar——运行期 resolveNativeHelperPath 校验（篡改可见性，fail-closed）
-  $HelperDigest = Get-Sha256 (Join-Path $PayloadRoot 'native\cc-fix-native-helper.exe')
-  [IO.File]::WriteAllText((Join-Path $PayloadRoot 'native\cc-fix-native-helper.exe.sha256'), "$HelperDigest`n")
+  # Windows PowerShell + StrictMode can treat an interpolated assignment as
+  # uninitialized when the hash helper returns through nested finally blocks;
+  # write the verified digest directly to avoid producing a missing sidecar.
+  (Get-Sha256 (Join-Path $PayloadRoot 'native\cc-fix-native-helper.exe')) |
+    Set-Content -LiteralPath (Join-Path $PayloadRoot 'native\cc-fix-native-helper.exe.sha256') -Encoding ascii
   Copy-Item -LiteralPath 'src-tauri\target\release\cc-fix-desktop.exe' -Destination (Join-Path $PayloadRoot 'CC-Fix.exe')
   Copy-Item -LiteralPath 'packaging\cc-fix.cmd' -Destination (Join-Path $PayloadRoot 'bin\cc-fix.cmd')
   Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $PayloadRoot 'LICENSE.txt')
+  # The sidecar serves GUI CSS/JS/fonts relative to the install root. Keep
+  # these resources in the installer payload alongside core/ and runtime/.
+  Copy-Item -LiteralPath 'assets' -Destination (Join-Path $PayloadRoot 'assets') -Recurse
   Copy-Item -LiteralPath $WebViewInstaller -Destination (Join-Path $PayloadRoot 'redist\MicrosoftEdgeWebView2RuntimeInstallerX64.exe')
 
   Invoke-Native 'node.exe' @('scripts\verify-windows-payload.mjs', '--write')

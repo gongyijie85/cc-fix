@@ -5,9 +5,10 @@ export default defineConfig({
   format: ["esm"],
   dts: true,
   clean: true,
-  splitting: false,
+  splitting: true,
   sourcemap: true,
-  target: "node24",
+  // 与 package.json engines >=20 对齐：npm 渠道承诺 Node 20+，语法按 Node 20 下沉。
+  target: "node20",
   noExternal: [/.*/],
   loader: {
     ".html": "text",

@@ -1,9 +1,9 @@
 // 终端输出 — 对标 checkcc.org 风格
 
 import chalk from "chalk";
-import Table from "cli-table3";
 import type { CheckResponse, SignalResult, IpIntelligence } from "../detection/types.js";
 import { isPersistFixable } from "../detection/scoring.js";
+import { renderTable } from "./table.js";
 
 function getRiskColor(risk: SignalResult["risk"]): (text: string) => string {
   switch (risk) {
@@ -103,29 +103,26 @@ export function renderCheckResponse(response: CheckResponse): void {
   console.log(chalk.bold("📊 检测信号详情:"));
   console.log();
 
-  const table = new Table({
-    head: ["检测项", "当前值", "风险", "风险分值"],
-    colWidths: [18, 28, 8, 12],
-    style: { head: ["cyan"] },
-  });
-
   // 按贡献值排序（高风险在前）
   const sorted = [...signals].sort((a, b) => b.contribution - a.contribution);
 
-  for (const signal of sorted) {
-    const riskColor = getRiskColor(signal.risk);
-    const riskEmoji = getRiskEmoji(signal.risk);
-    const contribStr = signal.contribution > 0 ? chalk.red(`+${signal.contribution}`) : chalk.green("+0");
+  const table = renderTable({
+    head: ["检测项", "当前值", "风险", "风险分值"],
+    colWidths: [18, 28, 8, 12],
+    rows: sorted.map((signal) => {
+      const riskColor = getRiskColor(signal.risk);
+      const riskEmoji = getRiskEmoji(signal.risk);
+      const contribStr = signal.contribution > 0 ? chalk.red(`+${signal.contribution}`) : chalk.green("+0");
+      return [
+        signal.label,
+        signal.value || "N/A",
+        riskColor(riskEmoji + " " + getRiskLabel(signal.risk)),
+        contribStr,
+      ];
+    }),
+  });
 
-    table.push([
-      signal.label,
-      signal.value || "N/A",
-      riskColor(riskEmoji + " " + getRiskLabel(signal.risk)),
-      contribStr,
-    ]);
-  }
-
-  console.log(table.toString());
+  console.log(table);
   console.log();
 
   // 建议
