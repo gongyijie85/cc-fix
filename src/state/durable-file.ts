@@ -46,7 +46,7 @@ export interface DurableFileSystem {
   directorySyncCapability: DirectorySyncCapability;
   boundarySafety: BoundarySafetyCapability;
   compareDeleteCapability: CompareDeleteCapability;
-  open(path: string, flags: string): Promise<DurableFileHandle>;
+  open(path: string, flags: string, mode?: number): Promise<DurableFileHandle>;
   openDirectory(path: string): Promise<DurableDirectoryHandle>;
   readFile(path: string): Promise<string>;
   lstat(path: string): Promise<DurableFileStat>;
@@ -76,7 +76,7 @@ export const nodeDurableFileSystem: DurableFileSystem = {
   // T22's native helper must provide native-no-follow for an adversarial same-user race.
   boundarySafety: 'identity-checked',
   compareDeleteCapability: 'unsupported',
-  open: async (path, flags) => asDurableHandle(await open(path, flags)),
+  open: async (path, flags, mode) => asDurableHandle(await open(path, flags, mode)),
   openDirectory: async (path) => {
     const handle = await open(path, 'r');
     return { sync: () => handle.sync(), close: () => handle.close() };
@@ -628,7 +628,7 @@ async function prepareTemp(
   let primaryError: unknown;
   try {
     await assertBoundaryStable(boundary, filesystem);
-    handle = await filesystem.open(tempPath, 'wx');
+    handle = await filesystem.open(tempPath, 'wx', 0o600);
     ownedTemps.set(tempPath, boundary);
     await assertBoundaryStable(boundary, filesystem);
     await handle.writeFile(serialized);

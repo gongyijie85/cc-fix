@@ -240,6 +240,7 @@ mod windows_helper {
 
     #[cfg(test)]
     mod tests {
+        use crate::{MAX_STDIN_BYTES, read_expected_limited};
         use super::compare_delete;
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -283,6 +284,14 @@ mod windows_helper {
             assert!(compare_delete(&root, "..\\outside", b"x").is_err());
             fs::remove_dir(root).unwrap();
         }
+
+        #[test]
+        fn accepts_bounded_stdin_and_rejects_oversized_input() {
+            let ok = read_expected_limited(&mut b"small envelope".as_slice()).unwrap();
+            assert_eq!(ok, b"small envelope");
+            let oversized = vec![0u8; MAX_STDIN_BYTES + 1];
+            assert!(read_expected_limited(&mut oversized.as_slice()).is_err());
+        }
     }
 }
 
@@ -294,7 +303,6 @@ fn main() {
     }
     #[cfg(windows)]
     {
-        use std::io::Read as _;
         let args: Vec<String> = std::env::args().collect();
         if args.len() != 4
             || args[1] != "compare-delete"
@@ -306,11 +314,13 @@ fn main() {
             eprintln!("usage: cc-fix-native-helper compare-delete <root> <fixed-backup-name>");
             std::process::exit(2);
         }
-        let mut expected = Vec::new();
-        if let Err(error) = std::io::stdin().read_to_end(&mut expected) {
-            eprintln!("stdin: {error}");
-            std::process::exit(3);
-        }
+        let expected = match read_expected_limited(&mut std::io::stdin().lock()) {
+            Ok(bytes) => bytes,
+            Err(message) => {
+                eprintln!("stdin: {message}");
+                std::process::exit(3);
+            }
+        };
         match windows_helper::compare_delete(std::path::Path::new(&args[2]), &args[3], &expected) {
             Ok(result) => println!("{result}"),
             Err(error) => {
@@ -319,4 +329,21 @@ fn main() {
             }
         }
     }
+}
+
+/// 有界 stdin 读取（#62）：compare-delete 的期望字节上限 16MB，超过即拒绝，
+/// 防止畸形/异常输入被读入内存放大（防护纵深；调用方本就只写 ~KB 级备份）。
+const MAX_STDIN_BYTES: usize = 16 * 1024 * 1024;
+
+fn read_expected_limited<R: std::io::Read>(reader: &mut R) -> Result<Vec<u8>, &'static str> {
+    use std::io::Read as _;
+    let mut expected = Vec::new();
+    reader
+        .take((MAX_STDIN_BYTES + 1) as u64)
+        .read_to_end(&mut expected)
+        .map_err(|_| "read failed")?;
+    if expected.len() > MAX_STDIN_BYTES {
+        return Err("exceeds the 16MB limit");
+    }
+    Ok(expected)
 }

@@ -45,7 +45,7 @@ export class FileLockStore implements LockStore {
   async read(): Promise<LockRecord | undefined> { try { return parse(await readFile(this.path, 'utf8')); } catch (error) { if (missing(error)) return undefined; throw error; } }
   async create(record: LockRecord): Promise<boolean> {
     await mkdir(dirname(this.path), { recursive: true });
-    try { const handle = await open(this.path, 'wx'); try { await handle.writeFile(serialized(record), 'utf8'); await handle.sync(); } finally { await handle.close(); } return true; }
+    try { const handle = await open(this.path, 'wx', 0o600); try { await handle.writeFile(serialized(record), 'utf8'); await handle.sync(); } finally { await handle.close(); } return true; }
     catch (error) { if (exists(error)) return false; throw error; }
   }
   private async claim(): Promise<LockRecord | undefined> {
@@ -59,7 +59,7 @@ export class FileLockStore implements LockStore {
     return (await this.createAt(this.claimPath, record)) ? record : undefined;
   }
   private async createAt(path: string, record: LockRecord): Promise<boolean> {
-    try { const handle = await open(path, 'wx'); try { await handle.writeFile(serialized(record), 'utf8'); await handle.sync(); } finally { await handle.close(); } return true; }
+    try { const handle = await open(path, 'wx', 0o600); try { await handle.writeFile(serialized(record), 'utf8'); await handle.sync(); } finally { await handle.close(); } return true; }
     catch (error) { if (exists(error)) return false; throw error; }
   }
   private async releaseClaim(claim: LockRecord): Promise<void> {
@@ -72,7 +72,7 @@ export class FileLockStore implements LockStore {
       try {
         // 按 lockId 匹配锁身份：expected 的 heartbeatAtMs 可能因并发心跳而过期（issue #51 H2）。
         if ((await this.read())?.lockId !== expected.lockId) return false;
-        const handle = await open(temp, 'wx'); try { await handle.writeFile(serialized(next), 'utf8'); await handle.sync(); } finally { await handle.close(); }
+        const handle = await open(temp, 'wx', 0o600); try { await handle.writeFile(serialized(next), 'utf8'); await handle.sync(); } finally { await handle.close(); }
         await rename(temp, this.path); return true;
       } finally { try { await unlink(temp); } catch {} await this.releaseClaim(claim); }
     });
