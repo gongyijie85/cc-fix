@@ -6,6 +6,46 @@
 
 ### Fixed
 
+- **fix(packaging): 将 GUI 静态资源与离线字体纳入 Windows 安装包（2026-08-27）**
+  - 修复安装后 CSS/ES 模块/字体未随 payload 分发，导致白底页面和巨型 SVG 图标的问题
+  - payload 构建现在复制完整 `assets/`，安装布局升级前也校验 GUI 样式、脚本和 CJK 字体存在
+  - 修复 Windows PowerShell 严格模式下 helper SHA-256 sidecar 生成失败；payload 18 项摘要验证通过
+
+- **refactor(gui): 外置静态资源并收紧 CSP（2026-08-27）**
+  - 将单文件 GUI 的 CSS 和交互脚本拆为认证本地 `assets/gui/app.css` 与 `assets/gui/app.js`
+  - 将修复流生命周期（动作、进行态、浏览器重启提示）抽为纯 `assets/gui/state.js` reducer，并用 3 个单元测试覆盖状态组合；DOM 事件与渲染继续留在轻量原生模块中
+  - 将检测进度与字体状态面板抽为 `assets/gui/renderers.js`，明确分隔 DOM 渲染与 SSE/API 编排，并为字体状态文案补充无 DOM 单测
+  - 移除内联事件处理器与 HTML/动态模板中的内联样式，改为 CSS 类与显式事件监听
+  - `script-src`、`style-src` 收紧为仅 `'self'`；静态资源提供精确 MIME、ETag 与 same-origin 策略；模块依赖 `state.js` 同样由认证本地路由提供
+  - 回归：GUI 服务、reducer 与 renderer 19/19、Playwright 11/11、axe、视觉基线与发布门禁通过
+
+- **fix(gui): 应用语义令牌与随包 SVG 图标（issue #64）**
+  - 采用本地 Warp-inspired DESIGN.md 作为深色工具界面参考，整理画布、表面、文本、边框、焦点、语义色、间距和圆角令牌
+  - 关键按钮、标题、网络/历史/字体/保护强度图标由 emoji 改为内联 SVG，状态信息不再依赖系统 emoji 字体
+  - 保留中文字体可读性、安全动作语义和现有可访问名称；Playwright GUI 9/9 通过
+  - 增加 375/840/1120/1600px 与 200% 缩放溢出门禁，以及交互元素命名/SVG 可访问树检查
+  - 接入 axe serious/critical 扫描，并加入 375/840px 首屏视觉基线
+
+- **fix(gui): 补齐字体无关的可访问性与响应式护栏（2026-08-26）**
+  - 提升暗色主题辅助文本对比度，增加 `font-src 'self'` CSP 声明，避免字体资源从外部加载
+  - 增加键盘 `:focus-visible`、`prefers-reduced-motion`、`forced-colors` 支持
+  - 优化窄屏/大屏布局，按钮触控尺寸、历史记录换行和通知栏在 375px 视口下可用
+
+- **fix(fonts): 接入离线 CJK UI 字体资源（issue #63）**
+  - 随包提供 Noto Sans CJK SC Regular 的 UI 子集、上游来源、OFL-1.1 许可说明和 SHA-256
+  - GUI 通过认证本地路由提供 `font/woff2`，使用 same-origin、immutable 缓存；未授权请求仍被拒绝
+  - HTML 使用 `font-display: swap`，系统字体仍保留为回退，字体资源不可用时不影响 GUI 启动
+  - Playwright 增加 `document.fonts`、preload、本地字体请求和无外网请求契约测试
+
+- **fix(fonts): 暂停系统字体移除并补齐恢复安全闭环（2026-08-26）**
+  - `/api/fonts/remove` 固定返回 410，GUI 删除破坏性入口但保留已有备份的字体还原入口
+  - 每次删除前创建当前字体版本的新备份；任一字体或 HKLM Fonts 注册表材料备份失败即 fail-closed，半成品目录清理后不进入提权
+  - 删除清单与刚生成的 manifest 绑定，提权端重新枚举并要求精确相等，关闭“部分备份、全部删除”及备份后目录竞态
+  - 还原撤销本产品拥有的 `PendingFileRenameOperations` 删除对，避免“先还原、重启后又被删”，同时保留其他软件的队列项
+  - GDI `AddFontResource`/`RemoveFontResource` + `WM_FONTCHANGE` 刷新字体表；Node 端按 manifest SHA-256/大小及注册表逐项读回，验证后才清空恢复 marker
+  - 系统内置中文字体改为信息性信号（risk low、贡献 0），不再因正常 Windows 字体增加风险分或引导删除
+  - 新增备份碰撞、提权前哈希验证、队列所有权等事故回归切片与禁用端点测试
+
 - **fix(cli): `persist on` 降级路径退出码接线（issue #50）**
   - degraded 结果现在按契约设置退出码 2（`EXIT_DEGRADED`），此前该分支退出码保持 0，`EXIT_DEGRADED` 为死常量
   - 人类可读输出在降级时改用黄色提示（原为绿色"✓ 已提交"）；JSON 输出保持 `degraded` 数组事实字段

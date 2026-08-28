@@ -141,6 +141,12 @@ Windows 生命周期测试会在隔离的工作区目录和 APPDATA 中完成安
 
 确切的 Node、Rust、Tauri、Inno Setup 与 WebView2 来源及 SHA-256 位于 `toolchain.lock.json`。发布载荷还会生成 CycloneDX SBOM、第三方声明、构建信息和安装包摘要。
 
+## 开发
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)：环境要求、验证命令、代码风格与 PR 流程。
+- `pnpm install` 自动接线 pre-commit 门禁（`typecheck` + `test`，紧急情况可 `git commit --no-verify`）。
+- `pnpm dev` 以 watch 模式构建 `dist/`；`cc-fix check --debug` 输出耗时与错误堆栈，便于提交问题。
+
 ## Windows 支持
 
 - 主验证线：Windows 11 25H2 x64；
