@@ -1,0 +1,7 @@
+CC-Fix bundles a subset of Noto Sans CJK SC Regular.
+
+Upstream: https://github.com/notofonts/noto-cjk
+Source: Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+License: SIL Open Font License 1.1 (OFL-1.1)
+License text: OFL-1.1.txt (also https://scripts.sil.org/OFL)
+Subset SHA-256: C3BED59129B34D5F5B6BDCAE207748491DC0A919E4F0BBE8108B156BC7E9A2D9

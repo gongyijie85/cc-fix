@@ -74,6 +74,8 @@ const buildInfo = {
     warning: process.env.CC_FIX_SIGNING_STATUS === "signed" ? null : "此候选包未进行 Authenticode 签名，Windows SmartScreen 可能显示警告。",
   },
 };
+const fontNotice = await readFile(path.join(root, "assets", "fonts", "NOTICE.txt"), "utf8");
+const fontLicense = await readFile(path.join(root, "assets", "fonts", "OFL-1.1.txt"), "utf8");
 const notices = [
   "# Third-party notices",
   "",
@@ -81,6 +83,12 @@ const notices = [
   "The exact vendor artifacts and SHA-256 digests are recorded in toolchain.lock.json.",
   "",
   ...components.map((component) => `- ${component.name} ${component.version}${component.licenses?.[0]?.license?.id ? ` — ${component.licenses[0].license.id}` : ""}`),
+  "",
+  "## Noto Sans CJK SC subset (bundled font)",
+  "",
+  fontNotice.trim(),
+  "",
+  fontLicense.trim(),
   "",
 ].join("\n");
 

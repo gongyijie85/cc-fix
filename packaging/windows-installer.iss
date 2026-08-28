@@ -99,6 +99,9 @@ begin
     and FileExists(Base + 'core\index.js')
     and FileExists(Base + 'core\sidecar.js')
     and FileExists(Base + 'runtime\node.exe')
+    and FileExists(Base + 'assets\gui\app.css')
+    and FileExists(Base + 'assets\gui\app.js')
+    and FileExists(Base + 'assets\fonts\cc-fix-noto-sans-sc.woff2')
     and FileExists(Base + 'CC-Fix.exe');
 end;
 

@@ -20,16 +20,21 @@ export function encodePowerShellCommand(script: string): string {
 }
 
 export type ElevatedFontRequest = Readonly<{
-  mode: 'remove' | 'restore';
+  mode: 'remove';
+  expectedNames: readonly string[];
+}> | Readonly<{
+  mode: 'restore';
   /** restore：字体文件备份子目录（必须锚定 anchorRoot 子树）。 */
   backupDir?: string;
   /** restore：注册表 JSON 路径（必须锚定 anchorRoot 子树且文件名固定）。 */
   regJsonPath?: string;
+  /** restore：仅撤销本产品此前登记的待重启删除项。 */
+  scheduledDeleteNames?: readonly string[];
 }>;
 
 /**
  * 组装提权脚本。参数以 JSON 字面量内嵌（命令行只读快照，同用户进程无法篡改）；
- * 移除名单不传输——提权端按同一中文字体模式目录自行枚举，消除名单篡改面。
+ * 删除名单来自刚完成备份的 manifest；提权端重新枚举并要求精确相等。
  */
 export function composeElevatedFontScript(options: Readonly<{
   request: ElevatedFontRequest;
@@ -47,6 +52,12 @@ export function composeElevatedFontScript(options: Readonly<{
     "$fontKey = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts'",
     `$req = ${psSingle(JSON.stringify(options.request))} | ConvertFrom-Json`,
     "$cmp = [StringComparison]::OrdinalIgnoreCase",
+    "function Send-WM_FONTCHANGE {",
+    "  $broadcast = [IntPtr]0xffff",
+    "  $WM_FONTCHANGE = 0x001D",
+    "  $result = [UIntPtr]::Zero",
+    "  $null = [CCFontNative]::SendMessageTimeout($broadcast, $WM_FONTCHANGE, [UIntPtr]::Zero, [IntPtr]::Zero, 2, 5000, [ref]$result)",
+    "}",
     "function Assert-Anchored([string]$p, [string]$what) {",
     "  $full = [IO.Path]::GetFullPath($p)",
     "  if (-not $full.StartsWith($anchor, $cmp)) { throw ($what + ' escapes the backup anchor: ' + $p) }",
@@ -54,15 +65,34 @@ export function composeElevatedFontScript(options: Readonly<{
     "}",
     "function Write-Marker([hashtable]$m) { $m.nonce = $nonce; $m | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8 }",
     "try {",
+    "  Add-Type -ErrorAction Stop -TypeDefinition @'",
+    "using System;",
+    "using System.Runtime.InteropServices;",
+    "public static class CCFontNative {",
+    "  [DllImport(\"gdi32.dll\", CharSet = CharSet.Unicode)] public static extern int AddFontResource(string path);",
+    "  [DllImport(\"gdi32.dll\", CharSet = CharSet.Unicode)] public static extern bool RemoveFontResource(string path);",
+    "  [DllImport(\"user32.dll\", SetLastError = true)] public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);",
+    "}",
+    "'@",
     "  if ($req.mode -eq 'remove') {",
+    "    $expectedNames = @($req.expectedNames | ForEach-Object { [string]$_ })",
+    "    if ($expectedNames.Count -eq 0) { throw 'remove inventory is empty' }",
+    "    foreach ($name in $expectedNames) {",
+    "      if ($name -notmatch '^[\\w.-]+\\.(ttf|ttc)$') { throw ('invalid expected font name: ' + $name) }",
+    "    }",
     "    $names = @(Get-ChildItem -LiteralPath $fontsDir | Where-Object { $_.Name -match '" + patterns + "' } | ForEach-Object { $_.Name })",
     "    foreach ($name in $names) {",
     "      if ($name -notmatch '^[\\w.-]+\\.(ttf|ttc)$') { throw ('invalid font name: ' + $name) }",
     "    }",
+    "    $expectedNormalized = @($expectedNames | ForEach-Object { $_.ToLowerInvariant() } | Sort-Object -Unique)",
+    "    $actualNormalized = @($names | ForEach-Object { $_.ToLowerInvariant() } | Sort-Object -Unique)",
+    "    if ($expectedNormalized.Count -ne $expectedNames.Count -or @(Compare-Object $expectedNormalized $actualNormalized).Count -ne 0) { throw 'font inventory changed after backup' }",
     "    $pendingReboot = @()",
+    "    $scheduledDeleteNames = @()",
     "    foreach ($name in $names) {",
     "      $full = Join-Path $fontsDir $name",
     "      if (Test-Path -LiteralPath $full) {",
+    "        $null = [CCFontNative]::RemoveFontResource($full)",
     "        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop }",
     "        catch { $pendingReboot += $name }",
     "      }",
@@ -76,11 +106,24 @@ export function composeElevatedFontScript(options: Readonly<{
     "    if ($pendingReboot.Count -gt 0) {",
     "      $key = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager'",
     "      $existing = @((Get-ItemProperty $key -Name PendingFileRenameOperations -ErrorAction SilentlyContinue).PendingFileRenameOperations)",
+    "      $existingDeleteSources = @{}",
+    "      for ($i = 0; $i -lt $existing.Count; $i += 2) {",
+    "        $source = [string]$existing[$i]",
+    "        $destination = if ($i + 1 -lt $existing.Count) { [string]$existing[$i + 1] } else { '' }",
+    "        if ($destination -eq '') { $existingDeleteSources[$source.ToLowerInvariant()] = $true }",
+    "      }",
     "      $entries = @()",
-    "      foreach ($name in $pendingReboot) { $entries += ('\\??\\' + (Join-Path $fontsDir $name)); $entries += '' }",
-    "      Set-ItemProperty $key -Name PendingFileRenameOperations -Value ($existing + $entries) -Type MultiString",
+    "      foreach ($name in $pendingReboot) {",
+    "        $source = '\\??\\' + (Join-Path $fontsDir $name)",
+    "        if (-not $existingDeleteSources.ContainsKey($source.ToLowerInvariant())) {",
+    "          $entries += $source; $entries += ''; $scheduledDeleteNames += $name",
+    "          $existingDeleteSources[$source.ToLowerInvariant()] = $true",
+    "        }",
+    "      }",
+    "      if ($entries.Count -gt 0) { Set-ItemProperty $key -Name PendingFileRenameOperations -Value ($existing + $entries) -Type MultiString -ErrorAction Stop }",
     "    }",
-    "    Write-Marker @{ ok = $true; pendingReboot = $pendingReboot }",
+    "    Send-WM_FONTCHANGE",
+    "    Write-Marker @{ ok = $true; pendingReboot = $pendingReboot; scheduledDeleteNames = $scheduledDeleteNames }",
     "  } elseif ($req.mode -eq 'restore') {",
     "    $backupDir = Assert-Anchored ([string]$req.backupDir) 'backup dir'",
     "    $files = @(Get-ChildItem -LiteralPath $backupDir -Force)",
@@ -88,7 +131,11 @@ export function composeElevatedFontScript(options: Readonly<{
     "      if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ('reparse point in backup: ' + $f.Name) }",
     "      if ($f.Name -notmatch '^[\\w.-]+\\.(ttf|ttc)$') { throw ('unexpected file in backup: ' + $f.Name) }",
     "    }",
-    "    foreach ($f in $files) { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $fontsDir $f.Name) -Force }",
+    "    foreach ($f in $files) {",
+    "      $destination = Join-Path $fontsDir $f.Name",
+    "      Copy-Item -LiteralPath $f.FullName -Destination $destination -Force",
+    "      $null = [CCFontNative]::AddFontResource($destination)",
+    "    }",
     "    if ($req.regJsonPath) {",
     "      $regJson = Assert-Anchored ([string]$req.regJsonPath) 'registry json'",
     "      if ([IO.Path]::GetFileName($regJson) -ne 'fonts-hklm.json') { throw 'unexpected registry json name' }",
@@ -106,7 +153,29 @@ export function composeElevatedFontScript(options: Readonly<{
     "        }",
     "      }",
     "    }",
-    "    Write-Marker @{ ok = $true; pendingReboot = @() }",
+    "    $scheduledDeleteNames = @($req.scheduledDeleteNames | ForEach-Object { [string]$_ })",
+    "    if ($scheduledDeleteNames.Count -gt 0) {",
+    "      $ownedDeleteSources = @{}",
+    "      foreach ($name in $scheduledDeleteNames) {",
+    "        if ($name -notmatch '^[\\w.-]+\\.(ttf|ttc)$') { throw ('invalid scheduled font name: ' + $name) }",
+    "        $sourceKey = ('\\??\\' + (Join-Path $fontsDir $name)).ToLowerInvariant()",
+    "        if ($ownedDeleteSources.ContainsKey($sourceKey)) { $ownedDeleteSources[$sourceKey]++ } else { $ownedDeleteSources[$sourceKey] = 1 }",
+    "      }",
+    "      $key = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager'",
+    "      $existing = @((Get-ItemProperty $key -Name PendingFileRenameOperations -ErrorAction SilentlyContinue).PendingFileRenameOperations)",
+    "      $kept = @()",
+    "      for ($i = 0; $i -lt $existing.Count; $i += 2) {",
+    "        $source = [string]$existing[$i]",
+    "        $destination = if ($i + 1 -lt $existing.Count) { [string]$existing[$i + 1] } else { '' }",
+    "        $sourceKey = $source.ToLowerInvariant()",
+    "        $ownedDelete = ($destination -eq '') -and $ownedDeleteSources.ContainsKey($sourceKey) -and ($ownedDeleteSources[$sourceKey] -gt 0)",
+    "        if ($ownedDelete) { $ownedDeleteSources[$sourceKey]-- } else { $kept += $source; $kept += $destination }",
+    "      }",
+    "      if ($kept.Count -gt 0) { Set-ItemProperty $key -Name PendingFileRenameOperations -Value $kept -Type MultiString -ErrorAction Stop }",
+    "      elseif ($existing.Count -gt 0) { Remove-ItemProperty $key -Name PendingFileRenameOperations -ErrorAction Stop }",
+    "    }",
+    "    Send-WM_FONTCHANGE",
+    "    Write-Marker @{ ok = $true; pendingReboot = @(); scheduledDeleteNames = @() }",
     "  } else { throw 'unknown mode' }",
     "} catch {",
     "  Write-Marker @{ ok = $false; error = ([string]$_.Exception.Message) }",

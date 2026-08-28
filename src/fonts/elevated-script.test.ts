@@ -14,7 +14,7 @@ function compose(request: Parameters<typeof composeElevatedFontScript>[0]['reque
 
 describe('elevated font script composition (issue #49)', () => {
   it('never touches disk-based script or args files (-File / reg.exe import 消失)', () => {
-    for (const script of [compose({ mode: 'remove' }), compose({ mode: 'restore', backupDir: anchor + '\\2026\\fonts', regJsonPath: anchor + '\\2026\\fonts-hklm.json' })]) {
+    for (const script of [compose({ mode: 'remove', expectedNames: ['msyh.ttc'] }), compose({ mode: 'restore', backupDir: anchor + '\\2026\\fonts', regJsonPath: anchor + '\\2026\\fonts-hklm.json' })]) {
       expect(script).not.toContain('reg.exe import');
       expect(script).not.toContain('-File');
       expect(script).not.toContain('font-helper.ps1');
@@ -23,7 +23,7 @@ describe('elevated font script composition (issue #49)', () => {
   });
 
   it('embeds the anchor, nonce, marker path and request as read-only literals', () => {
-    const script = compose({ mode: 'restore', backupDir: anchor + '\\2026\\fonts', regJsonPath: anchor + '\\2026\\fonts-hklm.json' });
+    const script = compose({ mode: 'restore', backupDir: anchor + '\\2026\\fonts', regJsonPath: anchor + '\\2026\\fonts-hklm.json', scheduledDeleteNames: ['msyh.ttc'] });
     expect(script).toContain(`$anchor = '${anchor}\\'`);
     expect(script).toContain("$nonce = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'");
     expect(script).toContain('font-helper-result-abc.json');
@@ -35,17 +35,25 @@ describe('elevated font script composition (issue #49)', () => {
     expect(script).toContain('unsafe registry value name');
     expect(script).toContain('unsafe registry value data');
     expect(script).toContain('New-ItemProperty -Path $fontKey');
+    expect(script).toContain('scheduledDeleteNames');
+    expect(script).toContain('PendingFileRenameOperations');
+    expect(script).toContain('$ownedDeleteSources');
+    expect(script).toContain('$existingDeleteSources');
+    expect(script).toContain('Set-ItemProperty $key -Name PendingFileRenameOperations -Value ($existing + $entries) -Type MultiString -ErrorAction Stop');
+    expect(script).toContain('$ownedDeleteSources[$sourceKey]--');
+    expect(script).toContain('-ErrorAction Stop');
+    expect(script).not.toContain('Remove-ItemProperty $key -Name PendingFileRenameOperations -ErrorAction SilentlyContinue');
     // nonce 随 marker 写出
     expect(script).toContain('$m.nonce = $nonce');
   });
 
   it('enumerates the removal list inside the elevated context from the shared catalog', () => {
-    const script = compose({ mode: 'remove' });
+    const script = compose({ mode: 'remove', expectedNames: ['msyh.ttc', 'simsun.ttc'] });
     expect(script).toContain('Get-ChildItem -LiteralPath $fontsDir');
     expect(script).toMatch(/msyh/);
     expect(script).toMatch(/simsun/);
-    // 名单不再作为参数传输
-    expect(script).not.toContain('fonts":[');
+    expect(script).toContain('expectedNames');
+    expect(script).toContain('font inventory changed after backup');
   });
 
   it('escapes single quotes in embedded literals', () => {
@@ -64,7 +72,7 @@ describe('elevated font script composition (issue #49)', () => {
     const argv = buildElevationLauncherArgs(script);
     expect(argv.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
     const total = argv.join(' ').length;
-    expect(total).toBeLessThan(20_000);
+    expect(total).toBeLessThan(28_000);
     // 内层 base64 经 UTF-16LE 编码可无损往返（EncodedCommand 约定）
     const inner = /-EncodedCommand','([A-Za-z0-9+/=]+)'\)/.exec(argv[3]!)!;
     expect(inner).not.toBeNull();
@@ -72,7 +80,18 @@ describe('elevated font script composition (issue #49)', () => {
   });
 
   it('round-trips the script through the encoded command transport', () => {
-    const script = compose({ mode: 'remove' });
+    const script = compose({ mode: 'remove', expectedNames: ['msyh.ttc'] });
     expect(Buffer.from(encodePowerShellCommand(script), 'base64').toString('utf16le')).toBe(script);
+  });
+
+  it('updates the Windows font resource table and broadcasts WM_FONTCHANGE', () => {
+    const removeScript = compose({ mode: 'remove', expectedNames: ['msyh.ttc'] });
+    const restoreScript = compose({ mode: 'restore', backupDir: anchor + '\\2026\\fonts' });
+    for (const script of [removeScript, restoreScript]) {
+      expect(script).toContain('WM_FONTCHANGE');
+      expect(script).toContain('SendMessageTimeout');
+    }
+    expect(removeScript).toContain('RemoveFontResource');
+    expect(restoreScript).toContain('AddFontResource');
   });
 });

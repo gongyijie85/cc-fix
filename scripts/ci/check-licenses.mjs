@@ -14,7 +14,7 @@ const extraAllow = allowArgument >= 0
 
 const ALLOWED_LICENSES = new Set([
   "MIT", "Apache-2.0", "ISC", "BSD-2-Clause", "BSD-3-Clause", "0BSD",
-  "Unlicense", "CC0-1.0", "WTFPL", "Python-2.0",
+  "Unlicense", "CC0-1.0", "WTFPL", "Python-2.0", "MPL-2.0",
   ...extraAllow,
 ]);
 

@@ -8,7 +8,7 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { defaultPersistRoot } from '../state/paths.js';
 import { isChineseFontFileName, isSafeFontFileName } from './catalog.js';
-import { buildElevationLauncherArgs, composeElevatedFontScript, FONT_REGISTRY_JSON_NAME } from './elevated-script.js';
+import { buildElevationLauncherArgs, composeElevatedFontScript, FONT_REGISTRY_JSON_NAME, type ElevatedFontRequest } from './elevated-script.js';
 
 export type FontFixStatus = Readonly<{
   fontsDir: string;
@@ -18,15 +18,14 @@ export type FontFixStatus = Readonly<{
   pendingReboot: string[];
 }>;
 
-export type PrivilegedResult = Readonly<{ ok: true; pendingReboot: string[] } | { ok: false; error: string }>;
+export type PrivilegedResult = Readonly<
+  { ok: true; pendingReboot: string[]; scheduledDeleteNames: string[] }
+  | { ok: false; error: string }
+>;
 
-export type FontPrivilegedRunner = (request: Readonly<{
-  mode: 'remove' | 'restore';
-  /** restore：字体文件备份子目录（锚定 font-backup 子树）。 */
-  backupDir?: string;
-  /** restore：注册表还原 JSON（锚定 font-backup 子树、文件名固定）。 */
-  regJsonPath?: string;
-}>) => Promise<PrivilegedResult>;
+export type FontPrivilegedRequest = ElevatedFontRequest;
+
+export type FontPrivilegedRunner = (request: FontPrivilegedRequest) => Promise<PrivilegedResult>;
 
 function sha256(data: Buffer): string {
   return createHash('sha256').update(data).digest('hex');
@@ -34,6 +33,7 @@ function sha256(data: Buffer): string {
 
 /** 注册表备份读出形状：值名 → 值数据（均为字符串）。 */
 export type FontRegistryEntries = Readonly<Record<string, string>>;
+type FontManifestEntry = Readonly<{ name: string; bytes: number; sha256: string }>;
 
 /** 非提权读取 HKLM Fonts 键全部字符串值（Everyone 可读）。 */
 async function readFontRegistrationsFromRegistry(): Promise<FontRegistryEntries> {
@@ -79,11 +79,20 @@ export function parseRegFileToEntries(text: string): FontRegistryEntries {
  * 返回错误消息或 null（通过）。
  */
 export function validatePrivilegedRequest(
-  request: Readonly<{ mode: string; backupDir?: string; regJsonPath?: string }>,
+  request: Readonly<{ mode: string; expectedNames?: readonly string[]; backupDir?: string; regJsonPath?: string; scheduledDeleteNames?: readonly string[] }>,
   anchorRoot: string,
 ): string | null {
   if (request.mode !== 'remove' && request.mode !== 'restore') return `unknown mode: ${request.mode}`;
-  if (request.mode === 'remove') return null;
+  if (request.mode === 'remove') {
+    if (!Array.isArray(request.expectedNames) || request.expectedNames.length === 0) return 'remove inventory is empty';
+    const normalized = new Set<string>();
+    for (const name of request.expectedNames) {
+      if (!isSafeFontFileName(name)) return `invalid font name: ${name}`;
+      normalized.add(name.toLowerCase());
+    }
+    if (normalized.size !== request.expectedNames.length) return 'remove inventory contains duplicates';
+    return null;
+  }
   const anchor = resolve(anchorRoot).toLowerCase();
   const anchored = (value: string): boolean => {
     if (!isAbsolute(value)) return false;
@@ -94,6 +103,9 @@ export function validatePrivilegedRequest(
   if (request.regJsonPath !== undefined) {
     if (!anchored(request.regJsonPath)) return 'registry json escapes the backup anchor';
     if (basename(request.regJsonPath) !== FONT_REGISTRY_JSON_NAME) return 'unexpected registry json name';
+  }
+  for (const name of request.scheduledDeleteNames ?? []) {
+    if (!isSafeFontFileName(name)) return `invalid scheduled font name: ${name}`;
   }
   return null;
 }
@@ -130,9 +142,19 @@ export function createFontFixService(options: Readonly<{
   async function isCompleteProductBackup(dir: string): Promise<boolean> {
     try {
       const fontsSub = join(dir, 'fonts');
-      const entries = await readdir(fontsSub);
-      if (entries.length === 0) return false;
-      await readFile(join(dir, 'manifest.json'), 'utf8');
+      const entries = await readdir(fontsSub, { withFileTypes: true });
+      if (entries.length === 0 || entries.some((entry) => !entry.isFile())) return false;
+      const parsed = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8')) as unknown;
+      if (!Array.isArray(parsed) || parsed.length !== entries.length) return false;
+      const manifestNames = parsed.map((entry) => String((entry as { name?: unknown }).name)).sort();
+      const fileNames = entries.map((entry) => entry.name).sort();
+      if (manifestNames.some((name) => !isSafeFontFileName(name)) || manifestNames.some((name, index) => name !== fileNames[index])) return false;
+      try {
+        await readFile(join(dir, FONT_REGISTRY_JSON_NAME), 'utf8');
+      } catch {
+        await readFile(join(dir, 'fonts-hklm.reg'));
+      }
+      await readFile(join(dir, 'restore-fonts.ps1'), 'utf8');
       return true;
     } catch { return false; }
   }
@@ -150,17 +172,21 @@ export function createFontFixService(options: Readonly<{
     } catch { return null; }
   }
 
-  async function pendingReboot(): Promise<string[]> {
+  async function lastRemovalState(): Promise<{ pendingReboot: string[]; scheduledDeleteNames: string[] }> {
     try {
-      const parsed = JSON.parse(await readFile(lastMarker, 'utf8')) as { pendingReboot?: string[] };
-      return Array.isArray(parsed.pendingReboot) ? parsed.pendingReboot : [];
-    } catch { return []; }
+      const parsed = JSON.parse(await readFile(lastMarker, 'utf8')) as { pendingReboot?: unknown; scheduledDeleteNames?: unknown };
+      const pending = Array.isArray(parsed.pendingReboot) ? parsed.pendingReboot.filter((name): name is string => typeof name === 'string' && isSafeFontFileName(name)) : [];
+      const scheduled = Array.isArray(parsed.scheduledDeleteNames)
+        ? parsed.scheduledDeleteNames.filter((name): name is string => typeof name === 'string' && isSafeFontFileName(name))
+        : pending;
+      return { pendingReboot: pending, scheduledDeleteNames: scheduled };
+    } catch { return { pendingReboot: [], scheduledDeleteNames: [] }; }
   }
 
   async function status(): Promise<FontFixStatus> {
     const found = await foundFonts();
     const backupDir = await latestBackupDir();
-    return Object.freeze({ fontsDir, found, backedUp: backupDir !== null, backupDir, pendingReboot: await pendingReboot() });
+    return Object.freeze({ fontsDir, found, backedUp: backupDir !== null, backupDir, pendingReboot: (await lastRemovalState()).pendingReboot });
   }
 
   /** 备份目录中的注册表材料：优先既有 JSON；旧版 .reg 兼容转换后写回 JSON。
@@ -181,45 +207,165 @@ export function createFontFixService(options: Readonly<{
     return jsonPath;
   }
 
-  /** 幂等备份：已存在备份时不重复创建。返回备份目录。 */
-  async function backup(): Promise<string> {
-    const existing = await latestBackupDir();
-    if (existing !== null) return existing;
-    const stamp = now().toISOString().replace(/[:.]/g, '-');
-    const dir = join(backupRoot, stamp);
-    const fontsSub = join(dir, 'fonts');
-    await mkdir(fontsSub, { recursive: true });
-    const found = await foundFonts();
-    const manifest = [];
-    for (const name of found) {
-      if (!isSafeFontFileName(name)) continue;
-      const source = join(fontsDir, name);
-      try {
-        const data = await readFile(source);
-        await copyFile(source, join(fontsSub, name));
-        manifest.push({ name, bytes: data.length, sha256: sha256(data) });
-      } catch { /* 文件占用/读取失败跳过，移除时再按 pending 处理 */ }
-    }
-    await writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
-    // HKLM Fonts 注册表备份（白名单 JSON，还原时逐值写回；失败降级为空表）
-    let entries: FontRegistryEntries = {};
+  async function verifyRestoredBackup(dir: string, regJsonPath: string): Promise<string | null> {
+    let manifest: FontManifestEntry[];
     try {
-      const all = await readFontRegistrations();
-      entries = Object.fromEntries(
-        Object.entries(all).filter(([, data]) => isChineseFontFileName(String(data).split('\\').pop() ?? '')),
-      );
-    } catch { /* 读失败：entries 置空，还原只恢复文件 */ }
-    await writeFile(join(dir, FONT_REGISTRY_JSON_NAME), JSON.stringify({ version: 1, entries }, null, 2), 'utf8');
-    await writeFile(join(dir, 'restore-fonts.ps1'), RESTORE_HINT_SCRIPT, 'utf8');
-    return dir;
+      const parsed = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8')) as unknown;
+      if (!Array.isArray(parsed) || parsed.length === 0) return '备份清单为空';
+      manifest = parsed as FontManifestEntry[];
+    } catch {
+      return '无法读取备份清单';
+    }
+    for (const entry of manifest) {
+      if (!isSafeFontFileName(entry.name) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || !/^[a-f0-9]{64}$/iu.test(entry.sha256)) {
+        return `备份清单无效：${String(entry.name)}`;
+      }
+      try {
+        const live = await readFile(join(fontsDir, entry.name));
+        if (live.length !== entry.bytes || sha256(live) !== entry.sha256.toLowerCase()) return `${entry.name} 内容不匹配`;
+      } catch {
+        return `${entry.name} 不存在`;
+      }
+    }
+    try {
+      const document = JSON.parse(await readFile(regJsonPath, 'utf8')) as { entries?: FontRegistryEntries };
+      const expected = document.entries ?? {};
+      const actual = await readFontRegistrations();
+      for (const [name, data] of Object.entries(expected)) {
+        if (actual[name] !== data) return `注册表项不匹配：${name}`;
+      }
+    } catch {
+      return '无法验证字体注册表';
+    }
+    return null;
+  }
+
+  async function validateBackupMaterial(dir: string, regJsonPath: string): Promise<string | null> {
+    let manifest: FontManifestEntry[];
+    try {
+      const parsed = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8')) as unknown;
+      if (!Array.isArray(parsed) || parsed.length === 0) return '备份清单为空';
+      manifest = parsed as FontManifestEntry[];
+    } catch {
+      return '无法读取备份清单';
+    }
+    const names = new Set<string>();
+    for (const entry of manifest) {
+      const normalized = String(entry.name).toLowerCase();
+      if (!isSafeFontFileName(entry.name) || names.has(normalized) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || !/^[a-f0-9]{64}$/iu.test(entry.sha256)) {
+        return `备份清单无效：${String(entry.name)}`;
+      }
+      names.add(normalized);
+      try {
+        const data = await readFile(join(dir, 'fonts', entry.name));
+        if (data.length !== entry.bytes || sha256(data) !== entry.sha256.toLowerCase()) return `${entry.name} 内容不匹配`;
+      } catch {
+        return `${entry.name} 不存在`;
+      }
+    }
+    try {
+      const files = await readdir(join(dir, 'fonts'), { withFileTypes: true });
+      if (files.length !== manifest.length || files.some((entry) => !entry.isFile() || !names.has(entry.name.toLowerCase()))) return '字体文件集合与清单不一致';
+      const document = JSON.parse(await readFile(regJsonPath, 'utf8')) as { version?: unknown; entries?: unknown };
+      if (document.version !== 1 || typeof document.entries !== 'object' || document.entries === null || Array.isArray(document.entries)) return '字体注册表备份无效';
+      for (const [name, data] of Object.entries(document.entries)) {
+        if (typeof name !== 'string' || typeof data !== 'string') return '字体注册表备份无效';
+      }
+    } catch {
+      return '无法读取字体注册表备份';
+    }
+    return null;
+  }
+
+  async function allocateBackupDir(stamp: string): Promise<string> {
+    await mkdir(backupRoot, { recursive: true });
+    for (let suffix = 0; suffix < 10_000; suffix += 1) {
+      const name = suffix === 0 ? stamp : `${stamp}-${String(suffix).padStart(4, '0')}`;
+      const dir = join(backupRoot, name);
+      try {
+        await mkdir(dir);
+        return dir;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    }
+    throw new Error('无法分配唯一字体备份目录');
+  }
+
+  async function createBackup(reuseExisting: boolean): Promise<string> {
+    if (reuseExisting) {
+      const existing = await latestBackupDir();
+      if (existing !== null) return existing;
+    }
+    const stamp = now().toISOString().replace(/[:.]/g, '-');
+    const dir = await allocateBackupDir(stamp);
+    try {
+      const fontsSub = join(dir, 'fonts');
+      await mkdir(fontsSub);
+      const found = await foundFonts();
+      if (found.length === 0) throw new Error('未发现可备份的中文字体');
+      const manifest = [];
+      const failed: string[] = [];
+      for (const name of found) {
+        if (!isSafeFontFileName(name)) { failed.push(name); continue; }
+        const source = join(fontsDir, name);
+        try {
+          const data = await readFile(source);
+          await copyFile(source, join(fontsSub, name));
+          manifest.push({ name, bytes: data.length, sha256: sha256(data) });
+        } catch { failed.push(name); }
+      }
+      if (failed.length > 0) throw new Error(`字体备份不完整：无法备份 ${failed.join(', ')}`);
+      await writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+      // HKLM Fonts 注册表备份（白名单 JSON，还原时逐值写回；失败则阻止删除）
+      let entries: FontRegistryEntries;
+      try {
+        const all = await readFontRegistrations();
+        entries = Object.fromEntries(
+          Object.entries(all).filter(([, data]) => isChineseFontFileName(String(data).split('\\').pop() ?? '')),
+        );
+      } catch {
+        throw new Error('字体备份不完整：无法读取字体注册表');
+      }
+      await writeFile(join(dir, FONT_REGISTRY_JSON_NAME), JSON.stringify({ version: 1, entries }, null, 2), 'utf8');
+      await writeFile(join(dir, 'restore-fonts.ps1'), RESTORE_HINT_SCRIPT, 'utf8');
+      return dir;
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  /** 显式备份保持幂等；真正移除前由 remove() 强制创建当前版本的新备份。 */
+  async function backup(): Promise<string> {
+    return createBackup(true);
   }
 
   async function remove(): Promise<PrivilegedResult> {
-    await backup();
-    // 移除名单由提权端按同一模式目录枚举（不传输、不可篡改）。
-    const result = await runner({ mode: 'remove' });
+    if ((await lastRemovalState()).pendingReboot.length > 0) {
+      return { ok: false, error: '仍有字体等待重启删除；请先还原或重启后再检查' };
+    }
+    let dir: string;
+    try {
+      dir = await createBackup(false);
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    const regJsonPath = join(dir, FONT_REGISTRY_JSON_NAME);
+    const backupError = await validateBackupMaterial(dir, regJsonPath);
+    if (backupError !== null) {
+      await rm(dir, { recursive: true, force: true });
+      return { ok: false, error: `字体备份无效：${backupError}` };
+    }
+    const manifest = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8')) as Array<{ name: string }>;
+    const expectedNames = manifest.map((entry) => entry.name).sort();
+    const result = await runner({ mode: 'remove', expectedNames });
     if (result.ok) {
-      await writeFile(lastMarker, JSON.stringify({ pendingReboot: result.pendingReboot, at: now().toISOString() }), 'utf8');
+      await writeFile(lastMarker, JSON.stringify({
+        pendingReboot: result.pendingReboot,
+        scheduledDeleteNames: result.scheduledDeleteNames,
+        at: now().toISOString(),
+      }), 'utf8');
     }
     return result;
   }
@@ -228,8 +374,13 @@ export function createFontFixService(options: Readonly<{
     const dir = await latestBackupDir();
     if (dir === null) return { ok: false, error: '字体备份不存在（或备份不完整）' };
     const regJsonPath = await ensureRegistryJson(dir);
-    const result = await runner({ mode: 'restore', backupDir: join(dir, 'fonts'), regJsonPath });
+    const backupError = await validateBackupMaterial(dir, regJsonPath);
+    if (backupError !== null) return { ok: false, error: `字体备份无效：${backupError}` };
+    const scheduledDeleteNames = (await lastRemovalState()).scheduledDeleteNames;
+    const result = await runner({ mode: 'restore', backupDir: join(dir, 'fonts'), regJsonPath, scheduledDeleteNames });
     if (result.ok) {
+      const verificationError = await verifyRestoredBackup(dir, regJsonPath);
+      if (verificationError !== null) return { ok: false, error: `字体还原验证失败：${verificationError}` };
       await writeFile(lastMarker, JSON.stringify({ pendingReboot: [] }), 'utf8');
     }
     return result;
@@ -251,6 +402,7 @@ export function parsePrivilegedMarker(text: string, expectedNonce?: string): Pri
     const parsed = JSON.parse(text.replace(/^\uFEFF/, '')) as {
       ok?: boolean;
       pendingReboot?: unknown;
+      scheduledDeleteNames?: unknown;
       error?: unknown;
       nonce?: unknown;
     };
@@ -259,7 +411,10 @@ export function parsePrivilegedMarker(text: string, expectedNonce?: string): Pri
       const pending = Array.isArray(parsed.pendingReboot)
         ? parsed.pendingReboot.filter((name): name is string => typeof name === 'string' && isSafeFontFileName(name))
         : [];
-      return { ok: true, pendingReboot: pending };
+      const scheduled = Array.isArray(parsed.scheduledDeleteNames)
+        ? parsed.scheduledDeleteNames.filter((name): name is string => typeof name === 'string' && isSafeFontFileName(name))
+        : pending;
+      return { ok: true, pendingReboot: pending, scheduledDeleteNames: scheduled };
     }
     if (parsed.ok === false) {
       const error = typeof parsed.error === 'string' ? parsed.error : '特权助手失败';
