@@ -1,7 +1,7 @@
 // 进程级注入 — 以安全环境启动命令
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import type { TargetRegion } from "../detection/types.js";
 
 export function buildEnvVars(target: TargetRegion): Record<string, string> {
@@ -53,7 +53,7 @@ export function runWithInjectedEnv(
   });
 }
 
-export function runDesktop(target: TargetRegion): Promise<number> {
+export async function runDesktop(target: TargetRegion): Promise<number> {
   const desktopPaths = [
     `${process.env.LOCALAPPDATA}\\Programs\\claude-desktop\\Claude.exe`,
     `${process.env.LOCALAPPDATA}\\Programs\\Claude\\Claude.exe`,
@@ -61,11 +61,14 @@ export function runDesktop(target: TargetRegion): Promise<number> {
   ];
 
   for (const desktopPath of desktopPaths) {
-    if (existsSync(desktopPath)) {
+    try {
+      await access(desktopPath);
       return runWithInjectedEnv(desktopPath, [], target);
+    } catch {
+      // 路径不存在，继续尝试下一个
     }
   }
 
   console.error("未找到 Claude Desktop 安装路径");
-  return Promise.resolve(1);
+  return 1;
 }

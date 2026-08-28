@@ -2,10 +2,10 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockExecSync } = vi.hoisted(() => ({ mockExecSync: vi.fn() }));
+const { mockExecFile } = vi.hoisted(() => ({ mockExecFile: vi.fn() }));
 
 vi.mock("node:child_process", () => ({
-  execSync: mockExecSync,
+  execFile: mockExecFile,
 }));
 
 import { winRegionPlugin } from "./win-region.js";
@@ -14,13 +14,21 @@ function regOutput(locale: string): string {
   return `\nHKEY_CURRENT_USER\\Control Panel\\International\n    LocaleName    REG_SZ    ${locale}\n`;
 }
 
+function mockRegSuccess(locale: string): void {
+  mockExecFile.mockImplementation(
+    (_file: string, _args: string[], _options: unknown, callback: (err: Error | null, stdout: string) => void) => {
+      callback(null, regOutput(locale));
+    }
+  );
+}
+
 describe("winRegionPlugin", () => {
   beforeEach(() => {
-    mockExecSync.mockReset();
+    mockExecFile.mockReset();
   });
 
   it("returns high risk for zh-CN locale", async () => {
-    mockExecSync.mockReturnValue(regOutput("zh-CN"));
+    mockRegSuccess("zh-CN");
 
     const result = await winRegionPlugin.run({
       targetTimezone: "America/New_York",
@@ -33,7 +41,7 @@ describe("winRegionPlugin", () => {
   });
 
   it("returns high risk for other zh variants", async () => {
-    mockExecSync.mockReturnValue(regOutput("zh-TW"));
+    mockRegSuccess("zh-TW");
 
     const result = await winRegionPlugin.run({
       targetTimezone: "America/New_York",
@@ -43,7 +51,7 @@ describe("winRegionPlugin", () => {
   });
 
   it("returns low risk for en-US locale", async () => {
-    mockExecSync.mockReturnValue(regOutput("en-US"));
+    mockRegSuccess("en-US");
 
     const result = await winRegionPlugin.run({
       targetTimezone: "America/New_York",
@@ -54,7 +62,7 @@ describe("winRegionPlugin", () => {
   });
 
   it("returns medium risk for unknown locale", async () => {
-    mockExecSync.mockReturnValue(regOutput("fr-CA"));
+    mockRegSuccess("fr-CA");
 
     const result = await winRegionPlugin.run({
       targetTimezone: "America/New_York",
@@ -65,9 +73,11 @@ describe("winRegionPlugin", () => {
   });
 
   it("returns low risk when registry query fails", async () => {
-    mockExecSync.mockImplementation(() => {
-      throw new Error("reg not found");
-    });
+    mockExecFile.mockImplementation(
+      (_file: string, _args: string[], _options: unknown, callback: (err: Error | null, stdout: string) => void) => {
+        callback(new Error("reg not found"), "");
+      }
+    );
 
     const result = await winRegionPlugin.run({
       targetTimezone: "America/New_York",

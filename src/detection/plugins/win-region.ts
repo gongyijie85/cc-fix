@@ -1,21 +1,32 @@
 // Windows 区域格式检测插件 — 检查注册表 HKCU\Control Panel\International 的 LocaleName
 
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import type { DetectionPlugin, DetectionContext } from "../plugin.js";
 import type { SignalResult } from "../types.js";
 
-function getWindowsLocaleName(): string | null {
-  try {
-    const output = execSync(
-      'reg query "HKCU\\Control Panel\\International" /v LocaleName',
-      { encoding: "utf-8", timeout: 3000, windowsHide: true }
+function queryRegValue(keyPath: string, valueName: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      "reg",
+      ["query", keyPath, "/v", valueName],
+      { encoding: "utf-8", timeout: 3000, windowsHide: true },
+      (error, stdout) => {
+        if (error) {
+          resolve(null);
+          return;
+        }
+        resolve(stdout);
+      }
     );
-    // 输出格式: "    LocaleName    REG_SZ    zh-CN"
-    const match = output.match(/LocaleName\s+REG_SZ\s+(\S+)/);
-    return match?.[1] ?? null;
-  } catch {
-    return null;
-  }
+  });
+}
+
+async function getWindowsLocaleName(): Promise<string | null> {
+  const output = await queryRegValue("HKCU\\Control Panel\\International", "LocaleName");
+  if (output === null) return null;
+  // 输出格式: "    LocaleName    REG_SZ    zh-CN"
+  const match = output.match(/LocaleName\s+REG_SZ\s+(\S+)/);
+  return match?.[1] ?? null;
 }
 
 // 安全的 LocaleName 值（不会触发风控）
@@ -38,7 +49,7 @@ export const winRegionPlugin: DetectionPlugin = {
   label: "Windows 区域格式",
   weight: 4,
   run: async (_context: DetectionContext): Promise<SignalResult> => {
-    const localeName = getWindowsLocaleName();
+    const localeName = await getWindowsLocaleName();
 
     if (!localeName) {
       return {
