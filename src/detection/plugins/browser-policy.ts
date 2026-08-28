@@ -3,11 +3,12 @@
 
 import type { DetectionPlugin, DetectionContext } from "../plugin.js";
 import type { SignalResult } from "../types.js";
-import { BROWSER_LABELS, getPolicy } from "../../platform/browser.js";
+import { BROWSER_LABELS, readPolicyValues } from "../../platform/browser.js";
 import {
   BROWSER_POLICY_SLOTS,
   BROWSER_POLICY_VALUE_NAMES,
   desiredBrowserPolicies,
+  type BrowserId,
 } from "../../state/schema.js";
 
 const SLOT_LABELS: Record<string, string> = {
@@ -16,6 +17,8 @@ const SLOT_LABELS: Record<string, string> = {
   [BROWSER_POLICY_VALUE_NAMES.applicationLocale]: "ApplicationLocale",
 };
 
+const MANAGED_BROWSERS: readonly BrowserId[] = ["chrome", "edge"] as const;
+
 export const browserPolicyPlugin: DetectionPlugin = {
   id: "browser-policy",
   label: "浏览器策略",
@@ -23,10 +26,16 @@ export const browserPolicyPlugin: DetectionPlugin = {
   run: async (context: DetectionContext): Promise<SignalResult> => {
     const targets = desiredBrowserPolicies(context.targetLang);
 
+    // 每浏览器一次 reg query（#67 优化：6 次顺序 → 2 次并行）
+    const entries = await Promise.all(
+      MANAGED_BROWSERS.map(async (browser) => [browser, await readPolicyValues(browser)] as const),
+    );
+    const valuesByBrowser = Object.fromEntries(entries) as Record<BrowserId, Record<string, string | null>>;
+
     // 逐槽位比对：缺失或取值不符记为异常，附当前值
     const badSlots: string[] = [];
     for (const slot of BROWSER_POLICY_SLOTS) {
-      const current = await getPolicy(slot.id);
+      const current = valuesByBrowser[slot.browser][slot.valueName] ?? null;
       if (current !== targets[slot.id]) {
         const name = SLOT_LABELS[slot.valueName] ?? slot.valueName;
         badSlots.push(`${BROWSER_LABELS[slot.browser]}/${name}=${current ?? "(未设置)"}`);

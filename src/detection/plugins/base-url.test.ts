@@ -27,6 +27,8 @@ describe("baseUrlPlugin", () => {
     const result = await baseUrlPlugin.run({ targetTimezone: "America/New_York", targetLang: "en" });
     expect(result.risk).toBe("low");
     expect(result.contribution).toBe(0);
+    // #70 决议：value 只输出 hostname
+    expect(result.value).toBe("api.anthropic.com");
   });
 
   it("returns high risk for sensitive domain", async () => {
@@ -34,5 +36,22 @@ describe("baseUrlPlugin", () => {
     const result = await baseUrlPlugin.run({ targetTimezone: "America/New_York", targetLang: "en" });
     expect(result.risk).toBe("high");
     expect(result.contribution).toBe(8);
+    expect(result.value).toBe("api.deepseek.com");
+  });
+
+  it("redacts embedded credentials in value (#70)", async () => {
+    process.env.ANTHROPIC_BASE_URL = "https://user:secret@api.deepseek.com/v1";
+    const result = await baseUrlPlugin.run({ targetTimezone: "America/New_York", targetLang: "en" });
+    expect(result.value).toBe("***@api.deepseek.com");
+    expect(result.risk).toBe("high");
+  });
+
+  it("redacts username-only credentials and unprefixed inputs", async () => {
+    process.env.ANTHROPIC_BASE_URL = "proxy-user@example.com";
+    const first = await baseUrlPlugin.run({ targetTimezone: "America/New_York", targetLang: "en" });
+    expect(first.value).toBe("***@example.com");
+    process.env.ANTHROPIC_BASE_URL = "https://user@api.anthropic.com";
+    const second = await baseUrlPlugin.run({ targetTimezone: "America/New_York", targetLang: "en" });
+    expect(second.value).toBe("***@api.anthropic.com");
   });
 });

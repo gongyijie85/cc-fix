@@ -31,17 +31,15 @@ type RawIpData = {
   timezone: string | null;
 };
 
-type IpApiResult = {
-  /** ip-api.com 用 query 字段表示出口 IP，不是 ip */
-  query?: string;
+type IpWhoIsResult = {
   ip?: string;
+  success?: boolean;
   country?: string;
-  countryCode?: string;
-  regionName?: string;
+  country_code?: string;
+  region?: string;
   city?: string;
-  org?: string;
-  timezone?: string;
-  as?: string;
+  connection?: { asn?: number; org?: string };
+  timezone?: { id?: string };
 };
 
 /** 归一化 ASN 为 AS12345，避免 "AS16509 Amazon" vs "AS16509" 误判不一致 */
@@ -54,29 +52,28 @@ export function normalizeAsn(asn: string | null | undefined): string | null {
 function isDatacenterAsn(asn: string | null): boolean {
   if (!asn) return false;
   // 精确匹配：提取 ASN 前缀（如 "AS16509 Amazon" → "AS16509"）
-  const asnPrefix = asn.split(/\s+/)[0];
+  const asnPrefix = asn.split(/\s+/)[0] ?? "";
   return DATACENTER_ASN_PREFIXES.includes(asnPrefix);
 }
 
-// 源 1: ip-api.com（国内可用，免费，无需 key）
-async function fetchFromIpApi(): Promise<RawIpData | null> {
+// 源 1: ipwho.is（HTTPS、免 key、1000 次/天/客户端 IP；ADR-0016 决策：全 HTTPS 收口）
+async function fetchFromIpWhoIs(): Promise<RawIpData | null> {
   try {
-    const response = await fetch("http://ip-api.com/json/?lang=zh-CN", {
+    const response = await fetch("https://ipwho.is/?fields=ip,country,country_code,region,city,connection,timezone", {
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) return null;
-    const data = (await response.json()) as IpApiResult & { status?: string };
-    if (data.status === "fail") return null;
+    const data = (await response.json()) as IpWhoIsResult & { message?: string };
+    if (data.success === false) return null;
     return {
-      // ip-api.com 官方字段是 query；兼容错误文档里的 ip
-      ip: data.query ?? data.ip ?? null,
-      // 统一用 ISO 国家码（ip-api 的 country 是本地化全名，与 ipinfo 的 ISO 码无法直接对比）
-      country: data.countryCode ?? null,
-      region: data.regionName ?? null,
+      ip: data.ip ?? null,
+      // ipwho.is 的 country 是本地化全名（如 "Singapore"），统一用 ISO 国家码（与 ipinfo 的 ISO 码可比）
+      country: data.country_code ?? null,
+      region: data.region ?? null,
       city: data.city ?? null,
-      asn: normalizeAsn(data.as),
-      org: data.org || data.as || null,
-      timezone: data.timezone ?? null,
+      asn: data.connection?.asn !== undefined ? normalizeAsn(`AS${data.connection.asn}`) : null,
+      org: data.connection?.org ?? null,
+      timezone: data.timezone?.id ?? null,
     };
   } catch {
     return null;
@@ -156,18 +153,42 @@ function toIpIntelligence(
   };
 }
 
-export async function fetchIpIntelligence(): Promise<IpIntelligence | null> {
-  // 并行查询多个源
-  const [primary, secondary] = await Promise.all([
-    fetchFromIpApi(),
-    fetchFromIpInfo(),
-  ]);
+/** 会话级 IP 情报缓存：GUI 检测链路的 344ms 首事件瓶颈（#86 决议：TTL 60s 预取复用）。
+ * CLI 为单进程短生命周期，行为无感知。 */
+const IP_INTEL_CACHE_TTL_MS = 60_000;
+let ipIntelCache: { value: IpIntelligence | null; expiresAt: number } | undefined;
+/** in-flight 去重：attachSse 预热与 check/start 同时到来时共享一次请求。 */
+let ipIntelInFlight: Promise<IpIntelligence | null> | undefined;
 
-  if (primary) {
-    return toIpIntelligence(primary, secondary);
-  }
-  if (secondary) {
-    return toIpIntelligence(secondary, null);
-  }
-  return null;
+/** 测试隔离：清空会话级缓存与 in-flight。 */
+export function resetIpIntelCache(): void {
+  ipIntelCache = undefined;
+  ipIntelInFlight = undefined;
+}
+
+export async function fetchIpIntelligence(): Promise<IpIntelligence | null> {
+  if (ipIntelCache !== undefined && Date.now() < ipIntelCache.expiresAt) return ipIntelCache.value;
+  if (ipIntelInFlight !== undefined) return ipIntelInFlight;
+  ipIntelInFlight = (async () => {
+    try {
+      // 并行查询多个源
+      const [primary, secondary] = await Promise.all([
+        fetchFromIpWhoIs(),
+        fetchFromIpInfo(),
+      ]);
+
+      let intel: IpIntelligence | null = null;
+      if (primary) {
+        intel = toIpIntelligence(primary, secondary);
+      } else if (secondary) {
+        intel = toIpIntelligence(secondary, null);
+      }
+      // 失败（null）不缓存：#86 决议——失败不污染缓存，下次调用重取。
+      ipIntelCache = intel === null ? undefined : { value: intel, expiresAt: Date.now() + IP_INTEL_CACHE_TTL_MS };
+      return intel;
+    } finally {
+      ipIntelInFlight = undefined;
+    }
+  })();
+  return ipIntelInFlight;
 }

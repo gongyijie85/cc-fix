@@ -79,7 +79,7 @@ describe("dnsPlugin", () => {
     mockLookup.__setState(async () => ({ address: "1.2.3.4", family: 4 }));
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ country: "China", countryCode: "CN", as: "AS4134" }),
+      json: async () => ({ success: true, country: "China", country_code: "CN", connection: { asn: 4134, org: "CHINANET" } }),
     }) as unknown as typeof fetch;
 
     const result = await dnsPlugin.run({
@@ -89,6 +89,21 @@ describe("dnsPlugin", () => {
     // 不再因「非目标国家」加分（CDN/边缘常态）
     expect(result.risk).toBe("low");
     expect(result.contribution).toBe(0);
+  });
+
+  it("treats geo 200-with-success=false as lookup failure", async () => {
+    mockLookup.__setState(async () => ({ address: "8.8.8.8", family: 4 }));
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: false, message: "Reserved range" }),
+    }) as unknown as typeof fetch;
+
+    const result = await dnsPlugin.run({
+      targetTimezone: "America/New_York",
+      targetLang: "en",
+    });
+    expect(result.risk).toBe("low");
+    expect(result.value).toContain("无法查询地理位置");
   });
 
   it("returns low risk when geo lookup fails for non-CDN IP", async () => {
@@ -101,6 +116,21 @@ describe("dnsPlugin", () => {
     });
     expect(result.risk).toBe("low");
     expect(result.contribution).toBe(0);
+  });
+
+  it("geo ASN=Cloudflare(13335) 对非前缀 IP 判定 CDN 而不误报", async () => {
+    mockLookup.__setState(async () => ({ address: "1.2.3.4", family: 4 }));
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, country: "United States", country_code: "US", connection: { asn: 13335, org: "Cloudflare, Inc." } }),
+    }) as unknown as typeof fetch;
+
+    const result = await dnsPlugin.run({
+      targetTimezone: "America/New_York",
+      targetLang: "en",
+    });
+    expect(result.risk).toBe("low");
+    expect(result.value).toContain("Cloudflare");
   });
 
   it("returns low risk when DNS resolution fails (network unreachable)", async () => {

@@ -2,7 +2,7 @@
 // 规范词汇：槽 id（chrome.accept_language …）；slotKey 词汇已随旧修复流退役。
 
 import { execFile } from "node:child_process";
-import { BROWSER_POLICY_SLOTS, type BrowserId, type BrowserPolicySlotId } from "../state/schema.js";
+import { BROWSER_POLICY_SLOTS, type BrowserId } from "../state/schema.js";
 
 export type { BrowserId } from "../state/schema.js";
 
@@ -50,16 +50,27 @@ export async function detectRunningBrowsers(): Promise<BrowserId[]> {
   return [...running];
 }
 
-/** 按槽 id 读 HKCU 策略值（异步，issue #61）；键或值不存在返回 null。槽 id 必须来自目录。 */
-export async function getPolicy(slot: BrowserPolicySlotId): Promise<string | null> {
-  const entry = BROWSER_POLICY_SLOTS.find((candidate) => candidate.id === slot);
-  if (entry === undefined) throw new Error(`Unmanaged browser policy slot: ${slot}`);
+/**
+ * 一次 reg query（无 /v）读取浏览器键下全部策略值，按 valueName 索引。
+ * 替代逐槽位 spawn（#67 实测 6 次顺序 reg query 60-250ms）：Chrome/Edge 各一次，
+ * 检测路径子进程数 6 → 2。键或值不存在返回 null；整个键失败返回全 null。
+ */
+export async function readPolicyValues(browser: BrowserId): Promise<Record<string, string | null>> {
+  const entries = BROWSER_POLICY_SLOTS.filter((slot) => slot.browser === browser);
+  const keyPath = entries[0]?.keyPath;
+  if (keyPath === undefined) throw new Error(`Unmanaged browser policy browser: ${browser}`);
   try {
-    const result = await runAsync("reg", ["query", entry.keyPath, "/v", entry.valueName]);
-    const match = result.match(/REG_SZ\s+(.+)/);
-    return match ? match[1].trim() : null;
+    const output = await runAsync("reg", ["query", keyPath]);
+    const values: Record<string, string | null> = {};
+    for (const line of output.split("\n")) {
+      // "    AcceptLanguage    REG_SZ    en-US"
+      const match = line.match(/^\s*([^\s]+)\s+REG_SZ\s+(.+)$/);
+      if (match !== null && match[1] !== undefined && match[2] !== undefined) values[match[1]] = match[2].trim();
+    }
+    for (const slot of entries) values[slot.valueName] ??= null;
+    return values;
   } catch {
-    // 策略区或值不存在
-    return null;
+    // 策略区不存在：全部槽位均为 null
+    return Object.fromEntries(entries.map((slot) => [slot.valueName, null]));
   }
 }

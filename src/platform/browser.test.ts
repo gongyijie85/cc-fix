@@ -8,7 +8,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { execFile } from "node:child_process";
-import { BROWSER_LABELS, detectRunningBrowsers, getPolicy } from "./browser.js";
+import { BROWSER_LABELS, detectRunningBrowsers, readPolicyValues } from "./browser.js";
 
 const mockedExecFile = vi.mocked(execFile);
 
@@ -40,23 +40,38 @@ describe("BROWSER_LABELS", () => {
   });
 });
 
-describe("getPolicy", () => {
-  it("reg query 命中 REG_SZ：返回去除首尾空白的值（按槽 id 从目录查路径）", async () => {
-    mockStdout("HKEY_CURRENT_USER\\Software\\Policies\\Google\\Chrome\n    AcceptLanguage    REG_SZ    en-US\n");
-    await expect(getPolicy("chrome.accept_language")).resolves.toBe("en-US");
+describe("readPolicyValues", () => {
+  it("一次 reg query 解析全部 REG_SZ 值并按 valueName 索引", async () => {
+    mockStdout(
+      "HKEY_CURRENT_USER\\Software\\Policies\\Google\\Chrome\n" +
+      "    AcceptLanguage    REG_SZ    en-US\n" +
+      "    DefaultWebRtcIPHandlingPolicy    REG_SZ    disable_non_proxied_udp\n",
+    );
+    const values = await readPolicyValues("chrome");
+    expect(values.AcceptLanguage).toBe("en-US");
+    expect(values.DefaultWebRtcIPHandlingPolicy).toBe("disable_non_proxied_udp");
+    // 槽目录中存在的值未出现在输出时记 null（缺失 ≠ 异常形态）
+    expect(values.ApplicationLocaleValue).toBeNull();
     const [command, args] = mockedExecFile.mock.calls.at(-1)!;
     expect(command).toBe("reg");
-    expect(args).toContain("HKCU\\Software\\Policies\\Google\\Chrome");
-    expect(args).toContain("AcceptLanguage");
+    expect(args).toEqual(["query", "HKCU\\Software\\Policies\\Google\\Chrome"]);
   });
 
-  it("reg query 失败（键不存在）：返回 null", async () => {
+  it("键不存在（reg query 失败）：全部槽位为 null", async () => {
     mockFailure("ERROR: The system was unable to find the specified registry key or value.");
-    await expect(getPolicy("edge.application_locale")).resolves.toBeNull();
+    const values = await readPolicyValues("edge");
+    expect(values).toEqual({ AcceptLanguage: null, DefaultWebRtcIPHandlingPolicy: null, ApplicationLocaleValue: null });
   });
 
-  it("目录外的槽 id 直接拒绝", async () => {
-    await expect(getPolicy("chrome.anything" as never)).rejects.toThrow("Unmanaged browser policy slot");
+  it("忽略非 REG_SZ 的行", async () => {
+    mockStdout(
+      "HKEY_CURRENT_USER\\Software\\Policies\\Google\\Chrome\n" +
+      "    (Default)    REG_SZ    (value not set)\n" +
+      "    AcceptLanguage    REG_SZ    en-US\n",
+    );
+    const values = await readPolicyValues("chrome");
+    expect(values.AcceptLanguage).toBe("en-US");
+    expect(values.ApplicationLocaleValue).toBeNull();
   });
 });
 

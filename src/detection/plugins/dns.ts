@@ -131,7 +131,8 @@ export function createDnsPlugin(
 
       // 其他公网 IP：仅作展示，geo 失败则安全；geo 成功也不再因「非 US」加分
       // （Anthropic 解析结果常非 US 边缘，国家码不能当 DNS 泄露证据）
-      const geoResponse = await fetch(`http://ip-api.com/json/${ip}?fields=country,countryCode,as`, {
+      // 全 HTTPS 收口（#70 决议）：ip-api.com 明文 HTTP → ipwho.is
+      const geoResponse = await fetch(`https://ipwho.is/${ip}`, {
         signal: AbortSignal.timeout(3000),
       });
 
@@ -149,13 +150,27 @@ export function createDnsPlugin(
       }
 
       const geoData = (await geoResponse.json()) as {
+        success?: boolean;
         country?: string;
-        countryCode?: string;
-        as?: string;
+        country_code?: string;
+        connection?: { asn?: number; org?: string };
       };
 
-      // 若 geo 标明 Cloudflare ASN，同样视为 CDN
-      const asStr = (geoData.as ?? "").toUpperCase();
+      if (geoData.success === false) {
+        return {
+          id: "dns",
+          label: "DNS 配置",
+          value: `api.anthropic.com → ${ip} (无法查询地理位置)`,
+          score: 0,
+          weight: 8,
+          contribution: 0,
+          source: "network",
+          risk: "low",
+        };
+      }
+
+      // 若 geo 标明 Cloudflare ASN，同样视为 CDN（ipwho.is 的 asn 是数值，如 13335）
+      const asStr = `${geoData.connection?.asn !== undefined ? `AS${geoData.connection.asn}` : ""} ${geoData.connection?.org ?? ""}`.toUpperCase();
       if (asStr.includes("AS13335") || asStr.includes("CLOUDFLARE")) {
         return {
           id: "dns",
@@ -172,7 +187,7 @@ export function createDnsPlugin(
       return {
         id: "dns",
         label: "DNS 配置",
-        value: `api.anthropic.com → ${ip} (${geoData.country ?? geoData.countryCode ?? "未知"})`,
+        value: `api.anthropic.com → ${ip} (${geoData.country ?? geoData.country_code ?? "未知"})`,
         score: 0,
         weight: 8,
         contribution: 0,
