@@ -72,10 +72,10 @@ export async function runProtectTransaction(input: {
     if (input.dailyValues === undefined) throw new Error('Daily snapshot values are required for a downshift');
     effectiveDesired[step.id] = input.dailyValues[step.id];
   }
-  const snapshot = await captureJournalPlan({ steps: plan.steps, desired: effectiveDesired, authorities: input.authorities, originals: input.originals });
+  const snapshot = await captureJournalPlan({ steps: plan.steps, desired: effectiveDesired, authorities: input.authorities, ...(input.originals === undefined ? {} : { originals: input.originals }) });
   const journal = await input.journalRepository.plan('protect', snapshot, input.journalContext);
   await input.stateTransaction.begin(journal.transactionId);
-  const result = await executePlan({ steps: plan.steps, desired: effectiveDesired, authorities: input.authorities, journal: createJournalReporter(input.journalRepository, journal), originals: input.originals });
+  const result = await executePlan({ steps: plan.steps, desired: effectiveDesired, authorities: input.authorities, journal: createJournalReporter(input.journalRepository, journal), ...(input.originals === undefined ? {} : { originals: input.originals }) });
   if (result.kind === 'committable' || result.kind === 'degraded') await input.stateTransaction.complete(result);
   else await input.stateTransaction.fail(result);
   return result;

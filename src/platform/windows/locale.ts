@@ -12,7 +12,7 @@ const languageBase = (tag: string): string => tag.split('-')[0]!.toLowerCase();
  */
 function languageListsEquivalent(desired: string[], actual: string[]): boolean {
   if (desired.length !== actual.length) return false;
-  return desired.every((tag, index) => languageBase(tag) === languageBase(actual[index]));
+  return desired.every((tag, index) => languageBase(tag) === languageBase(actual[index]!));
 }
 
 function validateLanguages(value: unknown): value is string[] {

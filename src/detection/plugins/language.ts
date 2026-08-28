@@ -14,7 +14,7 @@ export const languagePlugin: DetectionPlugin = {
     // 权威读取：注册表环境变量优先（persist 的写入目标），非 Windows 回退进程 env（issue #45）
     const lang = (await readUserEnvVar("LANG")) || (await readUserEnvVar("LC_ALL")) || process.env.LANG || process.env.LANGUAGE || process.env.LC_ALL || "unknown";
     const isHighRisk = HIGH_RISK_LANGUAGES.some((hl) => lang.includes(hl));
-    const isTarget = lang.includes(context.targetLang.split(".")[0]);
+    const isTarget = lang.includes(context.targetLang.split(".")[0] ?? "");
 
     let score = 0;
     let risk: SignalResult["risk"] = "low";

@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { chmod, mkdir, open, readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { canonicalJson, type JsonValue } from './checksum.js';
+import { hasOnlyKeys, isPlainRecord } from './internal/type-guards.js';
 import {
   nodeDurableFileSystem,
   readCheckedFile,
@@ -190,15 +191,6 @@ export type LegacyMigrationOptions = Readonly<{
   snapshotId?: () => string;
 }>;
 
-function ownRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) &&
-    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
-}
-
-function exactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  return Object.keys(value).every((key) => allowed.includes(key));
-}
-
 function validTime(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(value) &&
     Number.isFinite(Date.parse(value));
@@ -232,8 +224,8 @@ export function parseLegacyBackupV3(bytes: Buffer): ParsedLegacyBackup {
   } catch (error) {
     throw new LegacyMigrationError('legacy_corrupt_json', 'Legacy backup is not valid JSON', { cause: error });
   }
-  if (!ownRecord(input)) throw new LegacyMigrationError('legacy_invalid_shape', 'Legacy backup must be an object');
-  if (!exactKeys(input, LEGACY_KEYS)) throw new LegacyMigrationError('legacy_invalid_shape', 'Legacy backup has unknown fields');
+  if (!isPlainRecord(input)) throw new LegacyMigrationError('legacy_invalid_shape', 'Legacy backup must be an object');
+  if (!hasOnlyKeys(input, LEGACY_KEYS)) throw new LegacyMigrationError('legacy_invalid_shape', 'Legacy backup has unknown fields');
   if (input.schemaVersion !== undefined) {
     if (!Number.isSafeInteger(input.schemaVersion) || (input.schemaVersion as number) < 1) {
       throw new LegacyMigrationError('legacy_invalid_shape', 'Legacy schemaVersion is invalid');
@@ -246,7 +238,7 @@ export function parseLegacyBackupV3(bytes: Buffer): ParsedLegacyBackup {
   const region = activeRegion(input.activeRegion);
   const missingFacts: string[] = [];
 
-  if (!ownRecord(input.previous) || !exactKeys(input.previous, ['TZ', 'LANG', 'LC_ALL'])) {
+  if (!isPlainRecord(input.previous) || !hasOnlyKeys(input.previous, ['TZ', 'LANG', 'LC_ALL'])) {
     throw new LegacyMigrationError('legacy_invalid_shape', 'Legacy environment snapshot is invalid');
   }
   const environment: Record<'TZ' | 'LANG' | 'LC_ALL', ReturnType<typeof environmentValue>> = {} as never;
@@ -264,8 +256,8 @@ export function parseLegacyBackupV3(bytes: Buffer): ParsedLegacyBackup {
   const browserPolicies: Partial<Record<BrowserPolicySlotId, BrowserPolicyBackup>> = {};
   if (input.previousBrowserPolicies === undefined) {
     missingFacts.push('previousBrowserPolicies');
-  } else if (!ownRecord(input.previousBrowserPolicies) ||
-    !exactKeys(input.previousBrowserPolicies, Object.keys(LEGACY_POLICY_TO_V4))) {
+  } else if (!isPlainRecord(input.previousBrowserPolicies) ||
+    !hasOnlyKeys(input.previousBrowserPolicies, Object.keys(LEGACY_POLICY_TO_V4))) {
     throw new LegacyMigrationError('legacy_invalid_shape', 'Legacy browser policy snapshot is invalid');
   } else {
     for (const [legacyKey, slotId] of Object.entries(LEGACY_POLICY_TO_V4)) {
@@ -322,14 +314,14 @@ export function parseLegacyBackupV3(bytes: Buffer): ParsedLegacyBackup {
 }
 
 function isTarget(value: unknown): value is ProtectionTarget {
-  return ownRecord(value) && exactKeys(value, ['mode', 'region']) &&
+  return isPlainRecord(value) && hasOnlyKeys(value, ['mode', 'region']) &&
     (value.mode === 'standard' || value.mode === 'deep') && isRegionCode(value.region);
 }
 
 function normalizeObservation(observation: LegacyProtectionObservation): {
   targets: ProtectionTarget[]; health: ProtectionHealth; degradation: DegradationReason[];
 } | undefined {
-  if (!ownRecord(observation) || !exactKeys(observation, ['candidates', 'health', 'degradation']) ||
+  if (!isPlainRecord(observation) || !hasOnlyKeys(observation, ['candidates', 'health', 'degradation']) ||
     !Array.isArray(observation.candidates) || !observation.candidates.every(isTarget)) return undefined;
   const targets = [...new Map(observation.candidates.map((target) => [`${target.mode}:${target.region}`, target])).values()];
   const health = observation.health ?? 'healthy';
@@ -466,9 +458,9 @@ export async function migrateLegacyProtection(options: LegacyMigrationOptions): 
       filePath: options.root, operation: 'migration.run',
     });
   } catch (error) {
-    // issue #51：崩溃若发生在持锁期间，残留的 root 锁会让任何命令（包括
-    // `persist recover`）在 runtime 创建时死于 lock_failed。迁移自身幂等且
-    // 只在死锁持有者被确认后接管，与恢复流程同批闭环。
+    // issue #51：崩溃若发生在持锁期间，残留�?root 锁会让任何命令（包括
+    // `persist recover`）在 runtime 创建时死�?lock_failed。迁移自身幂等且
+    // 只在死锁持有者被确认后接管，与恢复流程同批闭环�?
     if (!(error instanceof MutationRecoveryRequiredError)) {
       return result('failed', 'lock_failed', null, false);
     }
@@ -550,7 +542,7 @@ export class NodeLegacyBackupConversionStore implements LegacyBackupConversionSt
         filePath: this.path,
         schema: 'cc-fix-backup-v4',
         filesystem: this.filesystem,
-        requiredBoundarySafety: this.requiredBoundarySafety,
+        ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
         payload: snapshot as unknown as JsonValue,
         validatePayload: (payload) => isBackupSnapshotV4(payload),
       });
@@ -603,7 +595,7 @@ export class NodeLegacyBackupConversionStore implements LegacyBackupConversionSt
       filePath: this.path,
       schema: 'cc-fix-backup-v4',
       filesystem: this.filesystem,
-      requiredBoundarySafety: this.requiredBoundarySafety,
+      ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
       validatePayload: (payload) => isBackupSnapshotV4(payload),
     });
     return read.kind === 'ok' &&

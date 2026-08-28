@@ -134,7 +134,7 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
         requestedTarget: target,
         observed,
         desired,
-        dailyValues,
+        ...(dailyValues === undefined ? {} : { dailyValues }),
         authorities: dependencies.authorities,
         snapshotValues: currentValues,
         originals: currentValues,
@@ -276,14 +276,16 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
       const cleanup = await convergeBackupCleanup({
         journal,
         journalRepository: dependencies.journalRepository,
-        deleteDailySnapshot: backup.kind === 'value'
-          ? () => {
-              if (dependencies.deleteDailySnapshot === undefined) {
-                throw new PersistApplicationError('DELETE_BACKEND_REQUIRED', 'Verified native backup deletion is unavailable');
-              }
-              return dependencies.deleteDailySnapshot(backup.value);
+        ...(backup.kind === 'value'
+          ? {
+              deleteDailySnapshot: () => {
+                if (dependencies.deleteDailySnapshot === undefined) {
+                  throw new PersistApplicationError('DELETE_BACKEND_REQUIRED', 'Verified native backup deletion is unavailable');
+                }
+                return dependencies.deleteDailySnapshot(backup.value);
+              },
             }
-          : undefined,
+          : {}),
         assertPreconditions: () => {
           const phase = journal.steps.find((step) => step.id === 'backup_cleanup')?.phase;
           if (phase === 'verified' && backup.kind === 'value') {

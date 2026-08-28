@@ -9,7 +9,7 @@ async function regQueryString(keyPath: string, valueName: string): Promise<strin
   try {
     const { stdout } = await execFileAsync('reg', ['query', keyPath, '/v', valueName], { encoding: 'utf8', windowsHide: true });
     const match = stdout.match(/REG_SZ\s+(.+)/);
-    return match ? match[1].trim() : null;
+    return match ? match[1]!.trim() : null;
   } catch { return null; }
 }
 

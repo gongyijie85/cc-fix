@@ -49,8 +49,22 @@ program.exitOverride((error: CommanderError) => {
 /** 当前命令是否请求了 JSON 输出；顶级 catch 据此选择错误呈现。 */
 let jsonOutput = false;
 
+/** check --debug：输出耗时/堆栈到 stderr，便于提交问题。 */
+let debugEnabled = false;
+
+function debugLog(message: string): void {
+  if (debugEnabled) process.stderr.write(`[debug] ${message}\n`);
+}
+
 function jsonEnvelope(payload: Record<string, unknown>) {
   return JSON.stringify({ schemaVersion: CLI_SCHEMA_VERSION, ok: true, ...payload }, null, 2);
+}
+
+/** 请求了 --json 时输出信封并返回 true；否则返回 false。统一 6 处重复的 json 分支。 */
+function printJsonIfRequested(options: { json?: boolean }, payload: Record<string, unknown>): boolean {
+  if (options.json !== true) return false;
+  console.log(jsonEnvelope(payload));
+  return true;
 }
 
 // check 命令
@@ -58,12 +72,18 @@ program
   .command("check")
   .description("检测环境风险")
   .option("--json", "JSON 格式输出")
+  .option("--debug", "输出调试信息（耗时、错误堆栈）")
   .option("--region <region>", "目标地区", DEFAULT_REGION)
   .action(async (options) => {
     jsonOutput = options.json === true;
+    debugEnabled = options.debug === true;
     const target = getTargetRegion(options.region);
+    const t0 = performance.now();
     const ipIntel = await fetchIpIntelligence();
+    if (debugEnabled) debugLog(`IP 情报获取: ${(performance.now() - t0).toFixed(0)}ms`);
+    const t1 = performance.now();
     const response = await runDetection("auto", target.timezone, target.lang, ipIntel);
+    debugLog(`检测流水线: ${(performance.now() - t1).toFixed(0)}ms`);
     await recordCheck(response.score);
 
     if (options.json) {
@@ -124,7 +144,7 @@ persistCmd
       resolvedRegion: region,
       preferredRegion: after.preferredRegion,
       health: after.health,
-      counts: result.kind === "noop" ? undefined : result.kind === "compensated" || result.kind === "recovery_required" ? { ok: 0, fail: 1 } : { ok: 1, fail: 0 },
+      ...(result.kind === "noop" ? {} : { counts: result.kind === "compensated" || result.kind === "recovery_required" ? { ok: 0, fail: 1 } : { ok: 1, fail: 0 } }),
       rolledBack: result.kind === "compensated",
       noOp: result.kind === "noop",
     });
@@ -148,10 +168,7 @@ persistCmd
       process.exitCode = EXIT_DEGRADED;
     }
 
-    if (options.json) {
-      console.log(jsonEnvelope(facts));
-      return;
-    }
+    if (printJsonIfRequested(options, facts)) return;
     if (result.kind === "degraded") {
       console.log(chalk.yellow(`✓ 已提交 ${target.mode} / ${target.region}（降级：${result.degraded.length} 个浏览器策略槽未对齐）`));
     } else {
@@ -193,19 +210,16 @@ persistCmd
       counts: { ok: 1, fail: 0 },
       noOp: result.kind === "noop",
     });
-    if (options.json) {
-      console.log(jsonEnvelope({
-        requested: null,
-        committed: after.target,
-        preferredRegion: after.preferredRegion,
-        activeRegion: after.target?.region ?? after.preferredRegion,
-        health: after.health,
-        transaction: after.transaction,
-        noOp: result.kind === "noop",
-        rolledBack: false,
-      }));
-      return;
-    }
+    if (printJsonIfRequested(options, {
+      requested: null,
+      committed: after.target,
+      preferredRegion: after.preferredRegion,
+      activeRegion: after.target?.region ?? after.preferredRegion,
+      health: after.health,
+      transaction: after.transaction,
+      noOp: result.kind === "noop",
+      rolledBack: false,
+    })) return;
     console.log(result.kind === "noop" ? chalk.dim("当前已是日常模式") : chalk.green("✓ 已完整还原日常配置"));
   });
 
@@ -242,19 +256,16 @@ persistCmd
       counts: { ok: 1, fail: 0 },
       noOp: result.kind === "noop",
     });
-    if (options.json) {
-      console.log(jsonEnvelope({
-        requested: null,
-        committed: after.target,
-        preferredRegion: after.preferredRegion,
-        activeRegion: after.target?.region ?? after.preferredRegion,
-        health: after.health,
-        transaction: after.transaction,
-        noOp: result.kind === "noop",
-        rolledBack: false,
-      }));
-      return;
-    }
+    if (printJsonIfRequested(options, {
+      requested: null,
+      committed: after.target,
+      preferredRegion: after.preferredRegion,
+      activeRegion: after.target?.region ?? after.preferredRegion,
+      health: after.health,
+      transaction: after.transaction,
+      noOp: result.kind === "noop",
+      rolledBack: false,
+    })) return;
     console.log(result.kind === "noop" ? chalk.dim("没有需要恢复的事务") : chalk.green("✓ 恢复事务已收敛"));
   });
 
@@ -265,10 +276,7 @@ persistCmd
   .action(async (options) => {
     jsonOutput = options.json === true;
     const status = await (await openPersistRuntime()).status();
-    if (options.json) {
-      console.log(jsonEnvelope({ status }));
-      return;
-    }
+    if (printJsonIfRequested(options, { status })) return;
     console.log("\n持久化状态:");
     console.log(`  模式: ${status.mode === "daily" ? chalk.dim(status.mode) : chalk.green(status.mode)}`);
     console.log(`  健康: ${status.health === "healthy" ? chalk.green(status.health) : chalk.yellow(status.health)}`);
@@ -286,8 +294,9 @@ persistCmd
     const status = await (await openPersistRuntime()).status();
     const { installerPreflightExitCode } = await import("./persist/preflight.js");
     const exitCode = installerPreflightExitCode(status);
-    if (options.json) console.log(jsonEnvelope({ allowed: exitCode === 0, status, preflightExitCode: exitCode }));
-    else console.log(exitCode === 0 ? chalk.green("✓ 可以安全升级或修复") : chalk.yellow("当前存在未完成恢复，禁止替换程序文件"));
+    if (!printJsonIfRequested(options, { allowed: exitCode === 0, status, preflightExitCode: exitCode })) {
+      console.log(exitCode === 0 ? chalk.green("✓ 可以安全升级或修复") : chalk.yellow("当前存在未完成恢复，禁止替换程序文件"));
+    }
     if (exitCode !== 0) process.exitCode = exitCode;
   });
 
@@ -330,10 +339,7 @@ program
       throw new Error("无法获取 IP 信息，请检查网络连接");
     }
 
-    if (options.json) {
-      console.log(jsonEnvelope({ ipIntel }));
-      return;
-    }
+    if (printJsonIfRequested(options, { ipIntel })) return;
 
     console.log("\n出口 IP 信息:");
     console.log(`  IP: ${ipIntel.ip || "N/A"}`);
@@ -397,6 +403,9 @@ try {
     }, null, 2));
   } else if (exitCode !== 0 && message.length > 0) {
     console.error(chalk.red(`错误 [${errorId}]: ${message}`));
+    if (debugEnabled && error instanceof Error && error.stack) {
+      console.error(error.stack);
+    }
   }
   process.exitCode = exitCode;
 }

@@ -2,16 +2,10 @@
 
 import type { RegionCode } from "../domain/region.js";
 
+/** 访问区语义值：运行时只有 auto（自动判定）；cn/ru/ir 为访问区预留面（#68 决议保留）。 */
 export type AccessRegionCode = "auto" | "cn" | "ru" | "ir";
 export type AccessStatus = "supported" | "possibly_supported" | "restricted" | "unsupported" | "unknown";
 export type SignalSource = "system" | "network" | "combined";
-
-export type ProductAccess = {
-  web: AccessStatus;
-  pro: AccessStatus;
-  api: AccessStatus;
-  payment: AccessStatus;
-};
 
 export type SignalResult = {
   id: string;
@@ -22,18 +16,6 @@ export type SignalResult = {
   contribution: number;
   source: SignalSource;
   risk: "low" | "medium" | "high" | "critical";
-};
-
-export type RegionProfile = {
-  code: Exclude<AccessRegionCode, "auto">;
-  name: string;
-  shortName: string;
-  countries: string[];
-  timezones: string[];
-  languages: string[];
-  browserPatterns: string[];
-  weights: Record<string, number>;
-  products: ProductAccess;
 };
 
 export type IpIntelligence = {

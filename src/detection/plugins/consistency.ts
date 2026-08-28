@@ -26,7 +26,7 @@ export function createConsistencyPlugin(ipIntel: IpIntelligence | null): Detecti
       }
 
       // 检查 locale 与目标语言是否一致
-      if (!locale.includes(context.targetLang.split("_")[0])) {
+      if (!locale.includes(context.targetLang.split("_")[0] ?? "")) {
         inconsistencies++;
         signals.push(`Locale(${locale})≠目标(${context.targetLang})`);
       }

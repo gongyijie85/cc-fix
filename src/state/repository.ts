@@ -351,7 +351,7 @@ export class StateRepository extends RepositoryBase {
         filePath: this.paths.state,
         schema: STATE_SCHEMA,
         filesystem: this.filesystem,
-        requiredBoundarySafety: this.requiredBoundarySafety,
+        ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
         validatePayload: validateStatePayload,
       });
     } catch (error) {
@@ -406,7 +406,7 @@ export class StateRepository extends RepositoryBase {
           filePath: this.paths.state,
           schema: STATE_SCHEMA,
           filesystem: this.filesystem,
-          requiredBoundarySafety: this.requiredBoundarySafety,
+          ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
           payload: asJson(immutable),
           validatePayload: validateStatePayload,
         });
@@ -434,7 +434,7 @@ export class StateRepository extends RepositoryBase {
           filePath: this.paths.state,
           schema: STATE_SCHEMA,
           filesystem: this.filesystem,
-          requiredBoundarySafety: this.requiredBoundarySafety,
+          ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
           payload: asJson(immutable),
           validatePayload: validateStatePayload,
         });
@@ -484,7 +484,7 @@ export class StateRepository extends RepositoryBase {
           filePath: this.paths.state,
           schema: STATE_SCHEMA,
           filesystem: this.filesystem,
-          requiredBoundarySafety: this.requiredBoundarySafety,
+          ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
           payload: asJson(immutable),
           validatePayload: validateStatePayload,
         });
@@ -505,7 +505,7 @@ export class BackupRepository extends RepositoryBase {
         filePath: this.paths.backup,
         schema: BACKUP_SCHEMA,
         filesystem: this.filesystem,
-        requiredBoundarySafety: this.requiredBoundarySafety,
+        ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
         validatePayload: validateBackupPayload,
       });
     } catch (error) {
@@ -548,7 +548,7 @@ export class BackupRepository extends RepositoryBase {
           filePath: this.paths.backup,
           schema: BACKUP_SCHEMA,
           filesystem: this.filesystem,
-          requiredBoundarySafety: this.requiredBoundarySafety,
+          ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
           payload: asJson(immutable),
           validatePayload: validateBackupPayload,
         });
@@ -594,7 +594,7 @@ export class BackupRepository extends RepositoryBase {
           filePath: this.paths.backup,
           schema: BACKUP_SCHEMA,
           filesystem: this.filesystem,
-          requiredBoundarySafety: this.requiredBoundarySafety,
+          ...(this.requiredBoundarySafety === undefined ? {} : { requiredBoundarySafety: this.requiredBoundarySafety }),
           validatePayload: validateBackupPayload,
           expectedIdentity: identity,
         });

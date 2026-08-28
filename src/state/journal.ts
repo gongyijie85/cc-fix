@@ -110,7 +110,7 @@ export class TransactionJournalRepository {
       stateRoot: this.root,
       filePath: this.valuesPath,
       schema: TRANSACTION_JOURNAL_VALUES_SCHEMA,
-      filesystem: this.filesystem,
+      ...(this.filesystem === undefined ? {} : { filesystem: this.filesystem }),
       validatePayload: validJournalValues,
     });
     if (valuesResult.kind !== 'ok') {
@@ -127,7 +127,7 @@ export class TransactionJournalRepository {
     return (await this.readWithDegradation()).journal;
   }
   async readWithDegradation(): Promise<JournalReadResult> {
-    const result = await readCheckedFile<TransactionJournal>({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, validatePayload: validJournal });
+    const result = await readCheckedFile<TransactionJournal>({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, ...(this.filesystem === undefined ? {} : { filesystem: this.filesystem }), validatePayload: validJournal });
     if (result.kind === 'missing') return { journal: undefined, degraded: false };
     return { journal: await this.mergeValues(result.payload), degraded: result.degraded === true };
   }
@@ -157,14 +157,14 @@ export class TransactionJournalRepository {
       };
     }
     const valuesDocument: JournalValuesDocument = { transactionId, values };
-    await writeCheckedFile({ stateRoot: this.root, filePath: this.valuesPath, schema: TRANSACTION_JOURNAL_VALUES_SCHEMA, filesystem: this.filesystem, payload: valuesDocument as never, validatePayload: validJournalValues });
+    await writeCheckedFile({ stateRoot: this.root, filePath: this.valuesPath, schema: TRANSACTION_JOURNAL_VALUES_SCHEMA, ...(this.filesystem === undefined ? {} : { filesystem: this.filesystem }), payload: valuesDocument as never, validatePayload: validJournalValues });
     const journal: TransactionJournal = {
       transactionId,
       kind,
       steps: steps.map((step) => typeof step === 'string' ? ({ id: step, phase: 'planned' }) : ({ id: step.id, phase: 'planned' })),
       ...(context === undefined ? {} : { context: structuredClone(context) }),
     };
-    await writeCheckedFile({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, payload: journal, validatePayload: validJournal });
+    await writeCheckedFile({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, ...(this.filesystem === undefined ? {} : { filesystem: this.filesystem }), payload: journal, validatePayload: validJournal });
     return this.mergeValues(journal);
   }
 
@@ -176,7 +176,7 @@ export class TransactionJournalRepository {
     }
     // issue #59：写盘只落 phase 表（剥去快照值），避免每次转换全量重写系统配置
     const stripped: TransactionJournal = { ...journal, steps: journal.steps.map((step, i) => i === index ? { id: step.id, phase } : { id: step.id, phase: step.phase }) };
-    await writeCheckedFile({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, filesystem: this.filesystem, payload: stripped, validatePayload: validJournal });
+    await writeCheckedFile({ stateRoot: this.root, filePath: this.path, schema: TRANSACTION_JOURNAL_SCHEMA, ...(this.filesystem === undefined ? {} : { filesystem: this.filesystem }), payload: stripped, validatePayload: validJournal });
     return { ...journal, steps: journal.steps.map((step, i) => i === index ? { ...step, phase } : { ...step }) };
   }
 }
