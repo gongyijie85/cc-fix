@@ -1,4 +1,4 @@
-// GUI E2E fixture（T18）：spawn 真实 sidecar（dist/gui/sidecar.js），隔离 APPDATA，
+// GUI E2E fixture（T18）：spawn 真实 sidecar（dist/sidecar.js），隔离 APPDATA，
 // 等待 ready JSON，暴露 bootstrap URL 与 session；teardown 结束子进程。
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { createCheckedEnvelope, serializeCheckedEnvelope } from "../../src/state/checksum.js";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-const sidecarEntry = join(repoRoot, "dist", "gui", "sidecar.js");
+const sidecarEntry = join(repoRoot, "dist", "sidecar.js");
 const STATE_SCHEMA = "cc-fix-state-v1";
 
 export type GuiHarness = {

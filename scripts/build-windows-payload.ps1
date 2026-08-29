@@ -69,7 +69,8 @@ try {
   $NodeRoot = Get-ChildItem -LiteralPath $NodeExtract -Directory | Select-Object -First 1
   Copy-Item -LiteralPath (Join-Path $NodeRoot.FullName 'node.exe') -Destination (Join-Path $PayloadRoot 'runtime\node.exe')
   Copy-Item -LiteralPath (Join-Path $NodeRoot.FullName 'LICENSE') -Destination (Join-Path $PayloadRoot 'runtime\NODE-LICENSE.txt')
-  # splitting 启用后 dist 含共享 chunk；整个 JS 树镜像到 core/，保持 index.js/gui/sidecar.js 相对导入可用。
+  # splitting 启用后 dist 含共享 chunk；整个 JS 树镜像到 core/，保持扁平相对导入可用。
+  # sidecar 经 tsup entry 对象形式输出到 dist 根（dist/sidecar.js），故 core/sidecar.js 与 ../native 解析一致。
   Get-ChildItem -LiteralPath 'dist' -Recurse -Filter '*.js' | ForEach-Object {
     $Relative = $_.FullName.Substring((Resolve-Path 'dist').Path.Length + 1)
     $Destination = Join-Path $PayloadRoot "core\$Relative"
