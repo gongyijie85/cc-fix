@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createCheckedEnvelope, serializeCheckedEnvelope } from './checksum.js';
+import { nodeDurableFileSystem } from './durable-file.js';
 import { recoveryAction, TRANSACTION_JOURNAL_SCHEMA, TransactionJournalRepository } from './journal.js';
 
 describe('transaction journal', () => {
@@ -89,5 +90,21 @@ describe('transaction journal', () => {
     const readBack = await repo.read();
     expect(readBack).toBeDefined();
     expect(readBack?.steps[0]).toMatchObject({ id: 'env', phase: 'planned', original: { TZ: 'old' }, desired: { TZ: 'new' } });
+  });
+
+  it('accepts an explicit filesystem backend (defined-path spread, #79)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-journal-fs-'));
+    const repo = new TransactionJournalRepository(root, join(root, 'transaction-journal.json'), nodeDurableFileSystem);
+    const planned = await repo.plan('protect', [{ id: 'env', original: { TZ: 'old' } }]);
+    expect((await repo.read())?.steps[0]).toMatchObject({ id: 'env', phase: 'planned' });
+  });
+
+  it('treats a missing values snapshot as corrupt for new-format journals', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-fix-journal-corrupt-'));
+    const journalPath = join(root, 'transaction-journal.json');
+    const repo = new TransactionJournalRepository(root, journalPath);
+    await repo.plan('protect', [{ id: 'env', original: { TZ: 'old' } }]);
+    await rm(`${journalPath}.values`, { force: true });
+    await expect(repo.read()).rejects.toThrow('values snapshot is missing or invalid');
   });
 });
