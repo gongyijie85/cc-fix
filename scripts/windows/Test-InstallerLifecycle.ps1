@@ -184,7 +184,14 @@ try {
     Start-Sleep -Milliseconds 250
   }
   if (Test-Path -LiteralPath $InstallRoot) { throw 'Managed install directory remains after uninstall' }
-  $CurrentPath = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
+  # 注册表 PATH 恢复在卸载器退出后可能瞬时可见（进程/注册表刷新竞态）：轮询等待还原，
+  # 超时才按失败处理——避免把正确的还原误判为失败（CI 实录：reg 已干净但一次性读取读到过期值）。
+  $PathDeadline = [DateTime]::UtcNow.AddSeconds(10)
+  do {
+    $CurrentPath = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path
+    if ($CurrentPath -eq $OriginalPath) { break }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $PathDeadline)
   if ($CurrentPath -ne $OriginalPath) {
     # 诊断输出：精确还原断言失败时记录原始/当前值、注册表类型与 reg 原始输出，避免盲改。
     $PathProp = Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue
