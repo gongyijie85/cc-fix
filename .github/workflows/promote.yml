@@ -14,6 +14,11 @@ on:
         description: Stable version to promote (for example 0.2.0)
         required: true
         type: string
+      publish_npm:
+        description: Publish to npm with OIDC Trusted Publishing (requires npm org config)
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -106,12 +111,20 @@ jobs:
           STABLE_VERSION: ${{ inputs.stable_version }}
         run: |
           gh release create "v$env:STABLE_VERSION" --verify-tag --title "CC-Fix $env:STABLE_VERSION" --notes "CC-Fix $env:STABLE_VERSION stable release promoted from ${{ inputs.rc_tag }}." release/installer/CC-Fix-Setup-*.exe release/installer/CC-Fix-Setup-*.sha256 release/evidence/*
-      - name: Publish npm stable (latest)
-        shell: pwsh
+      - name: Publish npm stable (latest, OIDC Trusted Publishing)
+        shell: bash
         env:
+          NPM_CONFIG_PROVENANCE: "true"
+          PUBLISH_NPM: ${{ inputs.publish_npm }}
           STABLE_VERSION: ${{ inputs.stable_version }}
         run: |
-          # TODO(T29 外部依赖): 需要 npm org 侧配置 Trusted Publishing（OIDC）。
-          # 配置完成后启用 npm publish --provenance --access public 与 gh attestation verify。
-          # 当前步骤仅验证产物完整性，防止误发布。
+          # 完整性校验：pack → 白名单 → 安装 smoke（无论是否发布都先确认产物健康）。
           node scripts/release/verify-npm.mjs
+          if [ "$PUBLISH_NPM" = "true" ]; then
+            # OIDC Trusted Publishing：id-token: write + 未设静态 NODE_AUTH_TOKEN，
+            # npm 读取 GH Actions OIDC token 并带 provenance 发布（需 npm 账户侧先配置身份提供者）。
+            npm publish --access public --provenance
+            echo "npm published cc-fix@$STABLE_VERSION with provenance"
+          else
+            echo "npm publish skipped (publish_npm=false); waiting for npm org Trusted Publishing config"
+          fi
