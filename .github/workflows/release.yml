@@ -91,10 +91,15 @@ jobs:
 
           VPN, router, route, network-adapter, DNS, hosts and DoH configuration are detection/reminder-only and are never modified.
           "@
-          # `gh release create` 捆绑上传 `.sha256` 资产会命中 uploads.github.com 404（持续、非瞬态）；
-          # 拆分为「创建草稿（无资产）」+「逐项 `gh release upload`」，二者代码路径不同，规避该问题。
+          # `gh release create`/`gh release upload` 一次性捆绑多文件会在 uploads.github.com 稳定 404
+          # （本地逐文件探针均成功，判定为 CI GITHUB_TOKEN 下多文件上传会话的偶发问题）。
+          # 改为「逐文件单独上传」= 每次一个文件一个上传请求，规避该问题。
           gh release create $env:RELEASE_TAG --verify-tag --draft --prerelease --title "CC-Fix $version" --notes $notes
-          gh release upload "$env:RELEASE_TAG" --clobber `
-            release/installer/CC-Fix-Setup-*.exe `
-            release/installer/CC-Fix-Setup-*.sha256 `
-            release/evidence/*
+          $assetFiles = @()
+          $assetFiles += @(Get-ChildItem 'release/installer/CC-Fix-Setup-*.exe')
+          $assetFiles += @(Get-ChildItem 'release/installer/CC-Fix-Setup-*.sha256')
+          $assetFiles += @(Get-ChildItem 'release/evidence/*')
+          foreach ($asset in $assetFiles) {
+            gh release upload "$env:RELEASE_TAG" --clobber $asset.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Asset upload failed: $($asset.Name)" }
+          }
