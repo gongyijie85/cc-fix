@@ -7,7 +7,7 @@
 - `canvas`: `#0f1117`；`surface`: `#1a1d27`；`surface-elevated`: `#222633`
 - `text-primary`: `#f4f4f5`；`text-secondary`: `#a1a1aa`；`text-disabled`: `#71717a`
 - `border-subtle`: `#2a2d3a`；`focus`: `#a5b4fc`
-- `accent`: `#818cf8`；`success`: `#22c55e`；`warning`: `#eab308`；`danger`: `#ef4444`；`danger-text`: `#f98a8a`（小字号 danger 文字在 surface/半透明混合底上稳定 ≥4.5:1）
+- `accent`: `#818cf8`；`accent-strong`: `#6366f1`（白字按钮背景，比 4.5:1 达标）；`success`: `#22c55e`；`warning`: `#eab308`；`danger`: `#ef4444`；`danger-text`: `#f98a8a`（小字号 danger 文字在 surface/半透明混合底上稳定 ≥4.5:1）
 - spacing base: `4px`; cards `12px`; controls `8px`; status pills `9999px`
 - body: local `CCFix Noto Sans SC` with system fallback; code: system monospace with local CJK fallback
 

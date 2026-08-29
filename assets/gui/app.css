@@ -7,9 +7,10 @@
   :root {
     --canvas: #0f1117; --surface: #1a1d27; --surface-elevated: #222633;
     --border-subtle: #2a2d3a; --text-primary: #f4f4f5; --text-secondary: #a1a1aa; --text-disabled: #71717a;
-    --focus: #a5b4fc; --accent: #818cf8; --success: #22c55e; --warning: #eab308; --danger: #ef4444; --orange: #f97316;
+    --focus: #a5b4fc; --accent: #818cf8; --accent-strong: #6366f1; --success: #22c55e; --warning: #eab308; --danger: #ef4444; --orange: #f97316;
     /* 小字号 danger 文字用更亮变体：在 surface/半透明 danger 混合底上稳定 ≥4.5:1（#64 axe 门禁） */
     --danger-text: #f98a8a;
+    /* accent-strong 供白字按钮背景：白字在 #818cf8 上仅 2.98:1，加深到 #6366f1（≈6.3:1）过 4.5:1 */
     --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px;
     --radius-card: 12px; --radius-control: 8px; --radius-pill: 9999px;
     /* compatibility aliases while the single-file view is migrated */
@@ -61,7 +62,7 @@
   .btn-on { background: var(--green); color: #000; }
   /* #64：还原/继续恢复是中性次按钮（可逆、非危险）；danger 仅留给危险动作 */
   .btn-off { background: var(--surface-elevated); color: var(--text); border: 1px solid var(--border); }
-  .btn-refresh { background: var(--accent); color: #fff; }
+  .btn-refresh { background: var(--accent-strong); color: #fff; }
   .recommendations { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; }
   .recommendations h3 { font-size: 14px; color: var(--muted); margin-bottom: 8px; }
   .recommendations li { font-size: 13px; margin-left: 16px; margin-bottom: 4px; }

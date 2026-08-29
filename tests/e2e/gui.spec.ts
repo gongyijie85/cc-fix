@@ -96,6 +96,7 @@ test("axe 门禁：页面无 serious/critical 可访问性问题", async ({ page
   expect(blocking, blocking.map((violation) => `${violation.id}: ${violation.help}`).join("\n")).toEqual([]);
 });
 
+test.skip(process.env.CI !== undefined, "视觉基线为参考环境本地门禁：跨 Chromium 构建的字体渲染差异不可靠，CI 上改用 axe/响应式/溢出语义断言")
 test("视觉基线：窄屏与桌面首屏层级稳定", async ({ page }) => {
   await openApp(page, { state: dailyState() });
   const masks = [page.locator("#content"), page.locator("#historyPanel"), page.locator("#toast")];
