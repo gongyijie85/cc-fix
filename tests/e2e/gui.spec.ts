@@ -103,7 +103,14 @@ test("视觉基线：窄屏与桌面首屏层级稳定", async ({ page }) => {
     await page.setViewportSize({ width, height });
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.locator("#statusText")).not.toHaveText("检测中...", { timeout: 15_000 });
-    await expect(page).toHaveScreenshot(`gui-${name}.png`, { fullPage: true, animations: "disabled", mask: masks, maskColor: "#1a1d27" });
+    await expect(page).toHaveScreenshot(`gui-${name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+      mask: masks,
+      maskColor: "#1a1d27",
+      // 跨 Chromium 构建抗锯齿差异：允许 ≤1% 像素抖动，防版本漂移误报；真实布局回归仍会远超此限
+      maxDiffPixelRatio: 0.01,
+    });
   }
 });
 
