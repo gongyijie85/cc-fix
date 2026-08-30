@@ -183,17 +183,24 @@ function renderHistoryRow(entry) {
     ? esc(entry.timestamp)
     : time.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
   const label = historyActionLabel[entry.action] || esc(entry.action);
+  const counts = entry.counts;
   let result, cls = "";
   if (entry.action === "check") {
     result = `评分 ${entry.score ?? "-"}`;
   } else if (entry.action === "font-remove" || entry.action === "font-restore") {
     result = "已记录";
-  } else if (entry.fatal) {
-    result = "致命错误"; cls = "fail";
-  } else if (entry.fail > 0) {
-    result = `${entry.ok} 成功 · ${entry.fail} 失败${entry.rolledBack ? " · 已回滚" : ""}`; cls = "fail";
+  } else if (entry.outcome === "recovery_required") {
+    result = "需恢复"; cls = "fail";
+  } else if (entry.outcome === "compensated") {
+    result = "已回滚"; cls = "fail";
+  } else if (entry.outcome === "noop") {
+    result = "无变化"; cls = "ok";
+  } else if (entry.outcome === "failed") {
+    result = counts ? `${counts.ok} 成功 · ${counts.fail} 失败` : "失败"; cls = "fail";
+  } else if (entry.outcome === "degraded") {
+    result = counts ? `${counts.ok} 成功 · 降级 ${counts.fail} 项` : "降级完成"; cls = "ok";
   } else {
-    result = `${entry.ok} 成功`; cls = "ok";
+    result = counts ? `${counts.ok} 成功` : "成功"; cls = "ok";
   }
   return `<div class="history-row"><span class="history-time">${timeStr}</span><span class="history-action">${label}</span><span class="history-result ${cls}">${esc(result)}</span></div>`;
 }

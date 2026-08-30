@@ -36,6 +36,33 @@ describe('native Windows persist backend', () => {
     await expect(createNativeBrowserPolicyRegistry(unknown).write('chrome.accept_language', 'en-US')).rejects.toThrow('device failure');
   });
 
+  it('reads non-REG_SZ policy values as their string data without crashing (real-machine REG_DWORD case)', async () => {
+    const runner: WindowsCommandRunner = async (_executable, args) => {
+      if (args[0] === 'query') {
+        const valueName = args[3];
+        return {
+          stdout: valueName === 'DefaultWebRtcIPHandlingPolicy'
+            ? '    DefaultWebRtcIPHandlingPolicy    REG_DWORD    0x4\r\n'
+            : '    AcceptLanguage    REG_SZ    en-US,en;q=0.9\r\n',
+          stderr: '',
+        };
+      }
+      return { stdout: '', stderr: '' };
+    };
+    const registry = createNativeBrowserPolicyRegistry(runner);
+    await expect(registry.read('edge.webrtc')).resolves.toBe('0x4');
+    await expect(registry.read('edge.accept_language')).resolves.toBe('en-US,en;q=0.9');
+  });
+
+  it('reads REG_EXPAND_SZ and empty-named values as strings; missing key returns null', async () => {
+    const expand: WindowsCommandRunner = async () => ({ stdout: '    AcceptLanguage    REG_EXPAND_SZ    %LANG%\r\n', stderr: '' });
+    await expect(createNativeBrowserPolicyRegistry(expand).read('chrome.accept_language')).resolves.toBe('%LANG%');
+    const none: WindowsCommandRunner = async () => ({ stdout: '    AcceptLanguage    REG_NONE\r\n', stderr: '' });
+    await expect(createNativeBrowserPolicyRegistry(none).read('chrome.accept_language')).resolves.toBe('');
+    const missing: WindowsCommandRunner = async () => { throw new Error('Unable to find the specified registry key or value.'); };
+    await expect(createNativeBrowserPolicyRegistry(missing).read('chrome.accept_language')).resolves.toBeNull();
+  });
+
   it('contains no VPN, route, adapter, DNS, hosts or DoH write surface', () => {
     expect(Object.keys(createNativeEnvironmentRegistry(async () => ({ stdout: '', stderr: '' })))).toEqual(['read', 'write', 'remove']);
     expect(JSON.stringify([storedMissing(), storedValue('x')])).not.toMatch(/vpn|route|adapter|dns|hosts|doh/iu);

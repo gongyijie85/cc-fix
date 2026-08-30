@@ -43,7 +43,10 @@ function isMissingRegistryError(error: unknown): boolean {
   return /unable to find|cannot find|not found|找不到|不存在/iu.test(text);
 }
 
-const registryTypeLine = /^[ \t]*\S+[ \t]+REG_SZ(?:[ \t]+(.*))?[ \t]*$/iu;
+// 兼容任意注册表值类型：浏览器策略槽在真实机可能被以 REG_DWORD 等非 REG_SZ 存储
+// （验收发现 DefaultWebRtcIPHandlingPolicy=REG_DWORD 0x4），不能因类型不符而硬抛导致整个 persist 事务失败。
+// 读取以字符串形式 best-effort 返回（类型无关，取数据段），写入时归一为期望的 REG_SZ。
+const registryTypeLine = /^[ \t]*\S+[ \t]+(REG_[A-Z_]+)(?:[ \t]+(.*))?[ \t]*$/iu;
 
 async function readRegistryString(
   runner: WindowsCommandRunner,
@@ -53,10 +56,11 @@ async function readRegistryString(
   try {
     const result = await runner('reg.exe', ['query', keyPath, '/v', valueName]);
     const match = result.stdout.split(/\r?\n/u).map((line) => registryTypeLine.exec(line)).find((candidate) => candidate !== null);
-    if (match == null) throw new Error(`Registry value ${keyPath}\\${valueName} is not REG_SZ`);
-    return match[1] ?? '';
+    if (match == null) return null; // 无己知类型行（如 REG_FULL_RESOURCE 等未知形态）——视同缺失
+    return match[2] ?? '';
   } catch (error) {
     if (isMissingRegistryError(error)) return null;
+    if (isAccessDeniedError(error)) return null; // 读被拒视同缺失，写路径按槽汇报退化
     throw error;
   }
 }
