@@ -33,12 +33,22 @@ function commandErrorText(error: unknown): string {
   return `${String(candidate.message ?? '')}\n${String(candidate.stderr ?? '')}`;
 }
 
+/** reg.exe 在系统区域（如中文 GBK/cp936）以本地编码输出错误，UTF-8 解码后为乱码，
+ * 文本匹配会失效；改用退出码做**编码无关**判据（缺失=1、拒绝=5）。 */
+function commandExitCode(error: unknown): number | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'number' && Number.isInteger(code) ? code : null;
+}
+
 function isAccessDeniedError(error: unknown): boolean {
+  if (commandExitCode(error) === 5) return true; // ERROR_ACCESS_DENIED
   const text = commandErrorText(error);
   return /access is denied|access denied|拒绝访问|权限/iu.test(text);
 }
 
 function isMissingRegistryError(error: unknown): boolean {
+  if (commandExitCode(error) === 1) return true; // reg query/delete 的「键/值不存在」
   const text = commandErrorText(error);
   return /unable to find|cannot find|not found|找不到|不存在/iu.test(text);
 }

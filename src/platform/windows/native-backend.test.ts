@@ -63,6 +63,21 @@ describe('native Windows persist backend', () => {
     await expect(createNativeBrowserPolicyRegistry(missing).read('chrome.accept_language')).resolves.toBeNull();
   });
 
+  it('treats GBK-mojibake / exit-code-1 reg errors as missing (encoding-independent)', async () => {
+    // 中文系统 reg.exe 以 GBK 输出「系统找不到指定的注册表项或值」，UTF-8 解码后为乱码，文本匹配失效。
+    const gbkMissing: WindowsCommandRunner = async () => {
+      throw Object.assign(new Error('Command failed: reg.exe query HKCU\\Environment /v LANG'), { code: 1, stderr: 'ϵͳ�Ҳ���ָ����ע������ֵ��' });
+    };
+    await expect(createNativeEnvironmentRegistry(gbkMissing).read('LANG')).resolves.toBeNull();
+  });
+
+  it('treats exit-code-5 reg errors as access denied (encoding-independent)', async () => {
+    const denied: WindowsCommandRunner = async () => {
+      throw Object.assign(new Error('Command failed: reg.exe add ...'), { code: 5, stderr: 'Ȩ���ܾ�' });
+    };
+    await expect(createNativeBrowserPolicyRegistry(denied).write('chrome.accept_language', 'en-US')).resolves.toBe('access_denied');
+  });
+
   it('contains no VPN, route, adapter, DNS, hosts or DoH write surface', () => {
     expect(Object.keys(createNativeEnvironmentRegistry(async () => ({ stdout: '', stderr: '' })))).toEqual(['read', 'write', 'remove']);
     expect(JSON.stringify([storedMissing(), storedValue('x')])).not.toMatch(/vpn|route|adapter|dns|hosts|doh/iu);
