@@ -8,8 +8,8 @@
 | 字段 | 值 |
 |---|---|
 | 被测安装包 | `CC-Fix-Setup-0.2.0-rc.1-x64.exe` |
-| 包 SHA-256 | `14e953e53389a6bb0df749019a4167f735fe5f5adad0ad18f93d0b37a80b8155` |
-| 构建来源 | 本地构建（含 P0/P1 修复，2026-08-30 重打包；非 CI 公开发布资产） |
+| 包 SHA-256 | `e35c4095339b4ab776fa9c72a02363ea4de7d3409a78a083689109f36ce891fa` |
+| 构建来源 | 本地构建（含 P0/P1/P1b 修复，2026-08-30 两次重打包；非 CI 公开发布资产） |
 | 验收日期 | ____________ |
 | 验收人 | ____________ |
 | 操作系统（每线） | 见下表 |
@@ -69,6 +69,7 @@
 |---|---|---|---|---|
 | **P0（阻塞）** | `persist on --level deep --region sg` 失败：`Registry value HKCU\Software\Policies\Microsoft\Edge\DefaultWebRtcIPHandlingPolicy is not REG_SZ` | 真实机该 Edge 策略槽被以 **REG_DWORD 0x4** 存储（非 REG_SZ）；`readRegistryString` 遇非 REG_SZ 硬抛，导致整个 persist 事务失败 | `src/platform/windows/native-backend.ts`：读取改为类型无关（解析任意 `REG_*` 以字符串 best-effort 返回），写路径归一为 REG_SZ；读被拒/缺失视同缺失 | `659dfa9` |
 | **P1（展示）** | GUI 历史每条 persist 显示「undefined 成功」（连失败也显示成功） | `renderHistoryRow` 读顶层 `entry.ok/fail/fatal`，但 v2 schema 存 `entry.counts.{ok,fail}` + `entry.outcome` | `assets/gui/app.js`：改按 `outcome`（failed→失败 / compensated→已回滚 / recovery_required→需恢复 / degraded→降级 / noop→无变化 / ok→`counts.ok 成功`）与 `counts` 渲染 | `659dfa9` |
+| **P1b（复验新增）** | 复验时 `persist on` 又失败：`Command failed: reg.exe query HKCU\Environment /v LANG` + **GBK 乱码** | 中文系统 `reg.exe` 以 GBK/本地编码输出「系统找不到指定的注册表项或值」，UTF-8 解码后乱码 → `isMissingRegistryError` 文本匹配失效 → 把「键值缺失」误判为致命错误 | `src/platform/windows/native-backend.ts`：改用**退出码判据**（缺失=1、拒绝=5），编码无关，兼容 GBK/UTF-8 | `2f88b01` |
 
 - [x] 两缺陷已修复（单测 755 + E2E 14 通过），待真实客户端复验
 - [ ] 复验结果：`persist on deep/sg` 成功 / GUI 历史正确（待填）
