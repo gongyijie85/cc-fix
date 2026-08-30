@@ -29,9 +29,10 @@ async function getWindowsLocaleName(): Promise<string | null> {
   return match?.[1] ?? null;
 }
 
-// 安全的 LocaleName 值（不会触发风控）
+// 安全的 LocaleName 值（不会触发风控）—— 覆盖产品四地区画像会写入的英文/非中文区域，
+// 尤其 sg 目标的 en-SG（此前缺失导致误判中风险并衍生「为中文」的过时建议）。
 const SAFE_LOCALES = new Set([
-  "en-US", "en-GB", "en-AU", "en-CA",
+  "en-US", "en-GB", "en-AU", "en-CA", "en-SG", "en-IE", "en-NZ", "en-ZA", "en-IN", "en-PH", "en-MY",
   "ja-JP", "ko-KR", "de-DE", "fr-FR",
   "es-ES", "it-IT", "nl-NL", "pt-BR",
   "ru-RU", "pl-PL", "sv-SE", "nb-NO",

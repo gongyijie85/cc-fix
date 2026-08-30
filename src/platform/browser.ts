@@ -62,7 +62,8 @@ export async function readPolicyValues(browser: BrowserId): Promise<Record<strin
   try {
     const output = await runAsync("reg", ["query", keyPath]);
     const values: Record<string, string | null> = {};
-    for (const line of output.split("\n")) {
+    // reg.exe 输出为 CRLF：按 /\r?\n/ 切行，避免行尾 \r 使 `$` 锚匹配失败（#75 回归 -> 全部值被解析为 null）。
+    for (const line of output.split(/\r?\n/u)) {
       // "    AcceptLanguage    REG_SZ    en-US"
       const match = line.match(/^\s*([^\s]+)\s+REG_SZ\s+(.+)$/);
       if (match !== null && match[1] !== undefined && match[2] !== undefined) values[match[1]] = match[2].trim();

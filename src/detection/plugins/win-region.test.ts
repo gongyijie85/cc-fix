@@ -61,6 +61,18 @@ describe("winRegionPlugin", () => {
     expect(result.contribution).toBe(0);
   });
 
+  it("returns low risk for en-SG (sg 目标地区写入的本地化区域，曾误判为中风险)", async () => {
+    mockRegSuccess("en-SG");
+
+    const result = await winRegionPlugin.run({
+      targetTimezone: "America/New_York",
+      targetLang: "en",
+    });
+    expect(result.risk).toBe("low");
+    expect(result.score).toBe(0);
+    expect(result.contribution).toBe(0);
+  });
+
   it("returns medium risk for unknown locale", async () => {
     mockRegSuccess("fr-CA");
 

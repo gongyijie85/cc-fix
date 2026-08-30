@@ -43,9 +43,9 @@ describe("BROWSER_LABELS", () => {
 describe("readPolicyValues", () => {
   it("一次 reg query 解析全部 REG_SZ 值并按 valueName 索引", async () => {
     mockStdout(
-      "HKEY_CURRENT_USER\\Software\\Policies\\Google\\Chrome\n" +
-      "    AcceptLanguage    REG_SZ    en-US\n" +
-      "    DefaultWebRtcIPHandlingPolicy    REG_SZ    disable_non_proxied_udp\n",
+      "HKEY_CURRENT_USER\\Software\\Policies\\Google\\Chrome\r\n" +
+      "    AcceptLanguage    REG_SZ    en-US\r\n" +
+      "    DefaultWebRtcIPHandlingPolicy    REG_SZ    disable_non_proxied_udp\r\n",
     );
     const values = await readPolicyValues("chrome");
     expect(values.AcceptLanguage).toBe("en-US");
