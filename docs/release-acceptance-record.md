@@ -63,7 +63,17 @@
 - [ ] release-blocking P2 清零
 - [ ] 遗留阻塞项：__________________________（若有）
 
-## 6. 批准记录（晋级时须记录）
+## 6. 验收中发现并修复的缺陷（2026-08-30，真实客户端）
+
+| 级别 | 现象 | 根因 | 修复 | 提交 |
+|---|---|---|---|---|
+| **P0（阻塞）** | `persist on --level deep --region sg` 失败：`Registry value HKCU\Software\Policies\Microsoft\Edge\DefaultWebRtcIPHandlingPolicy is not REG_SZ` | 真实机该 Edge 策略槽被以 **REG_DWORD 0x4** 存储（非 REG_SZ）；`readRegistryString` 遇非 REG_SZ 硬抛，导致整个 persist 事务失败 | `src/platform/windows/native-backend.ts`：读取改为类型无关（解析任意 `REG_*` 以字符串 best-effort 返回），写路径归一为 REG_SZ；读被拒/缺失视同缺失 | `659dfa9` |
+| **P1（展示）** | GUI 历史每条 persist 显示「undefined 成功」（连失败也显示成功） | `renderHistoryRow` 读顶层 `entry.ok/fail/fatal`，但 v2 schema 存 `entry.counts.{ok,fail}` + `entry.outcome` | `assets/gui/app.js`：改按 `outcome`（failed→失败 / compensated→已回滚 / recovery_required→需恢复 / degraded→降级 / noop→无变化 / ok→`counts.ok 成功`）与 `counts` 渲染 | `659dfa9` |
+
+- [x] 两缺陷已修复（单测 755 + E2E 14 通过），待真实客户端复验
+- [ ] 复验结果：`persist on deep/sg` 成功 / GUI 历史正确（待填）
+
+## 7. 批准记录（晋级时须记录）
 
 | 字段 | 值 |
 |---|---|
