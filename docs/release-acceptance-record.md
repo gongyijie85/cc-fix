@@ -73,7 +73,12 @@
 | **P1c（复验收敛）** | 复验后 `persist on` 成功但面板仍报「浏览器策略 6/6 槽位异常（高风险）」+「Windows 区域格式 en-SG 中风险 + 过时的『为中文』建议」 | ① `readPolicyValues` 用 `\n` 切行但 `reg.exe` 输出为 `\r\n`，行尾 `\r` 使正则 `$` 锚失配 → 全部值解析为 null（#75 回归，单测 mock 未带 `\r` 未暴露）；② `win-region` 的 `SAFE_LOCALES` 缺 `en-SG`（sg 目标地区写入的区域）→ 误判中风险并衍生错误建议 | ① `platform/browser.ts` 改用 `split(/\r?\n/)` 切行；② `win-region.ts` `SAFE_LOCALES` 补 `en-SG` 等英文区域 | `a65aed0` |
 
 - [x] 两缺陷已修复（单测 755 + E2E 14 通过），待真实客户端复验
-- [ ] 复验结果：`persist on deep/sg` 成功 / GUI 历史正确（待填）
+- [x] **开发机复验通过（2026-08-31）**：`persist on deep/sg` → 提交（评分 0）→ `persist off` → 还原日常成功，**on/off 生命周期闭环**；浏览器策略 6/6 就位、区域 en-SG 安全
+- [ ] 真实客户端（25H2/24H2/26H1/10 22H2）复验：待安装版执行（原生版须「安装后」运行，persist off 依赖内置 native helper）
+
+> **注意事项（重要）**：`persist off` 的完整生命周期**依赖 native helper**（验证后删日常不可变备份）——仅安装版搭载；
+> **开发/npm 布局不含**，故开发 CLI 的 persist off 会提示「Verified native backup deletion is unavailable」。
+> 开发机需在 `dist/../native/`（即仓库根 `native/`，代码内 gitignore）放构建好的 `cc-fix-native-helper.exe` 方可运行 on/off；**正式验收请用已安装的应用**。npm 兼容渠道的 persist off 为已知限制（Windows 制品不随 npm 分发）。
 
 ## 7. 批准记录（晋级时须记录）
 
