@@ -7,8 +7,8 @@
 
 | 字段 | 值 |
 |---|---|
-| 被测安装包 | `CC-Fix-Setup-0.2.0-rc.1-x64.exe` |
-| 包 SHA-256 | `830bfe276134b87d1da710a6093127b9fbb2ebea8d2972c65ac4fd5d71856dd7` |
+| 被测安装包 | `CC-Fix-Setup-0.2.0-rc.2-x64.exe` |
+| 包 SHA-256 | `874fc6d7f5991a9b5867d83715d86b4cac7aabf19e359cc3064bb4abb494e8b0` |
 | 构建来源 | 本地构建（含 P0/P1/P1b/P1c 修复，2026-08-31；非 CI 公开发布资产） |
 | 验收日期 | ____________ |
 | 验收人 | ____________ |
@@ -20,7 +20,7 @@
 |---|---|---|---|
 | 1 | 全新安装：当前用户、无需管理员、落到 `%LOCALAPPDATA%\Programs\CC-Fix` | | |
 | 2 | WebView2 缺失时自动安装并复检 | | |
-| 3 | 私有运行时 CLI：`runtime\node.exe core\index.js --version` == `0.2.0-rc.1` | | |
+| 3 | 私有运行时 CLI：`runtime\node.exe core\index.js --version` == `0.2.0-rc.2` | | |
 | 4 | 桌面单实例：二次启动聚焦已有窗口 | | |
 | 5 | sidecar 回收：关闭桌面壳后私有 Node GUI 进程退出 | | |
 | 6 | 降级拒绝：安装较旧 SemVer → 拒绝覆盖 | | |
@@ -97,5 +97,5 @@
 ## 晋级触发（仅在全部门禁通过后）
 
 ```powershell
-gh workflow run promote.yml -f rc_tag=v0.2.0-rc.1 -f stable_version=0.2.0 -f publish_npm=<true|false>
+gh workflow run promote.yml -f rc_tag=v0.2.0-rc.2 -f stable_version=0.2.0 -f publish_npm=<true|false>
 ```
