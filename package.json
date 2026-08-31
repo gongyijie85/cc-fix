@@ -68,7 +68,8 @@
   "files": [
     "dist",
     "scripts/prepare-hooks.mjs",
-    "assets"
+    "assets",
+    "native"
   ],
   "publishConfig": {
     "access": "public"
