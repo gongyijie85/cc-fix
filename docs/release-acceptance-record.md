@@ -77,8 +77,8 @@
 - [ ] 真实客户端（25H2/24H2/26H1/10 22H2）复验：待安装版执行（原生版须「安装后」运行，persist off 依赖内置 native helper）
 
 > **注意事项（重要）**：`persist off` 的完整生命周期**依赖 native helper**（验证后删日常不可变备份）——仅安装版搭载；
-> **开发/npm 布局不含**，故开发 CLI 的 persist off 会提示「Verified native backup deletion is unavailable」。
-> 开发机需在 `dist/../native/`（即仓库根 `native/`，代码内 gitignore）放构建好的 `cc-fix-native-helper.exe` 方可运行 on/off；**正式验收请用已安装的应用**。npm 兼容渠道的 persist off 为已知限制（Windows 制品不随 npm 分发）。
+> **开发**布局需在 `dist/../native/`（即仓库根 `native/`，代码内 gitignore）放构建好的 `cc-fix-native-helper.exe` 方可运行 on/off；**正式验收请用已安装的应用**。
+> **npm 兼容渠道已解决（2026-08-31）**：发布包 `files` 新增 `native`,prepack 把 cargo 构建的 helper + SHA-256 随包打包（`dist/../native/` 命中）,npm 渠道的 persist on/off 生命周期随之闭环；无 cargo 产物时该渠道 persist off 仍不可用（已知限制）。
 
 ## 7. 批准记录（晋级时须记录）
 
