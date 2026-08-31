@@ -2,7 +2,7 @@
 
 CC-Fix 是面向 Windows 的环境一致性检测与可恢复保护工具。它提供独立桌面应用、CLI 和本地 GUI，用同一套耐久事务管理环境变量、系统时区、浏览器策略以及可选的语言/区域画像。
 
-当前版本：`0.2.0-rc.1` · 协议：MIT · 目标平台：Windows 10/11 x64
+当前版本：`0.2.0-rc.2` · 协议：MIT · 目标平台：Windows 10/11 x64
 
 ## 功能亮点
 
@@ -26,7 +26,7 @@ CC-Fix 是面向 Windows 的环境一致性检测与可恢复保护工具。它�
 
 ### Windows 桌面版（推荐）
 
-运行 `CC-Fix-Setup-0.2.0-rc.1-x64.exe`。安装器：
+运行 `CC-Fix-Setup-0.2.0-rc.2-x64.exe`。安装器：
 
 - 安装到 `%LOCALAPPDATA%\Programs\CC-Fix`，无需管理员权限；
 - 自带 Node.js 24 私有运行时，不要求系统安装 Node.js；

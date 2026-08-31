@@ -1,6 +1,6 @@
 {
   "name": "cc-fix",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "description": "Claude Code 环境安全检测与修复 CLI 工具",
   "type": "module",
   "bin": {

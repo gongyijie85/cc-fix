@@ -1,6 +1,6 @@
 [package]
 name = "cc-fix-desktop"
-version = "0.2.0-rc.1"
+version = "0.2.0-rc.2"
 description = "CC-Fix Windows desktop shell"
 edition = "2024"
 license = "MIT"
