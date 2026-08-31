@@ -9,7 +9,7 @@
 |---|---|
 | 被测安装包 | `CC-Fix-Setup-0.2.0-rc.2-x64.exe` |
 | 包 SHA-256 | `874fc6d7f5991a9b5867d83715d86b4cac7aabf19e359cc3064bb4abb494e8b0` |
-| 构建来源 | 本地构建（含 P0/P1/P1b/P1c 修复，2026-08-31；非 CI 公开发布资产） |
+| 构建来源 | CI 构建（tag `v0.2.0-rc.2`，2026-08-31 发布为 prerelease；含 P0/P1/P1b/P1c 修复） |
 | 验收日期 | ____________ |
 | 验收人 | ____________ |
 | 操作系统（每线） | 见下表 |
@@ -79,6 +79,7 @@
 > **注意事项（重要）**：`persist off` 的完整生命周期**依赖 native helper**（验证后删日常不可变备份）——仅安装版搭载；
 > **开发**布局需在 `dist/../native/`（即仓库根 `native/`，代码内 gitignore）放构建好的 `cc-fix-native-helper.exe` 方可运行 on/off；**正式验收请用已安装的应用**。
 > **npm 兼容渠道已解决（2026-08-31）**：发布包 `files` 新增 `native`,prepack 把 cargo 构建的 helper + SHA-256 随包打包（`dist/../native/` 命中）,npm 渠道的 persist on/off 生命周期随之闭环；无 cargo 产物时该渠道 persist off 仍不可用（已知限制）。
+> **环境事项（非代码 bug）**：`persist off`/字体还原时 `C:\WINDOWS\Fonts\mingliu.ttc`「正由另一进程使用」= 该字体被某进程加载占用（Windows 锁写入/删除），多为浏览器/Office/编辑器或系统当前用 MingLiU 作显示字形。**不影响 persist on/off 生命周期与主还原**（其余 14 个中文字体已还原,检测面板仍能看到它们）。处理:关占用进程后重试,或重启后再还原。已在开发机复现数次,列为该测试机环境已知限制,不作为 P0/P1 门槛项。
 
 ## 7. 批准记录（晋级时须记录）
 
