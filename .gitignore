@@ -51,3 +51,6 @@ persist-backup.json
 .wayfinder/temp/map-*-body.md
 .wayfinder/temp/map-*-close-body.md
 .gstack/
+
+# Dev-only native helper mirror (built by cargo; not shipped to npm)
+/native/
