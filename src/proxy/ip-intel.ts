@@ -134,9 +134,14 @@ async function toIpIntelligence(
     const secondaryAsn = normalizeAsn(secondary.asn);
     const asnMatch =
       !primaryAsn || !secondaryAsn || primaryAsn === secondaryAsn;
-    // 出口 IP 本身不一致（不同源看到不同地址）也算多源冲突
+    // 双栈：同一出口常见 IPv4(3.1.x) + IPv6(2406:...) 双栈，严格 IP 相等会误判
+    // 仅当同族 IP 不同才视为冲突；跨族（v4 vs v6）且国家/ASN一致视为同一出口
+    const isIPv6 = (ip: string | null) => !!ip && ip.includes(":");
+    const ipFamilyDiffers = isIPv6(primary.ip) !== isIPv6(secondary.ip);
     const ipMatch =
-      !primary.ip || !secondary.ip || primary.ip === secondary.ip;
+      !primary.ip || !secondary.ip ||
+      primary.ip === secondary.ip ||
+      (ipFamilyDiffers && countryMatch && asnMatch);
     multiSourceConsistent = countryMatch && asnMatch && ipMatch;
     // 企业办公网多源抖动（公司DNS vs 公网）降噪：若任一源为企业 ASN，忽略多源不一致
     try {
