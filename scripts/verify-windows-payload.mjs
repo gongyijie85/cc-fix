@@ -9,11 +9,17 @@ const manifestPath = path.resolve(repositoryRoot, "release", "payload.sha256.jso
 const writeMode = process.argv.includes("--write");
 
 // #63 载荷门禁：自托管字体与 license 必须随包分发（fail-closed，禁止静默缺失）
+// 桌面壳 spawn_sidecar 依赖私有 Node 运行时，缺失时 os error 2 直接表现为“CC-Fix 启动失败”。
+// 将 runtime 与 redist 关键文件纳入必检，任何静默缺失都 fail-closed。
 const REQUIRED_PAYLOAD_FILES = [
+  "CC-Fix.exe",
+  "bin/cc-fix.cmd",
   "core/index.js",
   "core/sidecar.js",
   "native/cc-fix-native-helper.exe",
   "native/cc-fix-native-helper.exe.sha256",
+  "runtime/node.exe",
+  "runtime/NODE-LICENSE.txt",
   "assets/fonts/cc-fix-noto-sans-sc.woff2",
   "assets/fonts/NOTICE.txt",
   "assets/fonts/OFL-1.1.txt",

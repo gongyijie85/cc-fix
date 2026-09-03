@@ -4,6 +4,7 @@ import type { DetectionPlugin, DetectionContext } from "../plugin.js";
 import type { SignalResult } from "../types.js";
 import type { IpIntelligence } from "../types.js";
 import { readUserLocale, systemState } from "../../platform/system-state.js";
+import { isCorporateIp, isCorporateAsn } from "../corporate-allowlist.js";
 
 export function createConsistencyPlugin(ipIntel: IpIntelligence | null): DetectionPlugin {
   return {
@@ -32,9 +33,15 @@ export function createConsistencyPlugin(ipIntel: IpIntelligence | null): Detecti
       }
 
       // 检查 IP 国家与目标地区是否一致（如果有 IP 信息）
+      // 企业白名单内的 IP/ASN 不计入不一致（办公VPN豁免）
       if (ipCountry && context.targetTimezone.includes("New_York") && ipCountry !== "US") {
-        inconsistencies++;
-        signals.push(`IP(${ipCountry})≠目标(US)`);
+        const corporate = (ipIntel?.ip && await isCorporateIp(ipIntel.ip)) || (ipIntel?.asn && await isCorporateAsn(ipIntel.asn));
+        if(!corporate){
+          inconsistencies++;
+          signals.push(`IP(${ipCountry})≠目标(US)`);
+        } else {
+          signals.push(`IP(${ipCountry}) 为企业白名单，已豁免`);
+        }
       }
 
       let score = 0;

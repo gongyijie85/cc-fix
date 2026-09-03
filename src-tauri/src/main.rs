@@ -123,6 +123,18 @@ fn spawn_sidecar() -> Result<(Child, ReadyMessage), String> {
     )?;
     // helper 不经环境变量传递：sidecar 内的 runtime 以 bundle 相对布局解析
     // （core/../native），与安装目录内路径一致（issue #53）。
+    if !node.exists() {
+        return Err(format!(
+            "private Node runtime not found at {} (os error 2) — 文件不存在，请重新安装 CC-Fix 或检查安装目录是否完整",
+            node.display()
+        ));
+    }
+    if !script.exists() {
+        return Err(format!(
+            "private GUI sidecar not found at {} — 文件不存在，请重新安装 CC-Fix",
+            script.display()
+        ));
+    }
     let bootstrap = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let session_id = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let mut child = Command::new(&node)
@@ -135,7 +147,13 @@ fn spawn_sidecar() -> Result<(Child, ReadyMessage), String> {
         .stderr(Stdio::null())
         .creation_flags(0x0800_0000)
         .spawn()
-        .map_err(|error| format!("unable to start private Node runtime: {error}"))?;
+        .map_err(|error| {
+            format!(
+                "unable to start private Node runtime at {}: {error} — 请检查 {} 是否存在且可执行",
+                node.display(),
+                node.display()
+            )
+        })?;
     let stdout = child
         .stdout
         .take()

@@ -54,3 +54,6 @@ persist-backup.json
 
 # Dev-only native helper mirror (built by cargo; not shipped to npm)
 /native/
+
+# Generic open-source coexistence repo (standalone git, not part of cc-fix)
+/vpn-anthropic-coexist/

@@ -56,6 +56,14 @@ function isDatacenterAsn(asn: string | null): boolean {
   return DATACENTER_ASN_PREFIXES.includes(asnPrefix);
 }
 
+async function isCorporateDatacenterSuppressed(asn: string | null): Promise<boolean> {
+  if(!asn) return false;
+  try {
+    const { isCorporateAsn } = await import("../detection/corporate-allowlist.js");
+    return await isCorporateAsn(asn);
+  } catch { return false; }
+}
+
 // 源 1: ipwho.is（HTTPS、免 key、1000 次/天/客户端 IP；ADR-0016 决策：全 HTTPS 收口）
 async function fetchFromIpWhoIs(): Promise<RawIpData | null> {
   try {
@@ -109,10 +117,10 @@ async function fetchFromIpInfo(): Promise<RawIpData | null> {
   }
 }
 
-function toIpIntelligence(
+async function toIpIntelligence(
   primary: RawIpData,
   secondary: RawIpData | null
-): IpIntelligence {
+): Promise<IpIntelligence> {
   // 多源一致性检查
   let multiSourceConsistent = true;
   let sourceCount = 1;
@@ -130,10 +138,21 @@ function toIpIntelligence(
     const ipMatch =
       !primary.ip || !secondary.ip || primary.ip === secondary.ip;
     multiSourceConsistent = countryMatch && asnMatch && ipMatch;
+    // 企业办公网多源抖动（公司DNS vs 公网）降噪：若任一源为企业 ASN，忽略多源不一致
+    try {
+      const { isCorporateAsn } = await import("../detection/corporate-allowlist.js");
+      if(await isCorporateAsn(primary.asn) || await isCorporateAsn(secondary.asn)){
+        multiSourceConsistent = true;
+      }
+    } catch {}
   }
 
-  // 数据中心判断
-  const ipType = isDatacenterAsn(primary.asn)
+  // 数据中心判断（企业 ASN 豁免）
+  let isDC = isDatacenterAsn(primary.asn);
+  if(isDC){
+    if(await isCorporateDatacenterSuppressed(primary.asn)) isDC = false;
+  }
+  const ipType = isDC
     ? "datacenter" as const
     : primary.asn
       ? "residential" as const
@@ -179,9 +198,9 @@ export async function fetchIpIntelligence(): Promise<IpIntelligence | null> {
 
       let intel: IpIntelligence | null = null;
       if (primary) {
-        intel = toIpIntelligence(primary, secondary);
+        intel = await toIpIntelligence(primary, secondary);
       } else if (secondary) {
-        intel = toIpIntelligence(secondary, null);
+        intel = await toIpIntelligence(secondary, null);
       }
       // 失败（null）不缓存：#86 决议——失败不污染缓存，下次调用重取。
       ipIntelCache = intel === null ? undefined : { value: intel, expiresAt: Date.now() + IP_INTEL_CACHE_TTL_MS };
