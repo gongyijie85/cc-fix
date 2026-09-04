@@ -1,9 +1,10 @@
 // CI 门禁脚本测试（T27）：license / vuln / secret / version 四门禁 fail-closed 行为。
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createJunctionWithRetry } from "./test-support/junction.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -166,7 +167,7 @@ describe("check-secrets.mjs (T27)", () => {
 
   it("fails closed on a broken symlink instead of skipping it (issue #56)", async () => {
     const root = await makeTemporaryDirectory();
-    await symlink(path.join(root, "missing-target"), path.join(root, "stale.link"), "junction");
+    await createJunctionWithRetry(path.join(root, "missing-target"), path.join(root, "stale.link"));
     const result = runCiScript("check-secrets.mjs", ["--root", root]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("unreadable");
@@ -180,7 +181,7 @@ describe("check-secrets.mjs (T27)", () => {
     const hidden = path.join(root, "release", "hidden");
     await mkdir(hidden, { recursive: true });
     await writeFile(path.join(hidden, "leak.txt"), `const token = \"${token}\";\n`, "utf8");
-    await symlink(hidden, path.join(root, "aliasdir"), "junction");
+    await createJunctionWithRetry(hidden, path.join(root, "aliasdir"));
     const result = runCiScript("check-secrets.mjs", ["--root", root]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("github-token");

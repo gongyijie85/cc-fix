@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { createJunctionWithRetry } from '../test-support/junction.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -473,7 +474,7 @@ describe('native migration evidence', () => {
   it('refuses a migration-evidence junction that escapes the supplied state root', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cc-fix-migration-'));
     const outside = await mkdtemp(join(tmpdir(), 'cc-fix-migration-outside-'));
-    await symlink(outside, join(root, 'migration-evidence'), process.platform === 'win32' ? 'junction' : 'dir');
+    await createJunctionWithRetry(outside, join(root, 'migration-evidence'));
     const bytes = legacyBytes();
     await expect(new NodeLegacyEvidenceStore().preserve(root, bytes, sha256(bytes))).rejects.toMatchObject({
       code: 'REPARSE_BOUNDARY',
@@ -531,7 +532,7 @@ describe('native legacy backup conversion boundary', () => {
     const actualRoot = await mkdtemp(join(tmpdir(), 'cc-fix-migration-'));
     const linkedRoot = join(tmpdir(), `cc-fix-migration-root-link-${Date.now()}-${Math.random()}`);
     await writeFile(statePaths(actualRoot).backup, legacyBytes());
-    await symlink(actualRoot, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    await createJunctionWithRetry(actualRoot, linkedRoot);
     await expect(new NodeLegacyBackupConversionStore({ root: linkedRoot }).readBytes()).rejects.toMatchObject({
       code: 'REPARSE_BOUNDARY',
     });

@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { buildEnvVars, runWithInjectedEnv } from "./injector.js";
 import type { TargetRegion } from "../detection/types.js";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { createJunctionWithRetry } from "../test-support/junction.js";
 
 const usTarget: TargetRegion = {
   code: "us",
@@ -58,7 +59,7 @@ describe("runWithInjectedEnv spawn contract (issue #52)", () => {
     try {
       const spacedDir = join(root, "dir with spaces");
       // Windows 用 junction（无需管理员权限），POSIX 用目录符号链接。
-      await symlink(dirname(process.execPath), spacedDir, process.platform === "win32" ? "junction" : "dir");
+      await createJunctionWithRetry(dirname(process.execPath), spacedDir);
       const spacedNode = join(spacedDir, basename(process.execPath));
       const code = await runWithInjectedEnv(spacedNode, ["-e", "process.exit(0)"], usTarget);
       expect(code).toBe(0);
