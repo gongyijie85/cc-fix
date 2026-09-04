@@ -12,6 +12,7 @@ import { fetchIpIntelligence } from "../proxy/ip-intel.js";
 import type { IpIntelligence } from "../detection/types.js";
 import { recordFixSummary, recordCheck, readHistory } from "../fix/history.js";
 import type { StreamEvent } from "../events/types.js";
+import { buildMetadata } from "../version.js";
 import { RegionResolutionError } from "../domain/region.js";
 import { parseRegionCode, resolveRegion } from "../domain/region.js";
 import { resolveProtectionRequest } from "../domain/protection.js";
@@ -28,6 +29,8 @@ function sendJson(res: http.ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
   });
   res.end(JSON.stringify(data));
 }
@@ -37,6 +40,8 @@ async function serveHtml(res: http.ServerResponse) {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "no-store",
     "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
   });
   res.end(htmlContent);
 }
@@ -327,6 +332,8 @@ async function serveGuiAsset(res: http.ServerResponse, name: keyof typeof GUI_AS
     "Cache-Control": "no-cache",
     "ETag": `\"${etag}\"`,
     "Cross-Origin-Resource-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
   });
   res.end(body);
 }
@@ -344,6 +351,8 @@ async function serveFont(res: http.ServerResponse) {
     "Cache-Control": "public, max-age=31536000, immutable",
     "ETag": `"${FONT_ASSET_SHA256}"`,
     "Cross-Origin-Resource-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
   });
   res.end(body);
 }
@@ -435,11 +444,16 @@ export function startGuiServer(
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           "Connection": "keep-alive",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer",
         });
         res.write("\n");
         res.write(`data: ${JSON.stringify({ type: 'catalog' as const, signals: signalCatalog() })}
 
 `);
+      } else if (method === "GET" && url.pathname === "/api/version") {
+        // #112：版本单一事实源（src/version.ts ← package.json），供页脚/反馈核对
+        sendJson(res, { version: buildMetadata.version, product: "cc-fix" });
       } else if (method === "GET" && url.pathname === "/api/status") {
         await handleStatus(orchestrator, res);
       } else if (method === "GET" && url.pathname === "/api/history") {
@@ -469,9 +483,12 @@ export function startGuiServer(
       }
     } catch (err) {
       if (err instanceof RegionResolutionError) {
+        // #107：与 CLI JSON 契约一致的稳定信封 { error: { id, code, ... } }
         sendJson(res, {
           error: {
-            code: err.code,
+            id: "INVALID_REGION",
+            code: 400,
+            message: `Invalid ${err.source} region; expected one of: ${err.validRegions.join(", ")}`,
             source: err.source,
             value: err.value,
             validRegions: err.validRegions,

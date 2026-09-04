@@ -17,6 +17,8 @@ export type PersistStatus = Readonly<{
   health: ProtectionState['health'];
   degradation: readonly DegradationReason[];
   transaction: RecoveryDecision | Readonly<{ kind: 'state_reconciliation'; transactionId: string }>;
+  revision: ProtectionState['revision'];
+  updatedAt: ProtectionState['updatedAt'];
 }>;
 
 /** The backup is deliberately not an input: it is a snapshot, not state. */
@@ -32,6 +34,8 @@ export function derivePersistStatus(state: ProtectionState, journal: Transaction
     health: effectiveTransaction.kind === 'none' ? state.health : 'recovery_required',
     degradation: state.degradation,
     transaction: effectiveTransaction,
+    revision: state.revision,
+    updatedAt: state.updatedAt,
   };
 }
 

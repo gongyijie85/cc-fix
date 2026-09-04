@@ -133,7 +133,7 @@ describe("dnsPlugin", () => {
     expect(result.value).toContain("Cloudflare");
   });
 
-  it("returns low risk when DNS resolution fails (network unreachable)", async () => {
+  it("reports medium risk when DNS resolution fails (network unreachable is not 'safe') (#117)", async () => {
     mockLookup.__setState(async () => {
       throw new Error("ENOTFOUND");
     });
@@ -142,7 +142,7 @@ describe("dnsPlugin", () => {
       targetTimezone: "America/New_York",
       targetLang: "en",
     });
-    expect(result.risk).toBe("low");
+    expect(result.risk).toBe("medium");
     expect(result.contribution).toBe(0);
     expect(result.value).toContain("DNS 解析失败");
   });
@@ -163,7 +163,7 @@ describe("dnsPlugin", () => {
       targetLang: "en",
     });
     expect(Date.now() - started).toBeLessThan(500);
-    expect(result.risk).toBe("low");
+    expect(result.risk).toBe("medium");
     expect(result.contribution).toBe(0);
     expect(result.value).toContain("解析失败");
   });
@@ -179,7 +179,7 @@ describe("dnsPlugin", () => {
       targetLang: "en",
     });
     expect(Date.now() - started).toBeLessThan(500);
-    expect(result.risk).toBe("low");
+    expect(result.risk).toBe("medium");
     expect(result.value).toContain("解析失败");
   });
 });

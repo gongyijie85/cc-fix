@@ -195,16 +195,17 @@ export function createDnsPlugin(
         risk: "low",
       };
     } catch {
-      // DNS 解析失败（网络不可达/超时等）≠ DNS 泄露，跳过不加分
+      // #117：解析失败/超时 = 检测受限，≠ 安全结论。不能以 low 误导"DNS 无风险"；
+      // 不参与加分（非 DNS 泄露证据），但呈现为中风险提示并引导联网复测。
       return {
         id: "dns",
         label: "DNS 配置",
-        value: "DNS 解析失败（可能网络不可达）",
+        value: "DNS 解析失败或超时（检测受限，不能视为安全）— 请检查网络连接后重跑 `cc-fix check`",
         score: 0,
         weight: 8,
         contribution: 0,
         source: "network",
-        risk: "low",
+        risk: "medium",
       };
     }
     },

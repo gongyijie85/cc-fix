@@ -10,7 +10,8 @@ export type MutationAuditOperation =
   | 'backup.reconcile_delete'
   | 'persist.protect'
   | 'persist.restore'
-  | 'persist.recover';
+  | 'persist.recover'
+  | 'persist.set-preferred-region';
 
 export type MutationLockRequest = Readonly<{
   lockKey: string;

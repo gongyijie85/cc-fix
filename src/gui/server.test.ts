@@ -4,7 +4,7 @@ const runtimeMocks = vi.hoisted(() => ({
   protect: vi.fn(async (): Promise<{ kind: string; degraded: Array<{ kind: string; slot: string; cause: string }> }> => ({ kind: "committable", degraded: [] })),
   restore: vi.fn(async () => ({ kind: "restored" })),
   recover: vi.fn(async () => ({ kind: "recovered", failed: [] })),
-  status: vi.fn(async () => ({ mode: "daily", target: null, preferredRegion: "us", health: "healthy", transaction: { kind: "none" } })),
+  status: vi.fn(async () => ({ mode: "daily", target: null, preferredRegion: "us", health: "healthy", transaction: { kind: "none" }, revision: 3, updatedAt: "2026-09-04T00:00:00.000Z" })),
 }));
 
 vi.mock("./index.html", () => ({ default: "<!doctype html>" }));
@@ -168,7 +168,9 @@ describe("POST /api/fix/on region validation", () => {
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toEqual({
         error: {
-          code: "INVALID_REGION",
+          id: "INVALID_REGION",
+          code: 400,
+          message: `Invalid explicit region; expected one of: us, eu, jp, sg`,
           source: "explicit",
           value,
           validRegions: ["us", "eu", "jp", "sg"],
@@ -255,6 +257,25 @@ describe("POST /api/fix/on region validation", () => {
     await expect(status.json()).resolves.toMatchObject({ mode: "daily", preferredRegion: "us", health: "healthy" });
   });
 
+  it("exposes revision and updatedAt facts on the status payload (#111)", async () => {
+    const origin = await baseUrl();
+    const status = await fetch(`${origin}/api/status`, { headers: authHeaders });
+    const payload = (await status.json()) as { revision: number; updatedAt: string; preferredRegion: string };
+    expect(payload.revision).toBeGreaterThanOrEqual(0);
+    expect(typeof payload.updatedAt).toBe("string");
+    expect(typeof payload.preferredRegion).toBe("string");
+  });
+
+  it("serves the single-source version payload and requires a session (#112)", async () => {
+    const origin = await baseUrl();
+    expect((await fetch(`${origin}/api/version`)).status).toBe(401);
+    const response = await fetch(`${origin}/api/version`, { headers: authHeaders });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as { version: string; product: string };
+    expect(payload.product).toBe("cc-fix");
+    expect(payload.version).toMatch(/^\d+\.\d+\.\d+(?:-rc\.\d+)?$/);
+  });
+
   it("rejects missing sessions, hostile origins and bootstrap replay", async () => {
     const origin = await baseUrl();
     expect((await fetch(`${origin}/api/status`)).status).toBe(401);
@@ -306,6 +327,20 @@ describe("GET /assets/gui", () => {
     expect(csp).toContain("script-src 'self'");
     expect(csp).toContain("style-src 'self'");
     expect(csp).not.toContain("unsafe-inline");
+    // #93：HTML/JSON/静态资源统一携带防嗅探与防引用泄漏头
+    for (const response of [css, script, renderers, state, html]) {
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    }
+  });
+
+  it("adds nosniff and referrer-policy to JSON API responses (#93)", async () => {
+    const origin = await baseUrl();
+    const response = await fetch(`${origin}/api/regions`, { headers: authHeaders });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });
 

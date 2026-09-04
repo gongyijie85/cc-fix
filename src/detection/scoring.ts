@@ -105,7 +105,8 @@ export function generateRecommendations(signals: SignalResult[], score: number):
         recommendations.push("ANTHROPIC_BASE_URL 包含敏感域名，请更换代理");
         break;
       case "fonts":
-        recommendations.push("系统安装中文字体暴露真实地区，建议卸载或禁用中文字体");
+        // #108：移除已停用（/api/fonts/remove → 410）；不再建议卸载系统字体
+        recommendations.push("中文字体仅提示、不参与风险：移除功能已停用，请勿据此卸载系统字体；有备份可在面板「还原中文字体」恢复");
         break;
       case "dns":
         recommendations.push("DNS 解析异常（污染/假地址嫌疑），建议改用 8.8.8.8 / 1.1.1.1");
@@ -132,7 +133,7 @@ export function generateRecommendations(signals: SignalResult[], score: number):
     if (needsPersist) {
       recommendations.push("存在可修复信号，建议运行 `cc-fix persist on` 优化环境");
     } else {
-      recommendations.push("剩余风险多为出口 IP / 字体等，persist 无法自动消除");
+      recommendations.push("剩余风险多为出口 IP 等网络因素，persist 无法自动消除");
     }
   }
 

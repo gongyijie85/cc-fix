@@ -2,6 +2,14 @@
  * DOM-only renderers for transient GUI panels. Network/SSE orchestration stays
  * in app.js so these functions remain a small, explicit view boundary.
  */
+
+/** HTML-escapes untrusted text before interpolation into innerHTML templates. */
+export function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
 export function describeFontStatus(status) {
   const found = status.found || [];
   if (found.length > 0) {
@@ -18,10 +26,10 @@ export function createPanelRenderer({ select, riskLabels, onDetectDone, onFontRe
     list.innerHTML = "";
     for (const signal of signals) {
       list.insertAdjacentHTML("beforeend", `
-        <div class="detect-row" id="detect-${signal.id}">
-          <div class="detect-label">${signal.label}</div>
-          <div class="detect-value detect-pending" id="dv-${signal.id}">检测中…</div>
-          <div class="detect-status" id="ds-${signal.id}"></div>
+        <div class="detect-row" id="detect-${escapeHtml(signal.id)}">
+          <div class="detect-label">${escapeHtml(signal.label)}</div>
+          <div class="detect-value detect-pending" id="dv-${escapeHtml(signal.id)}">检测中…</div>
+          <div class="detect-status" id="ds-${escapeHtml(signal.id)}"></div>
         </div>`);
     }
   }
@@ -34,7 +42,9 @@ export function createPanelRenderer({ select, riskLabels, onDetectDone, onFontRe
 
     value.textContent = signal.value || "N/A";
     value.classList.remove("detect-pending");
-    status.innerHTML = `<span class="risk-badge risk-${signal.risk}">${riskLabels[signal.risk]}</span>`;
+    const risk = Object.hasOwn(riskLabels, signal.risk) ? signal.risk : "unknown";
+    const riskText = Object.hasOwn(riskLabels, signal.risk) ? riskLabels[signal.risk] : "未知";
+    status.innerHTML = `<span class="risk-badge risk-${escapeHtml(risk)}">${escapeHtml(riskText)}</span>`;
     row.classList.add("detect-flash");
   }
 

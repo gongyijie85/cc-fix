@@ -3,7 +3,7 @@
 import { Command, CommanderError } from "commander";
 import chalk from "chalk";
 import { runDetection } from "./detection/runner.js";
-import { getTargetRegion, DEFAULT_REGION } from "./detection/regions.js";
+import { getTargetRegion, DEFAULT_REGION, TARGET_REGIONS } from "./detection/regions.js";
 import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
 import { recordCheck, recordPersistFacts } from "./fix/history.js";
@@ -11,6 +11,8 @@ import { spawn } from "node:child_process";
 import { version } from "./version.js";
 import { parseRegionCode, resolveRegion } from "./domain/region.js";
 import { resolveProtectionRequest } from "./domain/protection.js";
+import { StateRepository } from "./state/repository.js";
+import { defaultPersistRoot } from "./state/paths.js";
 import {
   CLI_SCHEMA_VERSION,
   EXIT_DEGRADED,
@@ -31,6 +33,37 @@ const program = new Command();
 async function openPersistRuntime() {
   const { createPersistRuntime } = await import("./persist/runtime.js");
   return createPersistRuntime();
+}
+
+/**
+ * 只读状态偏好读取（#104）：check/run 未显式 --region 时与 GUI 同一解析链——
+ * 保护态用生效地区、日常态用偏好地区、无状态回落初始默认 us。
+ * 读取失败/平台不支持一律静默回落（检测命令不因状态问题失败，不初始化状态）。
+ */
+async function readPersistedRegionPreference(): Promise<{ active?: string; preferred?: string }> {
+  if (process.platform !== "win32") return {};
+  try {
+    const repository = new StateRepository({ root: defaultPersistRoot(process.env) });
+    const result = await repository.read();
+    const { committedTarget, preferredRegion } = result.value;
+    return {
+      ...(committedTarget === null ? {} : { active: committedTarget.region }),
+      preferred: preferredRegion,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/** 解析本次检测/注入目标地区：显式优先 → 生效 → 偏好 → 初始默认 us。 */
+async function resolveDetectionTarget(explicitRegion: string | undefined) {
+  const persisted = explicitRegion === undefined ? await readPersistedRegionPreference() : {};
+  const resolved = resolveRegion({
+    explicit: explicitRegion,
+    active: persisted.active,
+    preferred: persisted.preferred,
+  });
+  return getTargetRegion(resolved.code);
 }
 
 program
@@ -73,11 +106,11 @@ program
   .description("检测环境风险")
   .option("--json", "JSON 格式输出")
   .option("--debug", "输出调试信息（耗时、错误堆栈）")
-  .option("--region <region>", "目标地区", DEFAULT_REGION)
+  .option("--region <region>", "目标地区；省略时沿用已提交/偏好地区")
   .action(async (options) => {
     jsonOutput = options.json === true;
     debugEnabled = options.debug === true;
-    const target = getTargetRegion(options.region);
+    const target = await resolveDetectionTarget(options.region);
     const t0 = performance.now();
     const ipIntel = await fetchIpIntelligence();
     if (debugEnabled) debugLog(`IP 情报获取: ${(performance.now() - t0).toFixed(0)}ms`);
@@ -305,10 +338,10 @@ program
   .command("run [command...]")
   .description("以安全环境启动命令")
   .option("--desktop", "包装启动 Claude Desktop")
-  .option("--region <region>", "目标地区", DEFAULT_REGION)
+  .option("--region <region>", "目标地区；省略时沿用已提交/偏好地区")
   .action(async (commandArgs, options) => {
     jsonOutput = options.json === true;
-    const target = getTargetRegion(options.region);
+    const target = await resolveDetectionTarget(options.region);
     const { runWithInjectedEnv, runDesktop } = await import("./run/injector.js");
 
     if (options.desktop) {
@@ -357,6 +390,78 @@ program
       console.log("\n✅ 出口 IP 地区正常");
     }
     console.log();
+  });
+
+// region 命令（规格 CLI contract）：日常态查看/更新偏好地区
+const regionCmd = program
+  .command("region")
+  .description("地区目录与偏好地区管理");
+
+regionCmd
+  .command("list")
+  .description("列出受支持的地区目录")
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    jsonOutput = options.json === true;
+    const regions = Object.values(TARGET_REGIONS).map((r) => ({ code: r.code, name: r.name }));
+    if (printJsonIfRequested(options, { default: DEFAULT_REGION, regions })) return;
+    console.log("\n支持的地区:");
+    for (const r of regions) {
+      const marker = r.code === DEFAULT_REGION ? "（默认）" : "";
+      console.log(`  ${r.code.padEnd(3)} ${r.name}${marker}`);
+    }
+    console.log();
+  });
+
+regionCmd
+  .command("status")
+  .description("查看偏好地区与生效地区")
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    jsonOutput = options.json === true;
+    const status = await (await openPersistRuntime()).status();
+    const facts = {
+      mode: status.mode,
+      preferredRegion: status.preferredRegion,
+      activeRegion: status.target?.region ?? null,
+      target: status.target,
+      health: status.health,
+      transaction: status.transaction,
+    };
+    if (printJsonIfRequested(options, facts)) return;
+    console.log("\n地区状态:");
+    console.log(`  偏好地区: ${status.preferredRegion}`);
+    console.log(`  生效地区: ${status.target?.region ?? chalk.dim("（日常模式，无生效地区）")}`);
+    console.log(`  模式: ${status.mode} · 健康: ${status.health}`);
+    console.log(chalk.dim("\n日常模式: cc-fix region set us|eu|jp|sg"));
+    console.log(chalk.dim("保护模式: cc-fix persist on --region us|eu|jp|sg\n"));
+  });
+
+regionCmd
+  .command("set <code>")
+  .description("日常模式下更新偏好地区")
+  .option("--json", "JSON 格式输出")
+  .action(async (code, options) => {
+    jsonOutput = options.json === true;
+    parseRegionCode(code, "explicit");
+    const runtime = await openPersistRuntime();
+    const result = await runtime.setPreferredRegion(code);
+    const after = await runtime.status();
+    const facts = {
+      requested: code,
+      preferredRegion: after.preferredRegion,
+      activeRegion: after.target?.region ?? null,
+      mode: after.mode,
+      health: after.health,
+      noOp: result.kind === "noop",
+    };
+    if (printJsonIfRequested(options, facts)) return;
+    if (result.kind === "noop") {
+      console.log(chalk.dim(`偏好地区已经是 ${code}`));
+      return;
+    }
+    console.log(chalk.green(`✓ 偏好地区已更新为 ${code}`));
+    console.log(chalk.dim("下次 `cc-fix persist on` 将默认使用该地区"));
   });
 
 // gui 命令

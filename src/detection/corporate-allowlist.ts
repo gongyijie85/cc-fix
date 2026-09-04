@@ -1,6 +1,9 @@
 // 企业办公网络白名单 — 挂VPN时避免把公司出口误判为高风险
-// 读取优先级：%APPDATA%\cc-fix\corporate-allowlist.json > vpn-anthropic-coexist/src/ccfix-bridge/allowlist.json > 内置默认
+// 读取优先级：%APPDATA%\cc-fix\corporate-allowlist.json > CC_FIX_CORPORATE_ALLOWLIST（仅绝对路径）> 模块相对仓库模板 > 内置默认
 // 仅影响 ip-datacenter 与 consistency 的 IP 分支，时区/语言等系统信号不受影响（保持 SPEC reminder-only）
+// issue #91：不再从 process.cwd() 解析候选路径——从不可信目录（下载/克隆仓库）启动时，
+// 预置的同名文件会被静默采纳并压制风险信号，伪造"安全"结论。仓库模板只接受模块相对
+// 位置（源码/vitest 布局），发布产物需显式 env 或 %APPDATA% 配置。
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -26,10 +29,14 @@ async function loadAllowlist(): Promise<CorporateAllowlist | null> {
   if(process.env.APPDATA){
     candidates.push(path.join(process.env.APPDATA, "cc-fix", "corporate-allowlist.json"));
   }
-  // 仓库内通用模板（开源方案）
-  candidates.push(path.resolve(process.cwd(), "vpn-anthropic-coexist/src/ccfix-bridge/allowlist.json"));
+  // 显式绝对路径覆盖（发布产物/桥接场景；拒绝相对路径，避免不可信 CWD 预置）
+  const fromEnv = process.env.CC_FIX_CORPORATE_ALLOWLIST;
+  if(typeof fromEnv === "string" && fromEnv.length > 0 && path.isAbsolute(fromEnv)){
+    candidates.push(fromEnv);
+  }
   try {
     const selfDir = path.dirname(fileURLToPath(import.meta.url));
+    // 仓库内通用模板（开源方案，仅源码/vitest 布局可达；勿在此引入 cwd/相对解析）
     candidates.push(path.resolve(selfDir, "../../vpn-anthropic-coexist/src/ccfix-bridge/allowlist.json"));
   } catch {}
 

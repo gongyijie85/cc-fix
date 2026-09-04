@@ -9,7 +9,7 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     }
   },
   "bundle": {

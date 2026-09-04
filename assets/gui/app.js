@@ -1,8 +1,8 @@
 import { initialUiState, reduceUiState } from "./state.js";
-import { createPanelRenderer } from "./renderers.js";
+import { createPanelRenderer, escapeHtml } from "./renderers.js";
 
 const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const esc = escapeHtml;
 const riskLabel = { low: "安全", medium: "中风险", high: "高风险", critical: "极高风险" };
 const scoreClass = (s) => s >= 71 ? "score-critical" : s >= 51 ? "score-high" : s >= 21 ? "score-medium" : "score-low";
 
@@ -48,7 +48,7 @@ function showToast(msg) {
 
 // ── 按钮禁用 ──
 function setButtonsDisabled(d) {
-  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "btnFontsRemove", "btnFontsRestore", "regionSelect", "levelSelect"].forEach(id => {
+  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "btnFontsRestore", "regionSelect", "levelSelect"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = d;
   });
@@ -302,11 +302,15 @@ evtSource.onerror = () => {
 // ── 操作按钮 ──
 async function persistOn() {
   const region = document.getElementById("regionSelect")?.value || "us";
-  const level = document.getElementById("levelSelect")?.value || "standard";
+  // #105：level 缺省不回落 standard——未选择/状态未就绪时省略参数，服务端按当前模式
+  // 解析（保持强度），杜绝 deep 用户在 status 回填前被意外降级。
+  const levelSel = document.getElementById("levelSelect");
+  const level = levelSel?.value || "";
   if (level === "deep" && !confirm("深度保护会进一步修改 Windows Locale、首选语言列表和 Culture；关闭保护时会从耐久备份完整还原。是否继续？")) return;
   setButtonsDisabled(true);
   dispatchUi({ type: "fix-action", action: "on" });
-  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}&level=${encodeURIComponent(level)}`, { method: "POST" });
+  const levelParam = level ? `&level=${encodeURIComponent(level)}` : "";
+  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}${levelParam}`, { method: "POST" });
   if (!res.ok) {
     setButtonsDisabled(false);
     showToast("已有操作进行中，请稍候");
@@ -384,6 +388,7 @@ async function loadStatus() {
       const dot = $("#statusDot"), txt = $("#statusText");
       dot.className = "status-dot off";
       txt.textContent = res.status === 401 ? "会话未授权，请关闭后重新打开应用" : `服务异常（HTTP ${res.status}）`;
+      setButtonsDisabled(false);
       return;
     }
     const status = await res.json();
@@ -391,10 +396,31 @@ async function loadStatus() {
     if (!status || typeof status.mode !== "string") {
       dot.className = "status-dot off";
       txt.textContent = "状态数据异常";
+      setButtonsDisabled(false);
       return;
     }
     if (status.mode !== "daily") { dot.className = "status-dot on"; txt.textContent = `${status.mode} · ${status.health}`; }
     else { dot.className = "status-dot off"; txt.textContent = `daily · ${status.health}`; }
+    // #111：状态栏独立呈现生效/偏好地区与未完成事务；title 附 revision/updatedAt
+    const statusDetail = $("#statusDetail");
+    if (statusDetail) {
+      const detailParts = [];
+      if (status.mode !== "daily" && status.target?.region) detailParts.push(`生效:${status.target.region}`);
+      detailParts.push(`偏好:${status.preferredRegion || "us"}`);
+      const txKind = status.transaction?.kind;
+      if (txKind && txKind !== "none") detailParts.push(`事务:${txKind}`);
+      statusDetail.textContent = detailParts.length > 0 ? `｜${detailParts.join(" · ")}` : "";
+    }
+    const statusBar = document.querySelector(".status-bar");
+    if (statusBar) {
+      statusBar.setAttribute("title", `mode=${status.mode} · health=${status.health} · revision=${status.revision ?? "?"} · updatedAt=${status.updatedAt ?? "?"}`);
+    }
+    const regionModeLabel = $("#regionModeLabel");
+    if (regionModeLabel) {
+      regionModeLabel.textContent = status.mode === "daily"
+        ? "偏好地区（日常模式，下次保护/未显式检测默认）"
+        : "生效地区（已提交；更改将发起保护目标切换）";
+    }
     const sel = document.getElementById("regionSelect");
     const hint = document.getElementById("regionHint");
     // #89 地区选择保留：loadStatus 仅在用户未手动选择时设置默认地区，绝不覆盖用户选择。
@@ -421,10 +447,13 @@ async function loadStatus() {
     }
     const recover = document.getElementById("btnRecover");
     if (recover) recover.classList.toggle("is-visible", needsRecovery);
+    // #105：首次 status 就绪前操作控件保持禁用（levelSelect 已按当前模式初始化后才可操作）
+    setButtonsDisabled(false);
   } catch {
     const dot = $("#statusDot"), txt = $("#statusText");
     dot.className = "status-dot off";
     txt.textContent = "无法连接本地服务";
+    setButtonsDisabled(false);
   }
 }
 
@@ -435,18 +464,22 @@ function buildDetectResultHtml(data) {
   const sorted = [...signals].sort((a, b) => b.contribution - a.contribution);
   const highCount = signals.filter(s => s.risk === "high" || s.risk === "critical").length;
 
+  const riskText = (level) => Object.hasOwn(riskLabel, level) ? riskLabel[level] : esc(level);
+  const riskClass = (level) => Object.hasOwn(riskLabel, level) ? level : "unknown";
+
   let html = `
     <div class="score-card">
       <div class="score-value ${scoreClass(score)}">${score}<span class="score-max">/100</span></div>
-      <div class="score-label">风险评分 · ${riskLabel[riskLevel]}${highCount > 0 ? ` · ${highCount} 个高危` : ""}</div>
+      <div class="score-label">风险评分 · ${riskText(riskLevel)}${highCount > 0 ? ` · ${highCount} 个高危` : ""}</div>
     </div>`;
 
   if (ip) {
-    const ipTypeLabel = ip.ipType === "datacenter" ? '<span class="text-danger">数据中心</span>' : ip.ipType === "residential" ? '<span class="text-success">住宅 ISP</span>' : ip.ipType;
+    const ipTypeLabel = ip.ipType === "datacenter" ? '<span class="text-danger">数据中心</span>' : ip.ipType === "residential" ? '<span class="text-success">住宅 ISP</span>' : esc(ip.ipType || "N/A");
+    const location = [ip.country, ip.city].filter(Boolean).join(" / ");
     html += `<div class="ip-info"><h3><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm6.9 9h-3.1a16 16 0 0 0-1.2-5A8 8 0 0 1 18.9 11ZM12 4c.9 1.2 1.6 3 1.8 5h-3.6c.2-2 .9-3.8 1.8-5ZM9.4 6a16 16 0 0 0-1.2 5H5.1A8 8 0 0 1 9.4 6ZM5.1 13h3.1a16 16 0 0 0 1.2 5A8 8 0 0 1 5.1 13ZM12 20c-.9-1.2-1.6-3-1.8-5h3.6c-.2 2-.9 3.8-1.8 5Zm2.6-2a16 16 0 0 0 1.2-5h3.1a8 8 0 0 1-4.3 5Z"/></svg> 网络出口</h3><div class="ip-grid">
-      <div class="ip-item"><span>IP:</span> ${ip.ip || "N/A"}</div>
-      <div class="ip-item"><span>位置:</span> ${[ip.country, ip.city].filter(Boolean).join(" / ") || "N/A"}</div>
-      <div class="ip-item"><span>ASN:</span> ${ip.asn || "N/A"}</div>
+      <div class="ip-item"><span>IP:</span> ${esc(ip.ip || "N/A")}</div>
+      <div class="ip-item"><span>位置:</span> ${esc(location || "N/A")}</div>
+      <div class="ip-item"><span>ASN:</span> ${esc(ip.asn || "N/A")}</div>
       <div class="ip-item"><span>类型:</span> ${ipTypeLabel}</div>
       <div class="ip-item"><span>多源:</span> ${ip.multiSourceConsistent ? '<span class="text-success">一致</span>' : '<span class="text-danger">不一致</span>'}</div>
     </div></div>`;
@@ -455,7 +488,7 @@ function buildDetectResultHtml(data) {
   html += `<div class="signals"><h3>检测信号 (${signals.length})</h3><table><thead><tr><th>检测项</th><th>当前值</th><th>风险</th><th>分值</th></tr></thead><tbody>`;
   for (const s of sorted) {
     const val = s.value && s.value.length > 30 ? s.value.slice(0, 30) + "..." : (s.value || "N/A");
-    html += `<tr><td>${s.label}</td><td class="signal-value">${val}</td><td><span class="risk-badge risk-${s.risk}">${riskLabel[s.risk]}</span></td><td class="contrib ${s.contribution > 0 ? "contrib-nonzero" : "contrib-zero"}">${s.contribution > 0 ? "+" + s.contribution : "+0"}</td></tr>`;
+    html += `<tr><td>${esc(s.label)}</td><td class="signal-value">${esc(val)}</td><td><span class="risk-badge risk-${riskClass(s.risk)}">${riskText(s.risk)}</span></td><td class="contrib ${s.contribution > 0 ? "contrib-nonzero" : "contrib-zero"}">${s.contribution > 0 ? "+" + s.contribution : "+0"}</td></tr>`;
   }
   html += `</tbody></table></div>`;
   return html;
@@ -464,7 +497,7 @@ function buildDetectResultHtml(data) {
 function recommendationsFragment(recommendations) {
   if (!Array.isArray(recommendations) || recommendations.length === 0) return "";
   let html = `<h3>修复建议</h3><ul>`;
-  for (const r of recommendations) html += `<li>${r}</li>`;
+  for (const r of recommendations) html += `<li>${esc(r)}</li>`;
   html += `</ul>`;
   return html;
 }
@@ -485,6 +518,7 @@ function renderFullContent(data) {
     <label for="levelSelect"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z"/></svg> 保护强度</label>
     <label for="levelSelect" class="visually-hidden">保护强度</label>
     <select id="levelSelect" aria-label="保护强度"><option value="standard">标准（推荐）</option><option value="deep">深度</option></select>
+    <span class="region-mode" id="regionModeLabel"></span>
     <span class="region-hint" id="regionHint">存在未完成事务，请先恢复</span>
   </div>`;
 
@@ -505,6 +539,9 @@ function renderFullContent(data) {
   document.getElementById("btnRecover")?.addEventListener("click", persistRecover);
   document.getElementById("btnRefresh")?.addEventListener("click", refresh);
   trackRegionPick();
+  // #105：控件在首次 loadStatus 按当前模式初始化 levelSelect 前保持禁用，防止
+  // deep 用户因默认 standard 选项在竞态窗口内发起意外降级。
+  setButtonsDisabled(true);
   // #89 渲染收敛：用户选择保留——loadRegions 填入选项后再恢复 savedRegion（否则无对应 option 会置空）。
   // regions 已缓存（一次会话一次请求），status 仅首次构建时同步一次。
   loadRegions().then(() => {
@@ -528,8 +565,24 @@ function renderDetectResult(data) {
   }
 }
 
+// ── 版本页脚（#112）：/api/version 单一事实源；一次会话一次请求，失败静默（不影响主流程）
+let footerVersionLoaded = false;
+async function loadVersion() {
+  if (footerVersionLoaded) return;
+  try {
+    const res = await fetch("/api/version");
+    if (!res.ok) return;
+    const info = await res.json();
+    if (!info || typeof info.version !== "string") return;
+    footerVersionLoaded = true;
+    const footer = document.getElementById("appFooter");
+    if (footer) footer.textContent = `CC-Fix v${info.version}`;
+  } catch { /* 服务未就绪：下次随检测重试 */ }
+}
+
 loadStatus();
 document.getElementById("btnFontsRestore")?.addEventListener("click", fontsRestore);
 loadFontsStatus();
 loadHistory();
+loadVersion();
 startCheck();

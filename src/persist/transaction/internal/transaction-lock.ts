@@ -4,7 +4,7 @@ import { MutationRecoveryRequiredError } from '../../../state/mutation-coordinat
 async function acquireRootGate(
   root: string,
   coordinator: MutationCoordinatorCapability,
-  operation: 'persist.protect' | 'persist.restore' | 'persist.recover',
+  operation: 'persist.protect' | 'persist.restore' | 'persist.recover' | 'persist.set-preferred-region',
 ) {
   const request = { lockKey: mutationRootGateKey(root), stateRoot: root, filePath: root, operation };
   try {
@@ -21,7 +21,7 @@ async function acquireRootGate(
 export async function withPersistTransactionLock<T>(
   root: string,
   coordinator: MutationCoordinatorCapability,
-  operation: 'persist.protect' | 'persist.restore' | 'persist.recover',
+  operation: 'persist.protect' | 'persist.restore' | 'persist.recover' | 'persist.set-preferred-region',
   action: () => Promise<T>,
 ): Promise<T> {
   const lock = await acquireRootGate(root, coordinator, operation);

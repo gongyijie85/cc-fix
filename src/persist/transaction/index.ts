@@ -1,4 +1,5 @@
 import type { ProtectionTarget } from '../../domain/protection.js';
+import type { RegionCode } from '../../domain/region.js';
 import { managedStepIds, type PersistStepId } from '../steps.js';
 import { desiredValues } from '../targets.js';
 import { storedValueEquals, type BackupSnapshotV4, type StoredValue } from '../../state/schema.js';
@@ -24,7 +25,8 @@ export type PersistApplicationErrorCode =
   | 'BACKUP_REQUIRED'
   | 'BACKUP_CONFLICT'
   | 'DELETE_BACKEND_REQUIRED'
-  | 'RECOVERY_CONTEXT_INVALID';
+  | 'RECOVERY_CONTEXT_INVALID'
+  | 'REGION_SET_REQUIRES_DAILY';
 
 export class PersistApplicationError extends Error {
   constructor(readonly code: PersistApplicationErrorCode, message: string, options?: ErrorOptions) {
@@ -73,6 +75,40 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
       dependencies.journalRepository.read(),
     ]);
     return derivePersistStatus(state.value, journal);
+  };
+
+  /**
+   * 日常态偏好地区更新（#116）：只允许 committedTarget=null；保护态必须通过
+   * 正式保护目标转换（persist on --region）调整。单步状态提交，无需 journal。
+   */
+  const setPreferredRegion = async (region: RegionCode): Promise<{ kind: 'updated' | 'noop'; preferredRegion: RegionCode }> => {
+    return withPersistTransactionLock(dependencies.root, dependencies.coordinator, 'persist.set-preferred-region', async () => {
+      const [stateRead, journal] = await Promise.all([
+        dependencies.stateRepository.read(),
+        dependencies.journalRepository.read(),
+      ]);
+      const status = derivePersistStatus(stateRead.value, journal);
+      if (status.health === 'recovery_required' || stateRead.value.activeTransactionId !== null) {
+        throw new PersistApplicationError('RECOVERY_REQUIRED', 'The previous persist transaction must be recovered first');
+      }
+      if (stateRead.value.committedTarget !== null) {
+        throw new PersistApplicationError(
+          'REGION_SET_REQUIRES_DAILY',
+          'Preferred region can only change in daily mode; adjust the committed target with `cc-fix persist on --region <code>`',
+        );
+      }
+      if (stateRead.value.preferredRegion === region) {
+        return { kind: 'noop', preferredRegion: region };
+      }
+      await dependencies.stateRepository.commit(stateRead.value.revision, {
+        committedTarget: null,
+        preferredRegion: region,
+        health: stateRead.value.health,
+        degradation: stateRead.value.degradation,
+        activeTransactionId: null,
+      });
+      return { kind: 'updated', preferredRegion: region };
+    });
   };
 
   const protect = async (target: ProtectionTarget): Promise<ProtectTransactionResult> => {
@@ -305,7 +341,7 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
     });
   };
 
-  return Object.freeze({ status, protect, restore, recover });
+  return Object.freeze({ status, protect, restore, recover, setPreferredRegion });
 }
 
 export type PersistTransactionModule = ReturnType<typeof createPersistTransactionModule>;

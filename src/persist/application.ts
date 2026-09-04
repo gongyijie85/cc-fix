@@ -1,4 +1,5 @@
 import type { ProtectionTarget } from '../domain/protection.js';
+import type { RegionCode } from '../domain/region.js';
 import {
   createPersistTransactionModule,
   type PersistApplicationDependencies,
@@ -36,5 +37,10 @@ export class PersistApplicationService {
 
   recover(): Promise<PersistRecoveryResult> {
     return this.transactions.recover();
+  }
+
+  /** 日常态偏好地区更新；保护态拒绝并引导正式目标转换（#116）。 */
+  setPreferredRegion(region: RegionCode): Promise<{ kind: 'updated' | 'noop'; preferredRegion: RegionCode }> {
+    return this.transactions.setPreferredRegion(region);
   }
 }

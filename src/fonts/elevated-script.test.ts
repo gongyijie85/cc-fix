@@ -56,6 +56,22 @@ describe('elevated font script composition (issue #49)', () => {
     expect(script).toContain('font inventory changed after backup');
   });
 
+  it('refuses reparse points and directories before deleting from the fonts dir (#92)', () => {
+    const removeScript = compose({ mode: 'remove', expectedNames: ['msyh.ttc'] });
+    // remove 与 restore 同样在删除/复制前拒绝 reparse point；remove 额外拒绝目录
+    expect(removeScript).toContain('reparse point in backup');
+    expect(removeScript).toContain('reparse point in fonts dir');
+    expect(removeScript).toContain('unexpected directory in fonts dir');
+    expect(removeScript).toContain('Get-Item -LiteralPath $full -Force -ErrorAction Stop');
+    expect(removeScript).toContain('$item.Attributes -band [IO.FileAttributes]::ReparsePoint');
+    expect(removeScript).toContain('$item.PSIsContainer');
+    // 守卫必须在 Remove-Item 之前出现
+    const deleteIndex = removeScript.indexOf('Remove-Item -LiteralPath $full');
+    const guardIndex = removeScript.indexOf('reparse point in fonts dir');
+    expect(guardIndex).toBeGreaterThanOrEqual(0);
+    expect(deleteIndex).toBeGreaterThan(guardIndex);
+  });
+
   it('escapes single quotes in embedded literals', () => {
     const script = composeElevatedFontScript({
       request: { mode: 'restore', backupDir: "C:\\dir with ' quote\\fonts" },

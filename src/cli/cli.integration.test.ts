@@ -174,3 +174,113 @@ describe.skipIf(process.platform !== "win32")("spawned CLI persist contract (T13
     await rm(root, { recursive: true, force: true });
   });
 });
+
+describe.skipIf(process.platform !== "win32")("spawned CLI region contract (#116)", () => {
+  it("region list --json exits 0 with the full catalog", async () => {
+    const root = await fixtureRoot();
+    const { exitCode, stdout } = await runCli(["region", "list", "--json"], root);
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout) as { schemaVersion: number; default: string; regions: Array<{ code: string }> };
+    expect(parsed.schemaVersion).toBe(1);
+    expect(parsed.default).toBe("us");
+    expect(parsed.regions.map((r) => r.code).sort()).toEqual(["eu", "jp", "sg", "us"]);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("region status --json on a fresh root reports daily with the initial default", async () => {
+    const root = await fixtureRoot();
+    const { exitCode, stdout } = await runCli(["region", "status", "--json"], root);
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      schemaVersion: number;
+      mode: string;
+      preferredRegion: string;
+      activeRegion: string | null;
+    };
+    expect(parsed.schemaVersion).toBe(1);
+    expect(parsed.mode).toBe("daily");
+    expect(parsed.preferredRegion).toBe("us");
+    expect(parsed.activeRegion).toBeNull();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("region set jp --json persists the daily preference across invocations", async () => {
+    const root = await fixtureRoot();
+    const setResult = await runCli(["region", "set", "jp", "--json"], root);
+    expect(setResult.exitCode).toBe(0);
+    const setJson = JSON.parse(setResult.stdout) as { schemaVersion: number; ok: boolean; preferredRegion: string };
+    expect(setJson.ok).toBe(true);
+    expect(setJson.preferredRegion).toBe("jp");
+    const statusResult = await runCli(["region", "status", "--json"], root);
+    expect(statusResult.exitCode).toBe(0);
+    const statusJson = JSON.parse(statusResult.stdout) as { preferredRegion: string };
+    expect(statusJson.preferredRegion).toBe("jp");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("region set with an invalid code exits 10/INVALID_REGION", async () => {
+    const root = await fixtureRoot();
+    const { exitCode, stdout } = await runCli(["region", "set", "cn", "--json"], root);
+    expect(exitCode).toBe(10);
+    const parsed = JSON.parse(stdout) as { error: { id: string } };
+    expect(parsed.error.id).toBe("INVALID_REGION");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("region set is refused while a protection target is committed (10/REGION_SET_REQUIRES_DAILY)", async () => {
+    const root = await fixtureRoot();
+    await writeState(root, {
+      schemaVersion: 1,
+      revision: 1,
+      committedTarget: { mode: "standard", region: "us" },
+      preferredRegion: "us",
+      health: "healthy",
+      degradation: [],
+      activeTransactionId: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const { exitCode, stdout } = await runCli(["region", "set", "jp", "--json"], root);
+    expect(exitCode).toBe(10);
+    const parsed = JSON.parse(stdout) as { error: { id: string } };
+    expect(parsed.error.id).toBe("REGION_SET_REQUIRES_DAILY");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("region set is refused while recovery is required (21/RECOVERY_REQUIRED)", async () => {
+    const root = await fixtureRoot();
+    await writeState(root, validRecoveryState);
+    const { exitCode, stdout } = await runCli(["region", "set", "eu", "--json"], root);
+    expect(exitCode).toBe(21);
+    const parsed = JSON.parse(stdout) as { error: { id: string } };
+    expect(parsed.error.id).toBe("RECOVERY_REQUIRED");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("check resolves persisted daily preference when no explicit region is given (#104)", async () => {
+    const root = await fixtureRoot();
+    await writeState(root, {
+      schemaVersion: 1,
+      revision: 1,
+      committedTarget: null,
+      preferredRegion: "jp",
+      health: "healthy",
+      degradation: [],
+      activeTransactionId: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    let attempt = 0;
+    let exitCode = -1;
+    let stdout = "";
+    while (attempt < 2 && exitCode !== 0) {
+      const result = await runCli(["check", "--json"], root);
+      exitCode = result.exitCode;
+      stdout = result.stdout;
+      attempt += 1;
+    }
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout) as { schemaVersion: number; score: number };
+    expect(parsed.schemaVersion).toBe(1);
+    expect(typeof parsed.score).toBe("number");
+    await rm(root, { recursive: true, force: true });
+  });
+});

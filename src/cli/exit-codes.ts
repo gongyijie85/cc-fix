@@ -37,6 +37,7 @@ export type CliErrorId =
   | "INVALID_PROTECTION_LEVEL"
   | "CONFLICTING_PROTECTION_LEVEL"
   | "INVALID_COMMAND"
+  | "REGION_SET_REQUIRES_DAILY"
   | "BUSY"
   | "RECOVERY_REQUIRED"
   | "COMPENSATED"
@@ -100,6 +101,9 @@ export function classifyError(error: unknown): ClassifiedFailure {
   if (error instanceof PersistApplicationError) {
     if (error.code === "RECOVERY_REQUIRED") {
       return { exitCode: EXIT_RECOVERY_REQUIRED, errorId: "RECOVERY_REQUIRED" };
+    }
+    if (error.code === "REGION_SET_REQUIRES_DAILY") {
+      return { exitCode: EXIT_INVALID_INPUT, errorId: "REGION_SET_REQUIRES_DAILY" };
     }
     return { exitCode: EXIT_INTERNAL, errorId: "INTERNAL" };
   }
