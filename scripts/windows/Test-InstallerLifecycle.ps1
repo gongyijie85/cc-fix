@@ -186,6 +186,11 @@ try {
   if (Test-Path -LiteralPath $InstallRoot) { throw 'Managed install directory remains after uninstall' }
   # 注册表 PATH 恢复在卸载器退出后可能瞬时可见（进程/注册表刷新竞态）：轮询等待还原，
   # 超时才按失败处理——避免把正确的还原误判为失败（CI 实录：reg 已干净但一次性读取读到过期值）。
+  # 已知限制（真机实录 2026-09）：非隔离本机上，测试窗口期若有外部进程并发写 PATH（例如
+  # Android SDK/agent 把 `D:\Android\Sdk\platform-tools` 加入），"精确还原 original" 断言会
+  # 假失败——这是环境噪声而非卸载器缺陷。诊断分支会落盘 path-mismatch.txt 供人工区分；
+  # CI/隔离 VM 无此问题。历史中断运行也可能在 PATH 累积 `installer-lifecycle-*\install\bin`
+  # 残留段，重跑前可从 `HKCU:\Environment\Path` 清理后再执行。
   $PathDeadline = [DateTime]::UtcNow.AddSeconds(10)
   do {
     $CurrentPath = (Get-ItemProperty 'HKCU:\Environment' -Name Path -ErrorAction SilentlyContinue).Path

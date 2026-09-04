@@ -20,6 +20,30 @@ async function makeRoot(): Promise<string> {
   return root;
 }
 
+/**
+ * 创建 reparse point（测试用 junction）。真机实录：杀软/Defender 可能短暂锁住目标目录，
+ * 导致 symlink() 抛 EBUSY/EPERM；此处做有限重试，避免环境瞬时锁造成假失败（测试语义不变）。
+ */
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+async function createReparseWithRetry(target: string, link: string, attempts = 6): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
+        await sleep(100 * (attempt + 1));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -739,7 +763,7 @@ describe('durable checked file path confinement', () => {
     const container = await makeRoot();
     const actualRoot = await makeRoot();
     const stateRoot = join(container, 'linked-root');
-    await symlink(actualRoot, stateRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    await createReparseWithRetry(actualRoot, stateRoot);
 
     await expect(
       readCheckedFile({
@@ -755,7 +779,7 @@ describe('durable checked file path confinement', () => {
     const outside = await makeRoot();
     const linked = join(root, 'linked');
     await mkdir(outside, { recursive: true });
-    await symlink(outside, linked, process.platform === 'win32' ? 'junction' : 'dir');
+    await createReparseWithRetry(outside, linked);
 
     await expect(
       writeCheckedFile({
@@ -770,11 +794,7 @@ describe('durable checked file path confinement', () => {
   it('does not follow a predecessor reparse point outside the state root', async () => {
     const root = await makeRoot();
     const outside = await makeRoot();
-    await symlink(
-      outside,
-      join(root, 'state.json.prev'),
-      process.platform === 'win32' ? 'junction' : 'dir',
-    );
+    await createReparseWithRetry(outside, join(root, 'state.json.prev'));
 
     await expect(readCheckedFile(options(root))).rejects.toMatchObject({
       code: 'REPARSE_BOUNDARY',
