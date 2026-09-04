@@ -267,9 +267,13 @@ async function handleCheckStart(orchestrator: ReturnType<typeof createGuiOrchest
 
   try {
     orchestrator.broadcast({ type: "phase", label: "正在获取 IP 情报…" });
-    const status = await (await orchestrator.getRuntime()).status();
+    // #98：状态读取与 IP 情报（内部已双源并行，各 5s 超时）互不依赖，并行缩短首检延迟
+    const [runtime, ipIntel] = await Promise.all([
+      orchestrator.getRuntime(),
+      orchestrator.ipIntelFetcher(),
+    ]);
+    const status = await runtime.status();
     const target = getTargetRegion(status.target?.region ?? status.preferredRegion);
-    const ipIntel = await orchestrator.ipIntelFetcher();
     await runDetection("auto", target.timezone, target.lang, ipIntel, orchestrator.checkEventConsumer);
   } finally {
     orchestrator.releaseLock();

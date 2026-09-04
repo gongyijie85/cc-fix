@@ -1,4 +1,4 @@
-import { getTargetRegion } from '../detection/regions.js';
+import { getTargetRegion } from '../domain/region-catalog.js';
 import { acceptLanguageFromLang, desiredBrowserPolicies, storedValue, type StoredValue } from '../state/schema.js';
 import type { JsonValue } from '../state/checksum.js';
 import type { ProtectionTarget } from '../domain/protection.js';

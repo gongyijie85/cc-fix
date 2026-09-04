@@ -18,6 +18,30 @@ import { utcOffsetPlugin } from "./plugins/utc-offset.js";
 import { browserPolicyPlugin } from "./plugins/browser-policy.js";
 import { createIpIntelligencePlugins } from "./plugins/ip-intel.js";
 
+/** 单次检测子进程/网络调用上限：插件内常 spawn/execFile/reg query/dns+fetch，
+ * 全量并行会瞬时挤压 Win32 handle（#96）。保持顺序与故障隔离语义。 */
+const MAX_PLUGIN_CONCURRENCY = 4;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runner = async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index] as T, index);
+    }
+  };
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => runner());
+  await Promise.all(workers);
+  return results;
+}
+
 export async function runDetection(
   regionCode: AccessRegionCode,
   targetTimezone: string,
@@ -54,24 +78,22 @@ export async function runDetection(
     ...createIpIntelligencePlugins(ipIntel),
   ];
 
-  // 逐个故障隔离：单个插件失败时发射降级事件，不阻断其余插件
-  const results = await Promise.all(
-    plugins.map(async (plugin) => {
-      try {
-        const result = await plugin.run(context);
-        if (onEvent) onEvent({ type: "detect-ok", signal: result });
-        return result;
-      } catch (err) {
-        if (onEvent)
-          onEvent({
-            type: "detect-degraded",
-            pluginId: plugin.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        return null;
-      }
-    })
-  );
+  // 限流 + 逐个故障隔离：单个插件失败时发射降级事件，不阻断其余插件
+  const results = await mapWithConcurrency(plugins, MAX_PLUGIN_CONCURRENCY, async (plugin) => {
+    try {
+      const result = await plugin.run(context);
+      if (onEvent) onEvent({ type: "detect-ok", signal: result });
+      return result;
+    } catch (err) {
+      if (onEvent)
+        onEvent({
+          type: "detect-degraded",
+          pluginId: plugin.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      return null;
+    }
+  });
   const signals: SignalResult[] = results.filter((r): r is SignalResult => r !== null);
 
   const response = buildCheckResponse(signals, ipIntel, regionCode);
