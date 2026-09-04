@@ -192,3 +192,22 @@
     .btn, .risk-badge, .step-badge, .sum-bar .count { border: 1px solid ButtonText; }
     .status-dot { forced-color-adjust: none; border: 1px solid CanvasText; }
   }
+
+/* #113/#110/#109/#118 UI 批次样式 */
+.status-detail { color: var(--muted); }
+.browser-hint.degraded.visible { background: rgba(239,68,68,.1); border-color: rgba(239,68,68,.4); color: var(--red); font-weight: 700; }
+.btn-sse-retry { font-size: 12px; padding: 2px 10px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border, #999); background: transparent; color: var(--text); }
+.fatal-cta { margin-top: 12px; padding: 10px 14px; border-radius: 8px; background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.35); font-size: 13px; }
+.fatal-logs { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+#confirmDialog { border: 1px solid var(--border, #777); border-radius: 12px; padding: 20px; max-width: 420px; background: var(--bg, #fff); color: var(--text); }
+#confirmDialog::backdrop { background: rgba(0,0,0,.45); }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.onboarding { padding: 4px 0 12px; }
+.ob-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+.ob-card { border: 1px solid rgba(99,102,241,.35); border-radius: 10px; padding: 12px 14px; background: rgba(99,102,241,.05); }
+.ob-deep { border-color: rgba(168,85,247,.4); background: rgba(168,85,247,.06); }
+.ob-card ul { margin: 6px 0; padding-left: 18px; }
+.ob-impact { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+.ob-note { font-size: 12.5px; color: var(--muted); background: rgba(99,102,241,.06); border-radius: 8px; padding: 8px 12px; }
+.ob-running { font-size: 13px; color: var(--yellow); }
+@media (max-width: 560px) { .ob-cards { grid-template-columns: 1fr; } }

@@ -1,5 +1,5 @@
 import { isAbsolute, join, resolve } from 'node:path';
-import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, readFile, rename } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { REGION_CODES, type RegionCode } from '../domain/region.js';
@@ -191,13 +191,25 @@ async function readMigrationSentinel(root: string): Promise<boolean> {
   }
 }
 
+// #100：哨兵走 fsync + 原子替换（与状态文件同一耐久语义）。失败保持幂等：
+// 下次运行重新迁移（noop），无正确性影响。
 async function writeMigrationSentinel(root: string): Promise<void> {
+  let handle;
   try {
     const sentinel = migrationSentinelPath(root);
     const tmp = `${sentinel}.${randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify({ schemaVersion: MIGRATION_SENTINEL_VERSION, migratedAt: new Date().toISOString() }), 'utf8');
+    handle = await open(tmp, 'w');
+    await handle.writeFile(JSON.stringify({ schemaVersion: MIGRATION_SENTINEL_VERSION, migratedAt: new Date().toISOString() }), 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
     await rename(tmp, sentinel);
+    try {
+      const dir = await open(root, 'r');
+      try { await dir.sync(); } catch { /* Windows 目录 fsync 不可用属已知限制 */ }
+      await dir.close();
+    } catch { /* 目录同步尽力而为 */ }
   } catch {
-    // 哨兵写失败不阻断：下次运行重新迁移（幂等 noop），无正确性影响。
+    try { await handle?.close(); } catch { /* ignore */ }
   }
 }

@@ -4,7 +4,6 @@ import http from "node:http";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-// @ts-ignore - HTML file imported as text via tsup loader
 import htmlContent from "./index.html";
 import { runDetection } from "../detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION, TARGET_REGIONS } from "../detection/regions.js";

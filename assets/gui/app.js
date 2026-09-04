@@ -29,6 +29,7 @@ function applySignalCatalog(signals) {
 }
 
 let uiState = initialUiState;
+let currentMode = "daily";
 const dispatchUi = (action) => (uiState = reduceUiState(uiState, action));
 
 // #89 渲染收敛：会话级 regions 缓存（首次成功即记忆，失败可重试）+ 用户手动地区选择跟踪。
@@ -46,13 +47,6 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove("show"), 2000);
 }
 
-// ── 按钮禁用 ──
-function setButtonsDisabled(d) {
-  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "btnFontsRestore", "regionSelect", "levelSelect"].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = d;
-  });
-}
 
 // ── 修复流卡片 ──
 function ensureFixCard() {
@@ -65,6 +59,65 @@ function ensureFixCard() {
   const hint = $("#browserHint");
   hint.classList.remove("visible", "strong");
   hint.textContent = "";
+  // #113：降级提示与浏览器重启提示分属不同区域，启动修复时两者都清空
+  const degraded = $("#degradedHint");
+  if (degraded) { degraded.classList.remove("visible", "strong"); degraded.textContent = ""; }
+  const fatal = $("#fatalCta");
+  if (fatal) fatal.hidden = true;
+}
+
+// #118：页内确认对话框（替代阻塞 confirm()，键盘/读屏可访问）
+function showConfirmDialog({ title, lines, confirmText = "继续" }) {
+  return new Promise((resolve) => {
+    const dialog = document.getElementById("confirmDialog");
+    if (!dialog || typeof dialog.showModal !== "function") { resolve(true); return; }
+    document.getElementById("confirmTitle").textContent = title;
+    const body = document.getElementById("confirmBody");
+    body.textContent = "";
+    for (const line of lines) {
+      const p = document.createElement("p");
+      p.textContent = line;
+      body.appendChild(p);
+    }
+    document.getElementById("confirmOk").textContent = confirmText;
+    const ok = document.getElementById("confirmOk");
+    const cancel = document.getElementById("confirmCancel");
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      ok.removeEventListener("click", onOk);
+      cancel.removeEventListener("click", onCancel);
+      dialog.removeEventListener("close", onClose);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const onOk = () => settle(true);
+    const onCancel = () => settle(false);
+    const onClose = () => settle(false); // Escape / 其它关闭路径视为取消
+    ok.addEventListener("click", onOk);
+    cancel.addEventListener("click", onCancel);
+    dialog.addEventListener("close", onClose);
+    dialog.showModal();
+    cancel.focus();
+  });
+}
+
+// 首次标准保护确认只弹一次（规格：首次 standard 显示一次影响确认；deep 每次进入/升级都确认）
+const STANDARD_CONFIRMED_KEY = "cc-fix-standard-confirmed-v1";
+
+// #113/#114 可访问性基础：禁用态同步 aria-disabled；截断的检测值可复制
+function setButtonsDisabled(d) {
+  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "btnFontsRestore", "regionSelect", "levelSelect"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = d; el.setAttribute("aria-disabled", String(d)); }
+  });
+}
+
+function copyToClipboard(text) {
+  const done = () => showToast("已复制到剪贴板");
+  if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(text).then(done, () => done()); }
+  else done();
 }
 
 function addStepRow(event) {
@@ -138,6 +191,18 @@ function showSummary(event) {
   } else {
     title.textContent = "修复完成";
     title.style.color = "var(--green)";
+  }
+
+  // #110：fatal（事务未收敛/recovery_required）时给出可执行的恢复/还原入口
+  const fatalCta = $("#fatalCta");
+  if (fatalCta) {
+    if (event.fatal) {
+      fatalCta.hidden = false;
+      const note = $("#fatalCtaText");
+      if (note) note.textContent = "事务未收敛。可先尝试「继续恢复」收敛补偿，或直接「还原日常配置」；若反复失败请查看诊断日志后重试。";
+    } else {
+      fatalCta.hidden = true;
+    }
   }
 
   setButtonsDisabled(false);
@@ -283,6 +348,8 @@ let sseFailures = 0;
 evtSource.onopen = () => {
   sseOpen = true;
   sseFailures = 0;
+  const retryBtn = document.getElementById("btnSseRetry");
+  if (retryBtn) retryBtn.hidden = true;
   // SSE 就绪前发起的检测请求补发，避免事件丢失导致界面停在"检测进行中…"
   if (pendingStart) { pendingStart = false; startCheck(); }
 };
@@ -293,11 +360,17 @@ evtSource.onerror = () => {
   sseOpen = false;
   sseFailures += 1;
   // 连续失败：服务不可达或会话失效。EventSource 仍会重连，成功后自动清除提示并补发检测。
-  if (sseFailures === 3) {
+  const retryBtn = document.getElementById("btnSseRetry");
+  if (sseFailures >= 3) {
     const loadingText = document.querySelector("#content .loading p");
-    if (loadingText) loadingText.textContent = "无法连接本地服务或会话已失效，请关闭后重新打开应用";
+    if (loadingText) loadingText.textContent = "无法连接本地服务或会话已失效";
+    if (retryBtn) retryBtn.hidden = false;
   }
+  // #110：恢复连接后隐藏重试入口（onopen 也会归零失败计数）
 };
+if (document.getElementById("btnSseRetry")) {
+  document.getElementById("btnSseRetry").addEventListener("click", () => { window.location.reload(); });
+}
 
 // ── 操作按钮 ──
 async function persistOn() {
@@ -306,7 +379,31 @@ async function persistOn() {
   // 解析（保持强度），杜绝 deep 用户在 status 回填前被意外降级。
   const levelSel = document.getElementById("levelSelect");
   const level = levelSel?.value || "";
-  if (level === "deep" && !confirm("深度保护会进一步修改 Windows Locale、首选语言列表和 Culture；关闭保护时会从耐久备份完整还原。是否继续？")) return;
+  // #118：页内对话框确认。standard（显式或默认）首次一次；deep 每次进入/升级都确认。
+  if (level === "deep") {
+    const ok = await showConfirmDialog({
+      title: "进入深度保护？",
+      lines: [
+        "深度保护除标准内容外，还会修改 Windows Locale、首选语言列表与用户 Culture，日常使用界面语言/区域会随之变化。",
+        "关闭保护时会从耐久备份完整还原原始设置。",
+        `目标：深度保护 / ${region.toUpperCase()}`,
+      ],
+      confirmText: "进入深度保护",
+    });
+    if (!ok) return;
+  } else if (currentMode === "daily" && !localStorage.getItem(STANDARD_CONFIRMED_KEY)) {
+    const ok = await showConfirmDialog({
+      title: "开启标准保护？",
+      lines: [
+        "将修改：用户环境变量（TZ/LANG/LC_ALL）、Windows 系统时区，以及 Chrome/Edge 的 6 个受管策略槽。",
+        "VPN、路由、DNS 等网络配置不会被修改；关闭保护可完整还原。",
+        `目标：标准保护 / ${region.toUpperCase()}`,
+      ],
+      confirmText: "开启标准保护",
+    });
+    if (!ok) return;
+    try { localStorage.setItem(STANDARD_CONFIRMED_KEY, "1"); } catch { /* 隐私模式等场景降级为每次询问 */ }
+  }
   setButtonsDisabled(true);
   dispatchUi({ type: "fix-action", action: "on" });
   const levelParam = level ? `&level=${encodeURIComponent(level)}` : "";
@@ -341,6 +438,9 @@ async function persistOff() {
 function startCheck() {
   if (!sseOpen) { pendingStart = true; return; }
   $("#detectCard").classList.add("visible");
+  // #109：首帧 onboarding 处于 #content 时更新其进行中提示
+  const obRunning = $("#obRunning");
+  if (obRunning) obRunning.textContent = "检测进行中，结果就绪后自动展示…";
   fetch("/api/check/start", { method: "POST" }).then(res => {
     if (!res.ok) {
       $("#detectCard").classList.remove("visible");
@@ -399,6 +499,7 @@ async function loadStatus() {
       setButtonsDisabled(false);
       return;
     }
+    currentMode = status.mode;
     if (status.mode !== "daily") { dot.className = "status-dot on"; txt.textContent = `${status.mode} · ${status.health}`; }
     else { dot.className = "status-dot off"; txt.textContent = `daily · ${status.health}`; }
     // #111：状态栏独立呈现生效/偏好地区与未完成事务；title 附 revision/updatedAt
@@ -430,19 +531,22 @@ async function loadStatus() {
     const needsRecovery = status.transaction?.kind !== "none" || status.health === "recovery_required";
     if (hint) { hint.style.display = needsRecovery ? "inline" : "none"; hint.textContent = "存在未完成事务，请先恢复"; }
     // 未对齐策略槽（ADR-0011 每槽降级）：逐槽展示
-    const policyHint = $("#browserHint");
+    // #113：持久降级提示写入独立 #degradedHint（不再与"重启浏览器"瞬态提示共用 #browserHint；
+    // #browserHint 生命周期由 showSummary / browser-hint 事件维护，loadStatus 不清空它）
+    const degradedHint = $("#degradedHint");
     const POLICY_SLOT_LABELS = {
       "chrome.accept_language": "Chrome/AcceptLanguage", "chrome.webrtc": "Chrome/WebRTC 防泄漏", "chrome.application_locale": "Chrome/ApplicationLocale",
       "edge.accept_language": "Edge/AcceptLanguage", "edge.webrtc": "Edge/WebRTC 防泄漏", "edge.application_locale": "Edge/ApplicationLocale",
     };
     const unaligned = Array.isArray(status.degradation) ? status.degradation.map(d => POLICY_SLOT_LABELS[d.slot] || d.slot) : [];
-    if (policyHint) {
+    if (degradedHint) {
       if (status.health === "degraded" && unaligned.length > 0) {
         const causes = [...new Set((status.degradation || []).map(d => d.cause))].join("/");
-        policyHint.textContent = "策略槽未对齐（可能受组织策略管理）：" + unaligned.join("、") + (causes ? "（原因：" + (causes === "access_denied" ? "写入被拒绝——安全软件的注册表防护可能阻止了写入（如火绒的注册表防护），请在防护中心放行或关闭后重试" : causes) + "）" : "");
-        policyHint.classList.add("visible", "strong");
+        degradedHint.textContent = "策略槽未对齐（可能受组织策略管理）：" + unaligned.join("、") + (causes ? "（原因：" + (causes === "access_denied" ? "写入被拒绝——安全软件的注册表防护可能阻止了写入（如火绒的注册表防护），请在防护中心放行或关闭后重试" : causes) + "）" : "");
+        degradedHint.classList.add("visible", "strong");
       } else {
-        policyHint.classList.remove("visible", "strong");
+        degradedHint.classList.remove("visible", "strong");
+        degradedHint.textContent = "";
       }
     }
     const recover = document.getElementById("btnRecover");
@@ -470,7 +574,8 @@ function buildDetectResultHtml(data) {
   let html = `
     <div class="score-card">
       <div class="score-value ${scoreClass(score)}">${score}<span class="score-max">/100</span></div>
-      <div class="score-label">风险评分 · ${riskText(riskLevel)}${highCount > 0 ? ` · ${highCount} 个高危` : ""}</div>
+      <!-- #114：分数档位说明随悬停可见 -->
+      <div class="score-label" title="档位：0 安全 · 1-20 低 · 21-50 中 · 51-70 高 · 71+ 极高（分数=各命中信号加权贡献的归一化结果）">风险评分 · ${riskText(riskLevel)}${highCount > 0 ? ` · ${highCount} 个高危` : ""}</div>
     </div>`;
 
   if (ip) {
@@ -485,10 +590,14 @@ function buildDetectResultHtml(data) {
     </div></div>`;
   }
 
-  html += `<div class="signals"><h3>检测信号 (${signals.length})</h3><table><thead><tr><th>检测项</th><th>当前值</th><th>风险</th><th>分值</th></tr></thead><tbody>`;
+  html += `<div class="signals"><h3>检测信号 (${signals.length})</h3><table><thead><tr><th>检测项</th><th>当前值</th><th>风险</th><th title="贡献分值 / 该信号权重（命中即贡献此分值，权重反映风险等级）">分值</th></tr></thead><tbody>`;
   for (const s of sorted) {
-    const val = s.value && s.value.length > 30 ? s.value.slice(0, 30) + "..." : (s.value || "N/A");
-    html += `<tr><td>${esc(s.label)}</td><td class="signal-value">${esc(val)}</td><td><span class="risk-badge risk-${riskClass(s.risk)}">${riskText(s.risk)}</span></td><td class="contrib ${s.contribution > 0 ? "contrib-nonzero" : "contrib-zero"}">${s.contribution > 0 ? "+" + s.contribution : "+0"}</td></tr>`;
+    const truncated = s.value && s.value.length > 30;
+    const val = truncated ? s.value.slice(0, 30) + "..." : (s.value || "N/A");
+    const fullValue = s.value || "N/A";
+    const contribTitle = `贡献 ${s.contribution || 0} / 权重 ${s.weight ?? "?"}（命中即贡献此值，权重反映该风险等级的重要性）`;
+    // #113/#114：title 显示完整值；点击值单元格复制（事件委托，兼容 CSP script-src 'self'）
+    html += `<tr><td>${esc(s.label)}</td><td class="signal-value" title="${esc(fullValue)}" data-full="${esc(fullValue)}">${esc(val)}</td><td><span class="risk-badge risk-${riskClass(s.risk)}">${riskText(s.risk)}</span></td><td class="contrib ${s.contribution > 0 ? "contrib-nonzero" : "contrib-zero"}" title="${esc(contribTitle)}">${s.contribution > 0 ? "+" + s.contribution : "+0"}</td></tr>`;
   }
   html += `</tbody></table></div>`;
   return html;
@@ -529,7 +638,7 @@ function renderFullContent(data) {
     <button class="btn btn-refresh" id="btnRefresh">重新检测</button>
   </div>`;
 
-  html += `<p class="network-note">VPN、路由器、网卡、DNS、hosts 与 DoH 仅做检测和提醒，CC-Fix 不会修改这些网络配置。</p>`;
+  html += `<p class="network-note">VPN、路由器、网卡、DNS、hosts 与 DoH 仅做检测和提醒，CC-Fix 不会修改这些网络配置。检测会向 ipwho.is / ipinfo.io 查询出口 IP 以判断风险（仅公网 IP 与国家/ASN 信息）。</p>`;
 
   html += `<div class="recommendations" id="detectRecs"${recommendations && recommendations.length > 0 ? "" : ' style="display:none"'}>${recommendationsFragment(recommendations)}</div>`;
 
@@ -582,7 +691,15 @@ async function loadVersion() {
 
 loadStatus();
 document.getElementById("btnFontsRestore")?.addEventListener("click", fontsRestore);
+// #110：fatal CTA 的恢复/还原入口复用既有流程
+document.getElementById("btnFatalRecover")?.addEventListener("click", persistRecover);
+document.getElementById("btnFatalOff")?.addEventListener("click", persistOff);
 loadFontsStatus();
 loadHistory();
 loadVersion();
+// #113：检测值单元格点击复制（委托，规避 CSP 对内联 handler 的限制）
+document.getElementById("content")?.addEventListener("click", (event) => {
+  const cell = event.target?.closest?.(".signal-value");
+  if (cell && cell.dataset.full) copyToClipboard(cell.dataset.full);
+});
 startCheck();

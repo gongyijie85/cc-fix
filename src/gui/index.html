@@ -17,7 +17,9 @@
     <div class="status-dot" id="statusDot"></div>
     <span id="statusText">检测中...</span>
     <span id="statusDetail" class="status-detail"></span>
+    <button type="button" id="btnSseRetry" class="btn-sse-retry" hidden>重新连接</button>
   </div>
+  <div class="browser-hint degraded" id="degradedHint" role="alert"></div>
 
   <!-- 修复流卡片 -->
   <div class="fix-card" id="fixCard">
@@ -25,6 +27,14 @@
     <div id="stepList"></div>
     <div class="sum-bar" id="sumBar"></div>
     <div class="browser-hint" id="browserHint"></div>
+    <div id="fatalCta" class="fatal-cta" hidden>
+      <p id="fatalCtaText"></p>
+      <div class="inline-actions">
+        <button class="btn" id="btnFatalRecover">继续恢复（persist recover）</button>
+        <button class="btn btn-off" id="btnFatalOff">还原日常配置（persist off）</button>
+      </div>
+      <p class="fatal-logs">诊断日志：%LOCALAPPDATA%\CC-Fix\logs（或运行 <code>cc-fix persist status</code>）</p>
+    </div>
 <div class="signals fonts-panel" id="fontsPanel">
   <p id="fontsStatus"></p>
   <div class="inline-actions">
@@ -39,7 +49,36 @@
     <div id="detectList"></div>
   </div>
 
-  <div id="content"><div class="loading"><div class="spinner"></div><p>正在检测环境...</p></div></div>
+  <!-- #109：首帧 onboarding（检测结果就绪后被 renderFullContent 整体替换） -->
+  <div id="content">
+    <section class="onboarding" aria-labelledby="obTitle">
+      <h2 id="obTitle">开始之前，先了解两档保护</h2>
+      <div class="ob-cards">
+        <div class="ob-card">
+          <h3>标准保护（默认推荐）</h3>
+          <ul>
+            <li>用户环境变量（TZ/LANG/LC_ALL）</li>
+            <li>Windows 系统时区</li>
+            <li>Chrome / Edge 各 3 个受管策略槽（语言 + WebRTC 防泄漏）</li>
+          </ul>
+          <p class="ob-impact">影响低，随时可一键完整还原</p>
+        </div>
+        <div class="ob-card ob-deep">
+          <h3>深度保护</h3>
+          <ul>
+            <li>标准保护全部内容</li>
+            <li>额外对齐 Windows Locale、首选语言列表与用户 Culture</li>
+          </ul>
+          <p class="ob-impact">会明显改变系统语言/区域体验，请确认接受</p>
+        </div>
+      </div>
+      <p class="ob-note">
+        VPN、路由、网卡、DNS、hosts 与 DoH <strong>只检测和提醒，绝不修改</strong>；
+        检测会向 ipwho.is / ipinfo.io 查询出口 IP 以判断风险（仅公网 IP 与国家/ASN 信息）。
+      </p>
+      <p class="ob-running" id="obRunning">首次检测进行中…</p>
+    </section>
+  </div>
 
   <!-- 最近操作面板 -->
   <details class="history-panel" id="historyPanel">
@@ -48,6 +87,16 @@
   </details>
 </div>
 <footer class="app-footer" id="appFooter">CC-Fix</footer>
+
+<dialog id="confirmDialog" aria-labelledby="confirmTitle" aria-describedby="confirmBody">
+  <h3 id="confirmTitle"></h3>
+  <div id="confirmBody"></div>
+  <div class="confirm-actions">
+    <button type="button" id="confirmCancel" class="btn btn-off">取消</button>
+    <button type="button" id="confirmOk" class="btn btn-on">继续</button>
+  </div>
+</dialog>
+
 <div class="toast" id="toast" role="status" aria-live="polite" aria-label="通知"></div>
 <script type="module" src="/assets/gui/app.js"></script>
 </body>

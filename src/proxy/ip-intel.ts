@@ -1,6 +1,7 @@
 // IP 情报查询 — 多源对比 + 数据中心判断
 
 import type { IpIntelligence } from "../detection/types.js";
+import { isCorporateAsn } from "../detection/corporate-allowlist.js";
 
 // 常见云厂商 ASN 前缀（数据中心 IP）
 const DATACENTER_ASN_PREFIXES = [
@@ -59,7 +60,6 @@ function isDatacenterAsn(asn: string | null): boolean {
 async function isCorporateDatacenterSuppressed(asn: string | null): Promise<boolean> {
   if(!asn) return false;
   try {
-    const { isCorporateAsn } = await import("../detection/corporate-allowlist.js");
     return await isCorporateAsn(asn);
   } catch { return false; }
 }
@@ -145,8 +145,7 @@ async function toIpIntelligence(
     multiSourceConsistent = countryMatch && asnMatch && ipMatch;
     // 企业办公网多源抖动（公司DNS vs 公网）降噪：若任一源为企业 ASN，忽略多源不一致
     try {
-      const { isCorporateAsn } = await import("../detection/corporate-allowlist.js");
-      if(await isCorporateAsn(primary.asn) || await isCorporateAsn(secondary.asn)){
+      if (await isCorporateAsn(primary.asn) || await isCorporateAsn(secondary.asn)) {
         multiSourceConsistent = true;
       }
     } catch {}
