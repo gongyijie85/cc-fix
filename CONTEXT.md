@@ -36,6 +36,7 @@
 | 策略快照 | 备份快照中的 `previousBrowserPolicies`：写策略前的原值，含"不存在"（还原时删除） | 与备份同源同一文件，同一"保留最原始值"语义 |
 | 策略槽（policy slot） | 浏览器策略的单个受管位：槽 id（如 `chrome.accept_language`）＋注册表 keyPath/valueName＋期望值，共六槽，由唯一槽目录定义；检测、persist 期望值、备份与迁移全部派生自该目录 | 不用 slotKey 词汇（`chrome/AcceptLanguage`），那是仅迁移输入的旧格式 |
 | 输入法关联（input method binding） | 深度保护用 `Set-WinUserLanguageList -Force` 重建首选语言列表时，随列表被替换的各语言输入法/键盘布局绑定；IME 程序本身不会被卸载 | 不叫"输入法被删除"；还原时随语言列表一并恢复（ADR-0003 不改系统语言列表的边界不适用于 deep 的语言列表写入） |
+| 生命周期冒烟前置（lifecycle smoke precondition） | `Test-InstallerLifecycle.ps1` 在 `CC_FIX_RUN_PERSIST_SMOKE=1` 时要求六策略槽在冒烟前不存在（兜底按"删除"还原）；真机存在历史策略残留时会被保护性拒绝 | 不等同于失败；真机可用 `persist on → persist off` 显式闭环做等效验证（#119），无需删除用户既有策略 |
 
 ## 统一事件协议
 
