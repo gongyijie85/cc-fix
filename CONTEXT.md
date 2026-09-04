@@ -35,6 +35,7 @@
 | 浏览器策略（browser policy） | Chrome/Edge 原生策略注册表项（HKCU\Software\Policies\…）：`AcceptLanguage`（跟随目标地区）与 WebRTC 防泄漏策略，persist on 写入、off 还原 | 不叫"浏览器插件"；不改系统语言列表（ADR-0003） |
 | 策略快照 | 备份快照中的 `previousBrowserPolicies`：写策略前的原值，含"不存在"（还原时删除） | 与备份同源同一文件，同一"保留最原始值"语义 |
 | 策略槽（policy slot） | 浏览器策略的单个受管位：槽 id（如 `chrome.accept_language`）＋注册表 keyPath/valueName＋期望值，共六槽，由唯一槽目录定义；检测、persist 期望值、备份与迁移全部派生自该目录 | 不用 slotKey 词汇（`chrome/AcceptLanguage`），那是仅迁移输入的旧格式 |
+| 输入法关联（input method binding） | 深度保护用 `Set-WinUserLanguageList -Force` 重建首选语言列表时，随列表被替换的各语言输入法/键盘布局绑定；IME 程序本身不会被卸载 | 不叫"输入法被删除"；还原时随语言列表一并恢复（ADR-0003 不改系统语言列表的边界不适用于 deep 的语言列表写入） |
 
 ## 统一事件协议
 

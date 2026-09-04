@@ -18,7 +18,8 @@ CC-Fix 是面向 Windows 的环境一致性检测与可恢复保护工具。它�
 
 - CC-Fix 会检测出口网络、VPN、路由、网卡、DNS、hosts 与 DoH 风险，但只给出提醒，绝不修改这些网络配置。
 - “标准保护”会修改当前用户的 `TZ`、`LANG`、`LC_ALL`，Windows 系统时区，以及 Chrome/Edge 的 6 个受管策略槽。
-- “深度保护”还会修改 `LocaleName`、首选语言列表和用户 Culture，因此会更明显地影响日常 Windows 体验。
+- “深度保护”还会修改 `LocaleName`、首选语言列表和用户 Culture，因此会更明显地影响日常 Windows 体验。深度保护通过 `Set-WinUserLanguageList -Force` 用目标语言重建首选语言列表，**会一并重置该列表绑定的输入法关联**：已安装的中文输入法（IME）**不会被卸载**，但需要手动加回（设置 → 时间和语言 → 语言 → 键盘/输入法），`persist off` 完整还原时输入法关联会一并恢复。
+- 只想保持中文输入法、不动语言/区域偏好时，请使用“标准保护”（`persist on`，不修改首选语言列表）。
 - 所有受管值在首次保护前写入不可变日常快照；关闭保护时逐项读回验证并完整还原。
 - 安装包目前未进行 Authenticode 签名，Windows SmartScreen 可能显示未知发布者警告。请先核对随包 SHA-256。
 
