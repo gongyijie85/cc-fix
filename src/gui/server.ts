@@ -297,7 +297,7 @@ async function handleCheckStart(orchestrator: ReturnType<typeof createGuiOrchest
     const region = status.target?.region ?? status.preferredRegion;
     const timezone = resolveTargetTimezone({ region, active: status.target, current: await currentSystemTimezone() });
     const target = getTargetRegion(region, timezone);
-    await runDetection("auto", target.timezone, target.lang, ipIntel, orchestrator.checkEventConsumer);
+    await runDetection("auto", target.timezone, target.lang, ipIntel, orchestrator.checkEventConsumer, { reuseSystemState: true });
   } finally {
     orchestrator.releaseLock();
   }

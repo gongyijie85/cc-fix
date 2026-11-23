@@ -70,7 +70,9 @@ describe('legacy city selection after the OS timezone changes', () => {
       await vi.waitFor(() => expect(runtime.protect).toHaveBeenCalledWith({ mode: 'standard', region: 'us', timezone: 'America/Los_Angeles' }));
     } else {
       expect(response.status).toBe(202);
-      await vi.waitFor(() => expect(runtime.detect).toHaveBeenCalledWith('auto', 'America/Los_Angeles', 'en_US.UTF-8', null, expect.any(Function)));
+      await vi.waitFor(() => expect(runtime.detect).toHaveBeenCalledWith(
+        'auto', 'America/Los_Angeles', 'en_US.UTF-8', null, expect.any(Function), { reuseSystemState: true },
+      ));
     }
   });
 });
