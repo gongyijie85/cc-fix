@@ -36,9 +36,28 @@ const dispatchUi = (action) => (uiState = reduceUiState(uiState, action));
 // renderDetectResult 局部补丁时不再重拉 regions/status；用户选中的地区不被 loadStatus 覆盖。
 let cachedRegions = null;
 let userPickedRegion = null;
+let userPickedTimezone = null;
+let lastStatus = null;
 function trackRegionPick() {
   const sel = document.getElementById("regionSelect");
-  if (sel) sel.addEventListener("change", () => { userPickedRegion = sel.value; });
+  if (sel) sel.addEventListener("change", () => {
+    userPickedRegion = sel.value;
+    userPickedTimezone = null;
+    loadTimezones();
+  });
+  const timezone = document.getElementById("timezoneSelect");
+  if (timezone) timezone.addEventListener("change", () => { userPickedTimezone = timezone.value; });
+}
+
+function loadTimezones() {
+  const select = document.getElementById("timezoneSelect");
+  const code = document.getElementById("regionSelect")?.value;
+  const region = cachedRegions?.regions.find((entry) => entry.code === code);
+  if (!select || !region?.timezones?.length) return;
+  select.innerHTML = region.timezones.map((entry) => `<option value="${esc(entry.timezone)}">${esc(entry.label)} · ${esc(entry.timezone)}</option>`).join("");
+  const activeRegion = lastStatus?.target?.region || lastStatus?.preferredRegion;
+  const candidates = [userPickedTimezone, code === activeRegion ? lastStatus?.resolvedTimezone : null, lastStatus?.currentTimezone, region.timezone];
+  select.value = candidates.find((value) => region.timezones.some((entry) => entry.timezone === value)) || region.timezones[0].timezone;
 }
 
 // ── Toast ──
@@ -108,7 +127,7 @@ const STANDARD_CONFIRMED_KEY = "cc-fix-standard-confirmed-v1";
 
 // #113/#114 可访问性基础：禁用态同步 aria-disabled；截断的检测值可复制
 function setButtonsDisabled(d) {
-  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "btnFontsRestore", "regionSelect", "levelSelect"].forEach(id => {
+  ["btnOn", "btnOff", "btnRecover", "btnRefresh", "btnFontsRestore", "regionSelect", "timezoneSelect", "levelSelect"].forEach(id => {
     const el = document.getElementById(id);
     if (el) { el.disabled = d; el.setAttribute("aria-disabled", String(d)); }
   });
@@ -179,7 +198,10 @@ function showSummary(event) {
   bar.innerHTML = html;
 
   const title = $("#fixTitle");
-  if (event.fatal) {
+  if (event.failedDuring === "prepare") {
+    title.textContent = "保护未启动";
+    title.style.color = "var(--red)";
+  } else if (event.fatal) {
     title.textContent = "修复失败，需手动检查";
     title.style.color = "var(--red)";
   } else if (event.rolledBack) {
@@ -375,6 +397,8 @@ if (document.getElementById("btnSseRetry")) {
 // ── 操作按钮 ──
 async function persistOn() {
   const region = document.getElementById("regionSelect")?.value || "us";
+  const timezone = document.getElementById("timezoneSelect")?.value || "";
+  const targetLabel = `${region.toUpperCase()}${timezone ? ` / ${timezone}` : ""}`;
   // #105：level 缺省不回落 standard——未选择/状态未就绪时省略参数，服务端按当前模式
   // 解析（保持强度），杜绝 deep 用户在 status 回填前被意外降级。
   const levelSel = document.getElementById("levelSelect");
@@ -387,7 +411,7 @@ async function persistOn() {
         "深度保护除标准内容外，还会修改 Windows Locale、首选语言列表与用户 Culture，日常使用界面语言/区域会随之变化。",
         "首选语言列表被重建时会一并重置其输入法关联：已装的中文输入法（IME）不会被卸载，但需在 设置→时间和语言→语言 中手动加回。",
         "关闭保护时会从耐久备份完整还原原始设置（含输入法关联）。",
-        `目标：深度保护 / ${region.toUpperCase()}`,
+        `目标：深度保护 / ${targetLabel}`,
       ],
       confirmText: "进入深度保护",
     });
@@ -398,7 +422,7 @@ async function persistOn() {
       lines: [
         "将修改：用户环境变量（TZ/LANG/LC_ALL）、Windows 系统时区，以及 Chrome/Edge 的 6 个受管策略槽。",
         "VPN、路由、DNS 等网络配置不会被修改；关闭保护可完整还原。",
-        `目标：标准保护 / ${region.toUpperCase()}`,
+        `目标：标准保护 / ${targetLabel}`,
       ],
       confirmText: "开启标准保护",
     });
@@ -408,10 +432,12 @@ async function persistOn() {
   setButtonsDisabled(true);
   dispatchUi({ type: "fix-action", action: "on" });
   const levelParam = level ? `&level=${encodeURIComponent(level)}` : "";
-  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}${levelParam}`, { method: "POST" });
+  const timezoneParam = timezone ? `&timezone=${encodeURIComponent(timezone)}` : "";
+  const res = await fetch(`/api/fix/on?region=${encodeURIComponent(region)}${levelParam}${timezoneParam}`, { method: "POST" });
   if (!res.ok) {
     setButtonsDisabled(false);
-    showToast("已有操作进行中，请稍候");
+    const body = await res.json().catch(() => null);
+    showToast(body?.error?.message || (res.status === 409 ? "已有操作进行中，请稍候" : `保护启动失败（HTTP ${res.status}）`));
   }
   // 事件流驱动 UI 更新
 }
@@ -501,6 +527,7 @@ async function loadStatus() {
       return;
     }
     currentMode = status.mode;
+    lastStatus = status;
     if (status.mode !== "daily") { dot.className = "status-dot on"; txt.textContent = `${status.mode} · ${status.health}`; }
     else { dot.className = "status-dot off"; txt.textContent = `daily · ${status.health}`; }
     // #111：状态栏独立呈现生效/偏好地区与未完成事务；title 附 revision/updatedAt
@@ -508,6 +535,7 @@ async function loadStatus() {
     if (statusDetail) {
       const detailParts = [];
       if (status.mode !== "daily" && status.target?.region) detailParts.push(`生效:${status.target.region}`);
+      if (status.target?.timezone) detailParts.push(`时区:${status.target.timezone}`);
       detailParts.push(`偏好:${status.preferredRegion || "us"}`);
       const txKind = status.transaction?.kind;
       if (txKind && txKind !== "none") detailParts.push(`事务:${txKind}`);
@@ -521,12 +549,13 @@ async function loadStatus() {
     if (regionModeLabel) {
       regionModeLabel.textContent = status.mode === "daily"
         ? "偏好地区（日常模式，下次保护/未显式检测默认）"
-        : "生效地区（已提交；更改将发起保护目标切换）";
+        : "地区/时区选好后，点击保护按钮提交切换";
     }
     const sel = document.getElementById("regionSelect");
     const hint = document.getElementById("regionHint");
     // #89 地区选择保留：loadStatus 仅在用户未手动选择时设置默认地区，绝不覆盖用户选择。
     if (sel) { sel.disabled = false; if (userPickedRegion === null) sel.value = status.target?.region || status.preferredRegion || "us"; }
+    loadTimezones();
     const level = document.getElementById("levelSelect");
     if (level && status.mode !== "daily") level.value = status.mode;
     const needsRecovery = status.transaction?.kind !== "none" || status.health === "recovery_required";
@@ -625,6 +654,8 @@ function renderFullContent(data) {
     <label for="regionSelect"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm6.9 9h-3.1a16 16 0 0 0-1.2-5A8 8 0 0 1 18.9 11ZM12 4c.9 1.2 1.6 3 1.8 5h-3.6c.2-2 .9-3.8 1.8-5ZM9.4 6a16 16 0 0 0-1.2 5H5.1A8 8 0 0 1 9.4 6ZM5.1 13h3.1a16 16 0 0 0 1.2 5A8 8 0 0 1 5.1 13ZM12 20c-.9-1.2-1.6-3-1.8-5h3.6c-.2 2-.9 3.8-1.8 5Zm2.6-2a16 16 0 0 0 1.2-5h3.1a8 8 0 0 1-4.3 5Z"/></svg> 目标地区</label>
     <label for="regionSelect" class="visually-hidden">目标地区</label>
     <select id="regionSelect" aria-label="目标地区"><option value="us">美国</option></select>
+    <label for="timezoneSelect">具体时区</label>
+    <select id="timezoneSelect" aria-label="具体时区"><option value="">正在读取时区…</option></select>
     <label for="levelSelect"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z"/></svg> 保护强度</label>
     <label for="levelSelect" class="visually-hidden">保护强度</label>
     <select id="levelSelect" aria-label="保护强度"><option value="standard">标准（推荐）</option><option value="deep">深度</option></select>

@@ -5,6 +5,7 @@ import type { SignalResult } from "../types.js";
 import type { IpIntelligence } from "../types.js";
 import { readUserLocale, systemState } from "../../platform/system-state.js";
 import { isCorporateIp, isCorporateAsn } from "../corporate-allowlist.js";
+import { REGION_TIMEZONES } from "../../domain/region-catalog.js";
 
 /** EU 目标允许的出口国家集合（英国脱欧后仍归欧洲画像；企业内网另走白名单豁免）。 */
 const EU_COUNTRIES = new Set([
@@ -17,9 +18,9 @@ type TargetGeography =
   | { kind: "country"; code: string; label: string }
   | { kind: "area"; countries: ReadonlySet<string>; label: string };
 
-/** 目标时区 → 期望出口地理。与 detection/regions.ts 的 TARGET_REGIONS 时区一一对应。 */
+/** 目标时区 → 期望出口地理；涵盖地区目录内的全部美国城市。 */
 const GEO_BY_TARGET_TIMEZONE: Readonly<Record<string, TargetGeography>> = {
-  "America/New_York": { kind: "country", code: "US", label: "US" },
+  ...Object.fromEntries(REGION_TIMEZONES.us.map(({ timezone }) => [timezone, { kind: "country" as const, code: "US", label: "US" }])),
   "Asia/Tokyo": { kind: "country", code: "JP", label: "JP" },
   "Asia/Singapore": { kind: "country", code: "SG", label: "SG" },
   "Europe/London": { kind: "area", countries: EU_COUNTRIES, label: "EU" },

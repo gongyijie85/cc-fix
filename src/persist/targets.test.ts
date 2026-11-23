@@ -4,6 +4,12 @@ import { createBackupSnapshotV4, backupSnapshotToDailyValues } from './backup-ma
 import { BROWSER_POLICY_SLOTS, storedValueEquals } from '../state/schema.js';
 
 describe('target values', () => {
+  it('uses the chosen city for both environment and Windows timezone', () => {
+    const values = desiredValues({ mode: 'standard', region: 'us', timezone: 'America/Los_Angeles' });
+    expect(values.environment).toMatchObject({ value: { TZ: 'America/Los_Angeles', LANG: 'en_US.UTF-8' } });
+    expect(values.system_timezone).toEqual({ kind: 'value', value: 'Pacific Standard Time' });
+  });
+
   it('derives only catalogued authority values without network settings', () => {
     const values = desiredValues({ mode: 'deep', region: 'jp' });
     expect(values.system_timezone).toMatchObject({ value: 'Tokyo Standard Time' });

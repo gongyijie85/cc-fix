@@ -48,11 +48,12 @@ export async function runDetection(
   targetLang: string,
   ipIntel: IpIntelligence | null,
   onEvent?: EventConsumer,
+  options: { reuseSystemState?: boolean } = {},
 ): Promise<CheckResponse> {
   const context: DetectionContext = { targetTimezone, targetLang };
 
-  // 每次检测重新读取系统状态（时区/偏移可能在两次检测之间被 persist 改变）
-  resetSystemState();
+  // 调用方已为本次检测刷新并读取系统快照时，插件复用同一份结果。
+  if (!options.reuseSystemState) resetSystemState();
 
   // 阶段：IP 情报
   if (onEvent) onEvent({ type: "phase", label: "正在获取 IP 情报…" });

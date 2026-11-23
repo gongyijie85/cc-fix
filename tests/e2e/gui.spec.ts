@@ -23,11 +23,35 @@ async function openApp(page: Page, fixture?: { state?: unknown }): Promise<void>
   await page.goto(harness.baseUrl, { waitUntil: "domcontentloaded" });
   // 等待页面完成初始 API 加载（status/history/regions/fonts）
   await expect(page.locator("#statusText")).not.toHaveText("检测中...", { timeout: 15_000 });
+  await expect(page.locator("#btnOn")).toBeEnabled();
   (page as Page & { __errors?: string[] }).__errors = errors;
 }
 
 test.afterEach(async () => {
   await harness?.stop();
+});
+
+test('具体时区：沿用已提交洛杉矶，刷新保留选择，换日本后使用东京', async ({ page }) => {
+  await openApp(page, { state: standardState('America/Los_Angeles') });
+  const timezone = page.getByRole('combobox', { name: '具体时区' });
+  await expect(timezone).toHaveValue('America/Los_Angeles');
+  await timezone.selectOption('America/Chicago');
+  await page.locator('#btnRefresh').click();
+  await expect(timezone).toHaveValue('America/Chicago');
+  await page.getByRole('combobox', { name: '目标地区' }).selectOption('jp');
+  await expect(timezone).toHaveValue('Asia/Tokyo');
+  await expect(timezone.locator('option')).toHaveCount(1);
+});
+
+test('具体时区：保护请求携带选中的城市（拦截写入）', async ({ page }) => {
+  await openApp(page, { state: standardState('America/Los_Angeles') });
+  await page.getByRole('combobox', { name: '具体时区' }).selectOption('America/Chicago');
+  const request = page.waitForRequest('**/api/fix/on?**');
+  await page.route('**/api/fix/on?**', (route) => route.fulfill({ status: 202, body: '' }));
+  await page.locator('#btnOn').click();
+  const url = new URL((await request).url());
+  expect(url.searchParams.get('timezone')).toBe('America/Chicago');
+  expect(url.searchParams.get('region')).toBe('us');
 });
 
 test("首载：渲染状态栏与操作控件，无控制台错误", async ({ page }) => {
@@ -39,6 +63,48 @@ test("首载：渲染状态栏与操作控件，无控制台错误", async ({ pa
   await expect(page.locator("#btnRefresh")).toBeVisible();
   const errors = (page as Page & { __errors?: string[] }).__errors ?? [];
   expect(errors).toEqual([]);
+});
+
+test("保护准备失败时显示服务端原因并允许重试", async ({ page }) => {
+  // 保留真实检测事件流，通过同一监听器回放保护结果，避免测试写入系统设置。
+  await page.addInitScript(() => {
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        window.addEventListener("test-persist-event", (event) => {
+          this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify((event as CustomEvent).detail) }));
+        });
+      }
+    };
+  });
+  await openApp(page, { state: standardState() });
+  await page.evaluate(() => {
+    for (const detail of [
+      { type: "step-start", stepId: "persist", name: "上一次保护" },
+      { type: "step-ok", stepId: "persist" },
+      { type: "summary", ok: 1, fail: 0, rolledBack: false },
+    ]) window.dispatchEvent(new CustomEvent("test-persist-event", { detail }));
+  });
+  await expect(page.locator("#step-persist .badge-ok")).toBeVisible();
+  const message = "无法读取保护状态文件";
+  await page.route("**/api/fix/on?**", (route) => route.fulfill({
+    status: 500, json: { error: { id: "PERSIST_PREPARE_FAILED", code: 500, message } },
+  }));
+  const protect = page.locator("#btnOn");
+  await protect.click();
+  await expect(page.locator("#toast")).toHaveText(message);
+  await page.evaluate((error) => {
+    for (const detail of [
+      { type: "step-start", stepId: "persist-prepare", name: "准备保护操作" },
+      { type: "step-fail", stepId: "persist-prepare", error },
+      { type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: false, failedDuring: "prepare" },
+    ]) window.dispatchEvent(new CustomEvent("test-persist-event", { detail }));
+  }, message);
+  await expect(page.locator("#fixTitle")).toHaveText("保护未启动");
+  await expect(page.locator("#step-persist-prepare .err-box")).toHaveText(message);
+  await expect(page.locator("#step-persist")).toHaveCount(0);
+  await expect(page.locator("#fatalCta")).toBeHidden();
+  await expect(protect).toBeEnabled();
 });
 
 test("离线字体契约：字体就绪且只从本地认证服务加载", async ({ page }) => {
@@ -91,24 +157,37 @@ test("a11y 门禁：交互元素都有名称且图标 SVG 不进入可访问树"
 
 test("axe 门禁：页面无 serious/critical 可访问性问题", async ({ page }) => {
   await openApp(page, { state: dailyState() });
+  await expect(page.locator("#btnOn")).toHaveCSS("opacity", "1");
   const results = await new AxeBuilder({ page }).analyze();
   const blocking = results.violations.filter((violation) => violation.impact === "serious" || violation.impact === "critical");
   expect(blocking, blocking.map((violation) => `${violation.id}: ${violation.help}`).join("\n")).toEqual([]);
 });
 
-test.skip(process.env.CI !== undefined, "视觉基线为参考环境本地门禁：跨 Chromium 构建的字体渲染差异不可靠，CI 上改用 axe/响应式/溢出语义断言")
-test("视觉基线：窄屏与桌面首屏层级稳定", async ({ page }) => {
-  await openApp(page, { state: dailyState() });
-  const masks = [page.locator("#content"), page.locator("#historyPanel"), page.locator("#toast")];
+test("视觉基线：窄屏与桌面首屏层级稳定", { tag: "@visual-baseline" }, async ({ page }) => {
+  test.skip(process.env.CI !== undefined, "截图使用本地参考环境的字体渲染基线");
+  // 视觉基线只比较界面：真实出口、本机语言与检测中卡片会改变全文高度，不能成为基线输入。
+  const response = {
+    score: 0, riskLevel: 'low', status: 'supported', region: 'auto', matchedRegion: null,
+    signals: [{ id: 'timezone', label: '系统时区', value: 'America/Los_Angeles', score: 0, weight: 25, contribution: 0, source: 'system', risk: 'low' }],
+    ipIntelligence: null, recommendations: [],
+  };
+  await page.route('**/api/check/start', (route) => route.fulfill({ status: 202, body: '' }));
+  await page.route('**/api/events', (route) => route.fulfill({
+    contentType: 'text/event-stream', body: `data: ${JSON.stringify({ type: 'detect-done', response })}\n\n`,
+  }));
+  await page.route('**/api/fonts/status', (route) => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ found: [], missing: [], backedUp: false, pendingReboot: [] }),
+  }));
+  await openApp(page, { state: standardState('America/Los_Angeles') });
   for (const [name, width, height] of [["narrow", 375, 667], ["desktop", 840, 620]] as const) {
     await page.setViewportSize({ width, height });
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.locator("#statusText")).not.toHaveText("检测中...", { timeout: 15_000 });
+    await expect(page.locator('#timezoneSelect')).toBeEnabled();
+    await expect(page.locator('#detectCard')).not.toHaveClass(/visible/);
     await expect(page).toHaveScreenshot(`gui-${name}.png`, {
       fullPage: true,
       animations: "disabled",
-      mask: masks,
-      maskColor: "#1a1d27",
       // 跨 Chromium 构建抗锯齿差异：允许 ≤1% 像素抖动，防版本漂移误报；真实布局回归仍会远超此限
       maxDiffPixelRatio: 0.01,
     });
@@ -219,11 +298,22 @@ test("detect-done 局部补丁不再重拉 regions/status（#89）", async ({ pa
     if (u.includes("/api/regions") || u.includes("/api/status")) regionsStatusRequests.push(u);
   });
 
-  // 直接 POST 检测（不经 refresh，不重建 content —— 走 renderDetectResult 局部补丁路径）
-  await page.evaluate(() => fetch("/api/check/start", { method: "POST" }));
-  // 先等新检测启动（标题进入"检测进行中…"，避开上个检测的残留"检测完成"标题）
-  await expect(page.locator("#detectTitle")).toHaveText("检测进行中…", { timeout: 15_000 });
-  // 再等 detect-done
+  // 先记录本轮标题变化，快速检测可能在 Playwright 第一次轮询前就已经结束。
+  const titles = await page.locator("#detectTitle").evaluateHandle((title) => {
+    const seen: string[] = [];
+    const observer = new MutationObserver((changes) => {
+      for (const change of changes) {
+        for (const node of change.addedNodes) seen.push(node.textContent ?? "");
+      }
+      if (seen.includes("检测完成")) observer.disconnect();
+    });
+    observer.observe(title, { childList: true });
+    return seen;
+  });
+  const status = await page.evaluate(async () => (await fetch("/api/check/start", { method: "POST" })).status);
+  expect(status).toBe(202);
+  await expect.poll(() => titles.jsonValue(), { timeout: 15_000 }).toContain("检测完成");
+  expect((await titles.jsonValue())[0]).toBe("检测进行中…");
   await expect(page.locator("#detectTitle")).toHaveText("检测完成", { timeout: 15_000 });
 
   // 补丁路径不应重新请求 regions/status（regions 已缓存，纯检测不改 status）

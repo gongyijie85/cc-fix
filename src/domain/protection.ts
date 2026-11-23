@@ -1,4 +1,5 @@
 import type { RegionCode, ResolvedRegion } from "./region.js";
+import { getTargetRegion } from "./region-catalog.js";
 
 export const PROTECTION_MODES = ["daily", "standard", "deep"] as const;
 export const PROTECTED_MODES = ["standard", "deep"] as const;
@@ -11,6 +12,7 @@ export type ProtectedMode = Exclude<ProtectionMode, "daily">;
 export interface ProtectionTarget {
   mode: ProtectedMode;
   region: RegionCode;
+  timezone?: string;
 }
 
 export interface ProtectionRequest {
@@ -18,6 +20,7 @@ export interface ProtectionRequest {
   resolvedRegion: ResolvedRegion;
   level?: unknown;
   deep?: boolean;
+  timezone?: unknown;
 }
 
 export type ProtectionRequestErrorCode =
@@ -62,5 +65,9 @@ export function resolveProtectionRequest(request: ProtectionRequest): Protection
     ? "deep"
     : explicitLevel ?? (request.currentMode === "daily" ? "standard" : request.currentMode);
 
-  return { mode, region: request.resolvedRegion.code };
+  const region = request.resolvedRegion.code;
+  return {
+    mode, region,
+    ...(request.timezone === undefined ? {} : { timezone: getTargetRegion(region, request.timezone).timezone }),
+  };
 }

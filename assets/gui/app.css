@@ -7,10 +7,10 @@
   :root {
     --canvas: #0f1117; --surface: #1a1d27; --surface-elevated: #222633;
     --border-subtle: #2a2d3a; --text-primary: #f4f4f5; --text-secondary: #a1a1aa; --text-disabled: #71717a;
-    --focus: #a5b4fc; --accent: #818cf8; --accent-strong: #6366f1; --success: #22c55e; --warning: #eab308; --danger: #ef4444; --orange: #f97316;
+    --focus: #a5b4fc; --accent: #818cf8; --accent-strong: #4f46e5; --success: #22c55e; --warning: #eab308; --danger: #ef4444; --orange: #f97316;
     /* 灏忓瓧鍙?danger 鏂囧瓧鐢ㄦ洿浜彉浣擄細鍦?surface/鍗婇€忔槑 danger 娣峰悎搴曚笂绋冲畾 鈮?.5:1锛?64 axe 闂ㄧ锛?*/
     --danger-text: #f98a8a;
-    /* accent-strong 渚涚櫧瀛楁寜閽儗鏅細鐧藉瓧鍦?#818cf8 涓婁粎 2.98:1锛屽姞娣卞埌 #6366f1锛堚増6.3:1锛夎繃 4.5:1 */
+    /* White text on the refresh button has a 6.29:1 contrast ratio. */
     --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px;
     --radius-card: 12px; --radius-control: 8px; --radius-pill: 9999px;
     /* compatibility aliases while the single-file view is migrated */

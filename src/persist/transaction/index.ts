@@ -2,7 +2,7 @@ import type { ProtectionTarget } from '../../domain/protection.js';
 import type { RegionCode } from '../../domain/region.js';
 import { managedStepIds, type PersistStepId } from '../steps.js';
 import { desiredValues } from '../targets.js';
-import { storedValueEquals, type BackupSnapshotV4, type StoredValue } from '../../state/schema.js';
+import { storedValueEquals, type BackupSnapshotV4, type ProtectionState, type StoredValue } from '../../state/schema.js';
 import type { JsonValue } from '../../state/checksum.js';
 import { BackupRepository, StateRepository, type MutationCoordinatorCapability } from '../../state/repository.js';
 import { recoveryAction, TransactionJournalRepository, type TransactionJournalContext } from '../../state/journal.js';
@@ -69,6 +69,12 @@ function completeValuesEqual(
  * 状态提交编舞全部位于内部细缝，不对外暴露。
  */
 export function createPersistTransactionModule(dependencies: PersistApplicationDependencies) {
+  // An old reader must reject the state before plan() publishes any city journal.
+  const prepareTimezoneState = async (state: ProtectionState, ...targets: (ProtectionTarget | null)[]): Promise<ProtectionState> => {
+    if (state.schemaVersion === 2 || [state.committedTarget, ...targets].every(target => target?.timezone === undefined)) return state;
+    return (await dependencies.stateRepository.commit(state.revision, state, 2)).value;
+  };
+
   const status = async (): Promise<PersistStatus> => {
     const [state, journal] = await Promise.all([
       dependencies.stateRepository.read(),
@@ -165,6 +171,7 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
         }
       };
 
+      const initial = await prepareTimezoneState(stateRead.value, target);
       return runProtectTransaction({
         committedTarget: stateRead.value.committedTarget,
         requestedTarget: target,
@@ -187,7 +194,7 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
         createDailySnapshot: ensureDailySnapshot,
         stateTransaction: createRepositoryStateTransition(
           dependencies.stateRepository,
-          stateRead.value,
+          initial,
           target,
         ).protect,
       });
@@ -218,6 +225,7 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
         );
       }
       const daily = backupSnapshotToDailyValues(backup.value);
+      const initial = await prepareTimezoneState(stateRead.value);
       return runRestoreTransaction({
         protected: true,
         daily,
@@ -235,7 +243,7 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
         deleteDailySnapshot: () => dependencies.deleteDailySnapshot!(backup.value),
         stateTransaction: createRepositoryStateTransition(
           dependencies.stateRepository,
-          stateRead.value,
+          initial,
         ).restore,
       });
     });
@@ -262,9 +270,11 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
       }
       const context: TransactionJournalContext = journal.context;
       // 状态提交编舞委托唯一实现（ADR-0012 T-a），本路径不再手写 revision 追踪。
-      const transition = createRepositoryStateTransition(dependencies.stateRepository, stateRead.value);
+      const prepareTransition = async () => createRepositoryStateTransition(dependencies.stateRepository,
+        await prepareTimezoneState(state, context.previousState.committedTarget, context.requestedTarget));
 
       if (journal.kind === 'protect') {
+        const transition = await prepareTransition();
         const result = await recoverProtectTransaction({
           journal,
           journalRepository: dependencies.journalRepository,
@@ -292,7 +302,9 @@ export function createPersistTransactionModule(dependencies: PersistApplicationD
             'A missing restore backup is only safe after daily state was published',
           );
         }
-      } else {
+      }
+      const transition = await prepareTransition();
+      if (backup.kind === 'value') {
         const result = await recoverRestoreAuthorities({
           journal,
           journalRepository: dependencies.journalRepository,

@@ -6,7 +6,7 @@ import type { PersistStepId } from './steps.js';
 
 /** Immutable desired authority values derived solely from the approved region catalogue and the policy slot catalogue. */
 export function desiredValues(target: ProtectionTarget): Readonly<Record<PersistStepId, StoredValue<JsonValue>>> {
-  const region = getTargetRegion(target.region);
+  const region = getTargetRegion(target.region, target.timezone);
   const locale = acceptLanguageFromLang(region.lang);
   const standard = {
     environment: storedValue({ TZ: region.timezone, LANG: region.lang, LC_ALL: region.lcAll }),

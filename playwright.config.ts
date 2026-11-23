@@ -8,7 +8,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  reporter: [["list"]],
+  reporter: process.env.CI === undefined
+    ? [["list"]]
+    : [["list"], ["./tests/e2e/ci-skip-reporter.ts"]],
   use: {
     baseURL: "http://127.0.0.1:1", // 由 fixture 注入真实 URL；此处仅占位
     headless: true,

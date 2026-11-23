@@ -6,6 +6,7 @@ import {
   type ProtectionTarget,
 } from '../domain/protection.js';
 import { isRegionCode, type RegionCode } from '../domain/region.js';
+import { isRegionTimezone } from '../domain/region-catalog.js';
 
 export const BROWSER_POLICY_VALUE_NAMES = {
   acceptLanguage: 'AcceptLanguage',
@@ -105,7 +106,7 @@ export type DegradationReason = {
 };
 
 export type ProtectionState = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   revision: number;
   committedTarget: ProtectionTarget | null;
   preferredRegion: RegionCode;
@@ -196,9 +197,10 @@ export function isSafeJsonValue(value: unknown, ancestors = new Set<object>()): 
 function isProtectionTarget(value: unknown): value is ProtectionTarget {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['mode', 'region']) &&
+    (hasExactKeys(value, ['mode', 'region']) || hasExactKeys(value, ['mode', 'region', 'timezone'])) &&
     (value.mode === 'standard' || value.mode === 'deep') &&
-    isRegionCode(value.region)
+    isRegionCode(value.region) &&
+    (!Object.hasOwn(value, 'timezone') || isRegionTimezone(value.region, value.timezone))
   );
 }
 
@@ -251,7 +253,7 @@ export function isProtectionState(value: unknown): value is ProtectionState {
     'updatedAt',
   ])) return false;
   if (
-    value.schemaVersion !== 1 ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
     !Number.isSafeInteger(value.revision) ||
     (value.revision as number) < 0 ||
     !(value.committedTarget === null || isProtectionTarget(value.committedTarget)) ||

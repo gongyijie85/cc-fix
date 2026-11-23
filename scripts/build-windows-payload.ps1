@@ -65,7 +65,8 @@ try {
 
   $NodeExtract = Join-Path $RepositoryRoot '.wayfinder\temp\node-runtime'
   if (Test-Path -LiteralPath $NodeExtract) { Remove-Item -LiteralPath $NodeExtract -Recurse -Force }
-  Expand-Archive -LiteralPath $NodeArchive -DestinationPath $NodeExtract
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [IO.Compression.ZipFile]::ExtractToDirectory($NodeArchive, $NodeExtract)
   $NodeRoot = Get-ChildItem -LiteralPath $NodeExtract -Directory | Select-Object -First 1
   Copy-Item -LiteralPath (Join-Path $NodeRoot.FullName 'node.exe') -Destination (Join-Path $PayloadRoot 'runtime\node.exe')
   Copy-Item -LiteralPath (Join-Path $NodeRoot.FullName 'LICENSE') -Destination (Join-Path $PayloadRoot 'runtime\NODE-LICENSE.txt')

@@ -115,11 +115,11 @@ export function dailyState() {
 }
 
 /** 有效状态夹具：standard/us 已提交。 */
-export function standardState() {
+export function standardState(timezone?: string) {
   return {
-    schemaVersion: 1,
+    schemaVersion: timezone === undefined ? 1 : 2,
     revision: 2,
-    committedTarget: { mode: "standard", region: "us" },
+    committedTarget: { mode: "standard", region: "us", ...(timezone === undefined ? {} : { timezone }) },
     preferredRegion: "us",
     health: "healthy",
     degradation: [],

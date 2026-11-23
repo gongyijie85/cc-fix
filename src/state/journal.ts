@@ -11,7 +11,7 @@ export const TRANSACTION_JOURNAL_SCHEMA = 'cc-fix-transaction-journal-v1';
 export const TRANSACTION_JOURNAL_VALUES_SCHEMA = 'cc-fix-transaction-journal-values-v1';
 export type JournalPhase = 'planned' | 'applying' | 'verified' | 'compensating' | 'compensated' | 'recovery_required';
 export type JournalStep = { id: string; phase: JournalPhase; original?: JsonValue; desired?: JsonValue };
-export type JournalProtectionTarget = { mode: 'standard' | 'deep'; region: RegionCode };
+export type JournalProtectionTarget = { mode: 'standard' | 'deep'; region: RegionCode; timezone?: string };
 export type TransactionJournalContext = Readonly<{
   previousState: {
     committedTarget: JournalProtectionTarget | null;
@@ -69,7 +69,7 @@ function validContext(value: unknown): value is TransactionJournalContext {
   const previous = context.previousState as Record<string, unknown>;
   if (Object.keys(previous).sort().join(',') !== 'committedTarget,degradation,health,preferredRegion') return false;
   const probe: ProtectionState = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: 0,
     committedTarget: previous.committedTarget as ProtectionState['committedTarget'],
     preferredRegion: previous.preferredRegion as ProtectionState['preferredRegion'],

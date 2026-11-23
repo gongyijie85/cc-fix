@@ -69,6 +69,34 @@ beforeAll(() => {
 });
 
 describe("spawned CLI bundle contract (T13)", () => {
+  it('rejects a cross-region timezone with exit 10/INVALID_TIMEZONE', async () => {
+    const root = await fixtureRoot();
+    const { exitCode, stdout } = await runCli(['check', '--region', 'us', '--timezone', 'Asia/Tokyo', '--json'], root);
+    expect(exitCode).toBe(10);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { id: 'INVALID_TIMEZONE', code: 10 } });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('injects an explicit Los Angeles timezone without writing persistent settings', async () => {
+    const root = await fixtureRoot();
+    const { exitCode, stdout } = await runCli(['run', '--region', 'us', '--timezone', 'America/Los_Angeles', '--', process.execPath, '-p', 'process.env.TZ'], root);
+    expect(exitCode).toBe(0);
+    expect(stdout.trim()).toBe('America/Los_Angeles');
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform !== 'win32')('run inherits the committed city even with an explicit matching region', async () => {
+    const root = await fixtureRoot();
+    await writeState(root, {
+      ...validRecoveryState, schemaVersion: 2, activeTransactionId: null,
+      committedTarget: { mode: 'standard', region: 'us', timezone: 'America/Los_Angeles' },
+    });
+    const { exitCode, stdout } = await runCli(['run', '--region', 'us', '--', process.execPath, '-p', 'process.env.TZ'], root);
+    expect(exitCode).toBe(0);
+    expect(stdout.trim()).toBe('America/Los_Angeles');
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("--version exits 0 and prints the package version", async () => {
     const root = await fixtureRoot();
     const { exitCode, stdout } = await runCli(["--version"], root);

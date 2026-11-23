@@ -72,6 +72,8 @@ export function createNativeCompareDeleteFileSystem<T extends DurableFileSystem>
   return issueNativeCompareDeleteFilesystem(filesystem);
 }
 
+// Keep the envelope stable so a v1 payload can rotate into .prev during a v2 write.
+// Payload schemaVersion is the released repository's fail-closed version boundary.
 const STATE_SCHEMA = 'cc-fix-state-v1';
 const BACKUP_SCHEMA = 'cc-fix-backup-v4';
 
@@ -212,7 +214,7 @@ function validateStatePayload(payload: JsonValue): payload is JsonValue {
     payload !== null &&
     !Array.isArray(payload) &&
     'schemaVersion' in payload &&
-    payload.schemaVersion !== 1
+    payload.schemaVersion !== 1 && payload.schemaVersion !== 2
   ) throw new UnknownPayloadSchemaError('Unknown protection state schema version');
   return isProtectionState(payload);
 }
@@ -422,7 +424,7 @@ export class StateRepository extends RepositoryBase {
     if (!isProtectionState(state) || state.revision !== 0) {
       throw new RepositoryError('INVALID_STATE', 'Imported protection state must be a valid initial revision');
     }
-    const immutable = cloneImmutable(state);
+    const immutable = cloneImmutable(state.committedTarget?.timezone === undefined ? state : { ...state, schemaVersion: 2 as const });
     return this.mutate('state.initialize', this.paths.state, async () => {
       const existing = await this.readInternal();
       if (!('kind' in existing)) {
@@ -445,7 +447,7 @@ export class StateRepository extends RepositoryBase {
     });
   }
 
-  async commit(expectedRevision: number, next: StateMutation): Promise<PersistenceResult<ProtectionState>> {
+  async commit(expectedRevision: number, next: StateMutation, minimumSchemaVersion: 1 | 2 = 1): Promise<PersistenceResult<ProtectionState>> {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
       throw new RepositoryError('INVALID_STATE', 'Expected revision must be a nonnegative safe integer');
     }
@@ -469,9 +471,10 @@ export class StateRepository extends RepositoryBase {
         throw new RepositoryError('INVALID_STATE', 'Protection state revision cannot be incremented');
       }
       const state: ProtectionState = {
-        schemaVersion: 1,
-        revision: expectedRevision + 1,
         ...detachedNext,
+        schemaVersion: current.value.schemaVersion === 2 || minimumSchemaVersion === 2 ||
+          current.value.committedTarget?.timezone !== undefined || detachedNext.committedTarget?.timezone !== undefined ? 2 : 1,
+        revision: expectedRevision + 1,
         updatedAt: this.now(),
       };
       if (!isProtectionState(state)) {

@@ -134,10 +134,11 @@ type ProtectedMode = Exclude<ProtectionMode, "daily">;
 interface ProtectionTarget {
   mode: ProtectedMode;
   region: RegionCode;
+  timezone?: string;
 }
 
 interface ProtectionState {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   revision: number;
   committedTarget: ProtectionTarget | null;
   preferredRegion: RegionCode;
@@ -153,6 +154,8 @@ type StoredValue<T> =
 ```
 
 `StoredValue<T>` 必须区分不存在、`null`、空字符串与空列表；不能以 truthy 判断决定是否恢复。`committedTarget=null` 才表示日常状态。备份存在、journal 存在或当前设置接近某地区都不能单独决定保护模式。
+
+涉及具体城市的事务先在锁内将状态 payload 升级为 v2，再写事务日志。后续状态提交保留 v2。新版可读取 v1；仅支持 v1 的旧版遇到 v2 时拒绝回退到 `.prev`。日常备份继续使用 v4。
 
 ### Region resolution
 
@@ -286,7 +289,9 @@ JSON 输出必须包含 schemaVersion、requested target、committed target、pr
 - 修复后仅在 resolved target 相同且无未提交事务时计算 before/after；换区建立新评分基线。
 - VPN/DNS/路由结果显示“仅提醒，需要按自身网络环境处理”，没有自动修复入口。
 
-本地服务只绑定 `127.0.0.1`。壳生成随机端口、高熵一次性 token 和 session id；引导请求兑换 `HttpOnly; SameSite=Strict` cookie 后移除 URL token。所有 HTTP/API/SSE 校验 session、Host、Origin 和 loopback 来源。修改端点使用 CSRF 防护并维持全局单修改事务；触发端点立即返回 202，busy 返回 409。
+本地服务只绑定 `127.0.0.1`。壳生成随机端口、高熵一次性 token 和 session id；引导请求兑换 `HttpOnly; SameSite=Strict` cookie 后移除 URL token。所有 HTTP/API/SSE 校验 session、Host、Origin 和 loopback 来源。修改端点使用 CSRF 防护并维持全局单修改事务。操作获准执行后返回 202，busy 返回 409。
+
+保护请求在准备阶段校验输入并读取状态。参数无效返回 400。运行时初始化或状态读取失败返回 500，错误标识为 `PERSIST_PREPARE_FAILED`，`error.message` 给出原因。此时历史记录为失败，SSE 的 `summary.failedDuring` 为 `prepare`，界面提示可重试。
 
 ## Desktop shell contract
 

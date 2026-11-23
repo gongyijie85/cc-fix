@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { planTransition } from './internal/planner.js';
 
 describe('differential transition planner', () => {
+  it('commits timezone metadata when legacy authorities have already been manually aligned', () => {
+    const input = {
+      committedTarget: { mode: 'standard' as const, region: 'us' as const },
+      requestedTarget: { mode: 'standard' as const, region: 'us' as const, timezone: 'America/Los_Angeles' },
+      observed: { environment: true, system_timezone: true, browser_policies: true },
+    };
+    expect(planTransition(input).kind).toBe('protect');
+    expect(planTransition({ ...input, committedTarget: input.requestedTarget }).kind).toBe('noop');
+  });
+
   it('keeps locale/language/culture out of standard plans', () => {
     const plan = planTransition({ committedTarget: null, requestedTarget: { mode: 'standard', region: 'us' }, observed: {} });
     expect(plan.steps.map((s) => s.id)).toEqual(['environment', 'system_timezone', 'browser_policies']);
