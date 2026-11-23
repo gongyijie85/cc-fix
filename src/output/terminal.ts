@@ -150,6 +150,8 @@ export function renderCheckResponse(response: CheckResponse): void {
     console.log(chalk.green("  ✅ 环境信号正常，继续保持"));
   }
   console.log(chalk.dim("─────────────────────────────────────────────────"));
+  console.log(chalk.dim("  DNS 项只检查域名解析结果，无法据此判断 DNS 是否泄露。"));
+  console.log(chalk.dim("  风险评分汇总本次环境检测信号。出口 IP 的信誉需单独查询。"));
   console.log();
 }
 

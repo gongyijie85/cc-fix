@@ -30,6 +30,8 @@ describe('renderCheckResponse', () => {
       expect(output).toContain('风险评分');
       expect(output).toContain('检测维度: 2 个信号');
       expect(output).toContain('检测信号详情:');
+      expect(output).toContain('DNS 项只检查域名解析结果');
+      expect(output).toContain('出口 IP 的信誉需单独查询');
       // 表格宽度与边框（table.ts 的字节级语义；边框按 cell 分段带 ANSI 灰码）
       expect(output).toContain('┌──────────────────');
       expect(output).toContain('┬────────────┐');
