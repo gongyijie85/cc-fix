@@ -4,13 +4,15 @@ import { Command, CommanderError } from "commander";
 import chalk from "chalk";
 import { runDetection } from "./detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION, TARGET_REGIONS } from "./detection/regions.js";
+import { knownTargetTimezone, resolveTargetTimezone } from "./domain/region-catalog.js";
+import { resetSystemState, systemState } from "./platform/system-state.js";
 import { fetchIpIntelligence } from "./proxy/ip-intel.js";
 import { renderCheckResponse, renderJsonResponse } from "./output/terminal.js";
 import { recordCheck, recordPersistFacts } from "./fix/history.js";
 import { spawn } from "node:child_process";
 import { version } from "./version.js";
-import { parseRegionCode, resolveRegion } from "./domain/region.js";
-import { resolveProtectionRequest } from "./domain/protection.js";
+import { parseRegionCode, resolveRegion, type RegionCode } from "./domain/region.js";
+import { resolveProtectionRequest, type ProtectionTarget } from "./domain/protection.js";
 import { StateRepository } from "./state/repository.js";
 import { defaultPersistRoot } from "./state/paths.js";
 import {
@@ -40,14 +42,14 @@ async function openPersistRuntime() {
  * 保护态用生效地区、日常态用偏好地区、无状态回落初始默认 us。
  * 读取失败/平台不支持一律静默回落（检测命令不因状态问题失败，不初始化状态）。
  */
-async function readPersistedRegionPreference(): Promise<{ active?: string; preferred?: string }> {
+async function readPersistedRegionPreference(): Promise<{ active?: string; preferred?: string; target?: ProtectionTarget }> {
   if (process.platform !== "win32") return {};
   try {
     const repository = new StateRepository({ root: defaultPersistRoot(process.env) });
     const result = await repository.read();
     const { committedTarget, preferredRegion } = result.value;
     return {
-      ...(committedTarget === null ? {} : { active: committedTarget.region }),
+      ...(committedTarget === null ? {} : { active: committedTarget.region, target: committedTarget }),
       preferred: preferredRegion,
     };
   } catch {
@@ -56,14 +58,22 @@ async function readPersistedRegionPreference(): Promise<{ active?: string; prefe
 }
 
 /** 解析本次检测/注入目标地区：显式优先 → 生效 → 偏好 → 初始默认 us。 */
-async function resolveDetectionTarget(explicitRegion: string | undefined) {
-  const persisted = explicitRegion === undefined ? await readPersistedRegionPreference() : {};
+async function readTargetSelection(explicitRegion: string | undefined, explicitTimezone?: string) {
+  const persisted = await readPersistedRegionPreference();
   const resolved = resolveRegion({
     explicit: explicitRegion,
     active: persisted.active,
     preferred: persisted.preferred,
   });
-  return getTargetRegion(resolved.code);
+  const timezone = knownTargetTimezone({
+    region: resolved.code, explicit: explicitTimezone, active: persisted.target ?? null,
+  });
+  return { region: resolved.code, timezone };
+}
+
+async function resolveCliTarget(region: RegionCode, knownTimezone: string | undefined) {
+  const timezone = knownTimezone ?? resolveTargetTimezone({ region, current: (await systemState()).timezone });
+  return getTargetRegion(region, timezone);
 }
 
 program
@@ -89,6 +99,16 @@ function debugLog(message: string): void {
   if (debugEnabled) process.stderr.write(`[debug] ${message}\n`);
 }
 
+async function timedCheck<T>(label: string, action: () => Promise<T>): Promise<T> {
+  if (!debugEnabled) return action();
+  const start = performance.now();
+  try {
+    return await action();
+  } finally {
+    debugLog(`${label}: ${(performance.now() - start).toFixed(0)}ms`);
+  }
+}
+
 function jsonEnvelope(payload: Record<string, unknown>) {
   return JSON.stringify({ schemaVersion: CLI_SCHEMA_VERSION, ok: true, ...payload }, null, 2);
 }
@@ -107,16 +127,24 @@ program
   .option("--json", "JSON 格式输出")
   .option("--debug", "输出调试信息（耗时、错误堆栈）")
   .option("--region <region>", "目标地区；省略时沿用已提交/偏好地区")
+  .option("--timezone <timezone>", "具体时区，如 America/Los_Angeles；省略时沿用已提交或本机匹配时区")
   .action(async (options) => {
     jsonOutput = options.json === true;
     debugEnabled = options.debug === true;
-    const target = await resolveDetectionTarget(options.region);
-    const t0 = performance.now();
-    const ipIntel = await fetchIpIntelligence();
-    if (debugEnabled) debugLog(`IP 情报获取: ${(performance.now() - t0).toFixed(0)}ms`);
-    const t1 = performance.now();
-    const response = await runDetection("auto", target.timezone, target.lang, ipIntel);
-    debugLog(`检测流水线: ${(performance.now() - t1).toFixed(0)}ms`);
+    const selection = await timedCheck("check.target-selection", () => readTargetSelection(options.region, options.timezone));
+    // 每次检测使用新系统快照。系统探测与 IP 查询并行，插件随后复用本次快照。
+    resetSystemState();
+    if (selection.timezone !== undefined) {
+      // 目标已确定时，插件可以按需等待预读结果；其他插件无需等待系统时区。
+      void systemState().catch((error) => debugLog(`系统时区预读失败: ${String(error)}`));
+    }
+    const [target, ipIntel] = await Promise.all([
+      timedCheck("check.target-timezone", () => resolveCliTarget(selection.region, selection.timezone)),
+      timedCheck("check.ip-intel", fetchIpIntelligence),
+    ]);
+    const response = await timedCheck("check.detection", () =>
+      runDetection("auto", target.timezone, target.lang, ipIntel, undefined, { reuseSystemState: true }),
+    );
     await recordCheck(response.score);
 
     if (options.json) {
@@ -136,6 +164,7 @@ persistCmd
   .description("开启用户级持久化（默认标准保护）")
   .option("--json", "JSON 格式输出")
   .option("--region <region>", "目标地区；省略时沿用已提交/偏好地区")
+  .option("--timezone <timezone>", "具体时区，如 America/Los_Angeles；省略时沿用已提交或本机匹配时区")
   .option("--level <level>", "保护强度: standard | deep")
   .option("--deep", "深度保护（等价于 --level deep）")
   .action(async (options) => {
@@ -148,11 +177,14 @@ persistCmd
       active: status.target?.region,
       preferred: status.preferredRegion,
     });
+    const knownTimezone = knownTargetTimezone({ region: region.code, explicit: options.timezone, active: status.target });
+    const { timezone } = await resolveCliTarget(region.code, knownTimezone);
     const target = resolveProtectionRequest({
       currentMode: status.mode,
       resolvedRegion: region,
       level: options.level,
       deep: options.deep,
+      timezone,
     });
     const result = await runtime.protect(target);
 
@@ -203,9 +235,9 @@ persistCmd
 
     if (printJsonIfRequested(options, facts)) return;
     if (result.kind === "degraded") {
-      console.log(chalk.yellow(`✓ 已提交 ${target.mode} / ${target.region}（降级：${result.degraded.length} 个浏览器策略槽未对齐）`));
+      console.log(chalk.yellow(`✓ 已提交 ${target.mode} / ${target.region} / ${target.timezone}（降级：${result.degraded.length} 个浏览器策略槽未对齐）`));
     } else {
-      console.log(chalk.green(`✓ 已提交 ${target.mode} / ${target.region}`));
+      console.log(chalk.green(`✓ 已提交 ${target.mode} / ${target.region} / ${target.timezone}`));
     }
     console.log(chalk.dim("运行 `cc-fix check` 验证效果；浏览器可能需要重启"));
   });
@@ -314,6 +346,7 @@ persistCmd
     console.log(`  模式: ${status.mode === "daily" ? chalk.dim(status.mode) : chalk.green(status.mode)}`);
     console.log(`  健康: ${status.health === "healthy" ? chalk.green(status.health) : chalk.yellow(status.health)}`);
     console.log(`  目标地区: ${status.target?.region ?? status.preferredRegion}`);
+    if (status.target?.timezone) console.log(`  目标时区: ${status.target.timezone}`);
     console.log(`  事务: ${status.transaction.kind}`);
     console.log(chalk.dim("\n切换: cc-fix persist on [--level standard|deep] [--region us] / off / recover\n"));
   });
@@ -339,9 +372,11 @@ program
   .description("以安全环境启动命令")
   .option("--desktop", "包装启动 Claude Desktop")
   .option("--region <region>", "目标地区；省略时沿用已提交/偏好地区")
+  .option("--timezone <timezone>", "具体时区，如 America/Los_Angeles；省略时沿用已提交或本机匹配时区")
   .action(async (commandArgs, options) => {
     jsonOutput = options.json === true;
-    const target = await resolveDetectionTarget(options.region);
+    const selection = await readTargetSelection(options.region, options.timezone);
+    const target = await resolveCliTarget(selection.region, selection.timezone);
     const { runWithInjectedEnv, runDesktop } = await import("./run/injector.js");
 
     if (options.desktop) {

@@ -9,6 +9,12 @@ const runtimeMocks = vi.hoisted(() => ({
 
 vi.mock("./index.html", () => ({ default: "<!doctype html>" }));
 
+const historyMocks = vi.hoisted(() => ({ recordFixSummary: vi.fn(async () => true) }));
+vi.mock("../fix/history.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../fix/history.js")>(),
+  recordFixSummary: historyMocks.recordFixSummary,
+}));
+
 const browserMocks = vi.hoisted(() => ({ detectRunningBrowsers: vi.fn<() => string[]>(() => []) }));
 
 vi.mock("../platform/browser.js", async (importOriginal) => {
@@ -17,15 +23,20 @@ vi.mock("../platform/browser.js", async (importOriginal) => {
 });
 
 const ipIntelMocks = vi.hoisted(() => ({ fetcher: vi.fn(async () => null) }));
+const systemMocks = vi.hoisted(() => ({ read: vi.fn(async () => ({ timezone: 'America/New_York', offsetMinutes: -240 })) }));
+vi.mock('../platform/system-state.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../platform/system-state.js')>(),
+  systemState: systemMocks.read,
+}));
 
 import { startGuiServer, type GuiHttpServer } from "./server.js";
 
 let server: GuiHttpServer | undefined;
 let authHeaders: Record<string, string> = {};
 
-async function baseUrl(): Promise<string> {
+async function baseUrl(createRuntime = async () => runtimeMocks as never): Promise<string> {
   server = await startGuiServer(0, {
-    createRuntime: async () => runtimeMocks as never,
+    createRuntime,
     ipIntelFetcher: ipIntelMocks.fetcher,
   });
   const address = server.address();
@@ -49,7 +60,21 @@ async function closeServer(): Promise<void> {
   });
 }
 
+async function readStepEvents(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  const decoder = new TextDecoder();
+  let stream = "";
+  while (!stream.includes('"type":"summary"') || !stream.endsWith("\n\n")) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    stream += decoder.decode(value, { stream: true });
+  }
+  return stream.split("\n").filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)))
+    .filter((event) => event.type !== "catalog");
+}
+
 beforeEach(() => {
+  historyMocks.recordFixSummary.mockClear();
   browserMocks.detectRunningBrowsers.mockClear();
   browserMocks.detectRunningBrowsers.mockReturnValue([]);
   runtimeMocks.protect.mockClear();
@@ -58,6 +83,7 @@ beforeEach(() => {
   runtimeMocks.status.mockClear();
   ipIntelMocks.fetcher.mockClear();
   ipIntelMocks.fetcher.mockResolvedValue(null);
+  systemMocks.read.mockResolvedValue({ timezone: 'America/New_York', offsetMinutes: -240 });
 });
 
 describe("POST /api/fix/recover", () => {
@@ -108,6 +134,148 @@ afterEach(async () => {
 });
 
 describe("POST /api/fix/on region validation", () => {
+  it("retries runtime initialization after a failed warm-up and a failed request", async () => {
+    const message = "Persist initialization failed";
+    const createRuntime = vi.fn(async () => runtimeMocks as never)
+      .mockRejectedValueOnce(new Error(message))
+      .mockRejectedValueOnce(new Error(message));
+    const origin = await baseUrl(createRuntime);
+    const request = () => fetch(`${origin}/api/fix/on`, { method: "POST", headers: authHeaders });
+
+    const failed = await request();
+    expect(failed.status).toBe(500);
+    expect(await failed.json()).toEqual({ error: { id: "PERSIST_PREPARE_FAILED", code: 500, message } });
+    expect(historyMocks.recordFixSummary).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.protect).not.toHaveBeenCalled();
+
+    expect((await request()).status).toBe(202);
+    await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
+    expect(createRuntime).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports a failed status read to the caller, SSE and history, then allows a retry", async () => {
+    const origin = await baseUrl();
+    const message = "Cannot read persist state";
+    const events = await fetch(`${origin}/api/events`, { headers: authHeaders, signal: AbortSignal.timeout(5000) });
+    const reader = events.body!.getReader();
+    const request = () => fetch(`${origin}/api/fix/on`, { method: "POST", headers: authHeaders });
+    try {
+      const invalid = await fetch(`${origin}/api/fix/on?level=ultra`, { method: "POST", headers: authHeaders });
+      expect(invalid.status).toBe(400);
+      expect(historyMocks.recordFixSummary).not.toHaveBeenCalled();
+      runtimeMocks.status.mockRejectedValueOnce(new Error(message));
+      const response = await request();
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: { id: "PERSIST_PREPARE_FAILED", code: 500, message } });
+      expect(runtimeMocks.protect).not.toHaveBeenCalled();
+      const summary = { type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: false, failedDuring: "prepare" };
+      expect(await readStepEvents(reader)).toEqual([
+        { type: "step-start", stepId: "persist-prepare", name: "准备保护操作" },
+        { type: "step-fail", stepId: "persist-prepare", error: message },
+        summary,
+      ]);
+      expect(historyMocks.recordFixSummary).toHaveBeenCalledTimes(1);
+      expect(historyMocks.recordFixSummary).toHaveBeenCalledWith("persist-on", summary);
+    } finally {
+      await reader.cancel();
+    }
+    expect((await request()).status).toBe(202);
+    await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps an accepted execution failure on the persist step with a fatal summary", async () => {
+    const origin = await baseUrl();
+    const events = await fetch(`${origin}/api/events`, { headers: authHeaders, signal: AbortSignal.timeout(5000) });
+    const reader = events.body!.getReader();
+    const message = "Persist execution failed";
+    runtimeMocks.protect.mockRejectedValueOnce(new Error(message));
+    try {
+      const response = await fetch(`${origin}/api/fix/on`, { method: "POST", headers: authHeaders });
+      expect(response.status).toBe(202);
+      const summary = { type: "summary", ok: 0, fail: 1, rolledBack: false, fatal: true };
+      expect(await readStepEvents(reader)).toEqual([
+        { type: "step-start", stepId: "persist", name: expect.any(String) },
+        { type: "step-fail", stepId: "persist", error: message },
+        summary,
+      ]);
+      expect(historyMocks.recordFixSummary).toHaveBeenCalledWith("persist-on", summary);
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  it('holds the busy lock while resolving the target so a second request cannot overtake it', async () => {
+    const origin = await baseUrl();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    systemMocks.read.mockImplementationOnce(async () => {
+      started();
+      await gate;
+      return { timezone: 'America/Los_Angeles', offsetMinutes: -420 };
+    });
+    const first = fetch(`${origin}/api/fix/on?region=us`, { method: 'POST', headers: authHeaders });
+    await entered;
+    try {
+      const second = await fetch(`${origin}/api/fix/on?region=us&level=deep&timezone=America%2FChicago`, { method: 'POST', headers: authHeaders });
+      expect(second.status).toBe(409);
+    } finally {
+      release();
+    }
+    expect((await first).status).toBe(202);
+    await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
+  });
+
+  it('offers validated city choices from the shared catalogue', async () => {
+    const origin = await baseUrl();
+    const response = await fetch(`${origin}/api/regions`, { headers: authHeaders });
+    const body = await response.json();
+    expect(body.regions.find((region: { code: string }) => region.code === 'us').timezones)
+      .toContainEqual({ timezone: 'America/Los_Angeles', winTimezone: 'Pacific Standard Time', label: '洛杉矶（太平洋）' });
+  });
+
+  it('preserves the manually aligned Los Angeles timezone when the old target has only a country', async () => {
+    systemMocks.read.mockResolvedValue({ timezone: 'America/Los_Angeles', offsetMinutes: -420 });
+    const origin = await baseUrl();
+    const response = await fetch(`${origin}/api/fix/on?region=us`, { method: 'POST', headers: authHeaders });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledWith({ mode: 'standard', region: 'us', timezone: 'America/Los_Angeles' }));
+  });
+
+  it('accepts an explicit US city and rejects unsupported or cross-region timezones before mutation', async () => {
+    const origin = await baseUrl();
+    for (const timezone of ['', 'Asia/Tokyo', 'US/Pacific']) {
+      const response = await fetch(`${origin}/api/fix/on?region=us&timezone=${encodeURIComponent(timezone)}`, { method: 'POST', headers: authHeaders });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { id: 'INVALID_TIMEZONE', code: 400 } });
+      expect(runtimeMocks.protect).not.toHaveBeenCalled();
+      expect(historyMocks.recordFixSummary).not.toHaveBeenCalled();
+    }
+    const response = await fetch(`${origin}/api/fix/on?region=us&timezone=America%2FLos_Angeles`, { method: 'POST', headers: authHeaders });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledWith({ mode: 'standard', region: 'us', timezone: 'America/Los_Angeles' }));
+  });
+
+  it('returns invalid protection levels before accepting the operation and releases the lock', async () => {
+    const origin = await baseUrl();
+    const response = await fetch(`${origin}/api/fix/on?level=ultra`, { method: 'POST', headers: authHeaders });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { id: 'INVALID_PROTECTION_LEVEL', code: 400 } });
+    expect(runtimeMocks.protect).not.toHaveBeenCalled();
+    expect(historyMocks.recordFixSummary).not.toHaveBeenCalled();
+    const next = await fetch(`${origin}/api/fix/on?region=us`, { method: 'POST', headers: authHeaders });
+    expect(next.status).toBe(202);
+    await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
+  });
+
+  it('returns the resolved local timezone so legacy state does not preselect New York', async () => {
+    systemMocks.read.mockResolvedValue({ timezone: 'America/Los_Angeles', offsetMinutes: -420 });
+    const origin = await baseUrl();
+    const response = await fetch(`${origin}/api/status`, { headers: authHeaders });
+    expect(await response.json()).toMatchObject({ currentTimezone: 'America/Los_Angeles', resolvedTimezone: 'America/Los_Angeles' });
+  });
+
   it("defaults only a completely omitted region to US", async () => {
     const origin = await baseUrl();
 
@@ -115,7 +283,7 @@ describe("POST /api/fix/on region validation", () => {
 
     expect(response.status).toBe(202);
     await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
-    expect(runtimeMocks.protect.mock.calls[0]?.[0]).toEqual({ mode: "standard", region: "us" });
+    expect(runtimeMocks.protect.mock.calls[0]?.[0]).toEqual({ mode: "standard", region: "us", timezone: 'America/New_York' });
   });
 
   it("initializes the persist runtime exactly once across status and fix requests (issue #44)", async () => {
@@ -182,7 +350,7 @@ describe("POST /api/fix/on region validation", () => {
     const validResponse = await fetch(`${origin}/api/fix/on?region=jp`, { method: "POST", headers: authHeaders });
     expect(validResponse.status).toBe(202);
     await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledTimes(1));
-    expect(runtimeMocks.protect.mock.calls[0]?.[0]).toEqual({ mode: "standard", region: "jp" });
+    expect(runtimeMocks.protect.mock.calls[0]?.[0]).toEqual({ mode: "standard", region: "jp", timezone: 'Asia/Tokyo' });
   });
 
   it("broadcasts the running-browser hint over the SSE channel after a successful protect", async () => {
@@ -252,7 +420,7 @@ describe("POST /api/fix/on region validation", () => {
     const origin = await baseUrl();
     const response = await fetch(`${origin}/api/fix/on?region=sg&level=deep`, { method: "POST", headers: authHeaders });
     expect(response.status).toBe(202);
-    await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledWith({ mode: "deep", region: "sg" }));
+    await vi.waitFor(() => expect(runtimeMocks.protect).toHaveBeenCalledWith({ mode: "deep", region: "sg", timezone: 'Asia/Singapore' }));
     const status = await fetch(`${origin}/api/status`, { headers: authHeaders });
     await expect(status.json()).resolves.toMatchObject({ mode: "daily", preferredRegion: "us", health: "healthy" });
   });

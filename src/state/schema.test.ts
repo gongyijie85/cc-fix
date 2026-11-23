@@ -26,6 +26,20 @@ const validState = (): ProtectionState => ({
   updatedAt: '2026-08-11T12:34:56.789Z',
 });
 
+describe('timezone target compatibility', () => {
+  it('accepts old country-only targets and new validated city targets', () => {
+    expect(isProtectionState({ ...validState(), committedTarget: { mode: 'standard', region: 'us' } })).toBe(true);
+    const committedTarget = { mode: 'standard', region: 'us', timezone: 'America/Los_Angeles' };
+    // Early city builds used v1. Keep their data readable while all new city writes use v2.
+    expect(isProtectionState({ ...validState(), committedTarget })).toBe(true);
+    expect(isProtectionState({ ...validState(), schemaVersion: 2, committedTarget })).toBe(true);
+  });
+
+  it.each(['Asia/Tokyo', '', null, undefined])('rejects an invalid saved US timezone %j', (timezone) => {
+    expect(isProtectionState({ ...validState(), committedTarget: { mode: 'standard', region: 'us', timezone } })).toBe(false);
+  });
+});
+
 const registryString = (value: string): RegistryValue => ({ registryType: 'REG_SZ', value });
 
 const validBackup = (): BackupSnapshotV4 => ({
@@ -111,7 +125,7 @@ describe('ProtectionState schema v1', () => {
   });
 
   it.each([
-    ['unknown schema', { schemaVersion: 2 }],
+    ['unknown schema', { schemaVersion: 3 }],
     ['unsafe revision', { revision: Number.MAX_SAFE_INTEGER + 1 }],
     ['negative revision', { revision: -1 }],
     ['invalid target mode', { committedTarget: { mode: 'daily', region: 'us' } }],

@@ -62,6 +62,9 @@ cc-fix check --region us
 # 默认标准保护
 cc-fix persist on --region us
 
+# 按城市指定时区；后续检测和 run 默认沿用已提交的选择
+cc-fix persist on --region us --timezone America/Chicago
+
 # 深度保护（会额外改变语言和区域画像）
 cc-fix persist on --level deep --region jp
 

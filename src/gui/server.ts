@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import htmlContent from "./index.html";
 import { runDetection } from "../detection/runner.js";
 import { getTargetRegion, DEFAULT_REGION, TARGET_REGIONS } from "../detection/regions.js";
+import { REGION_TIMEZONES, resolveTargetTimezone, TimezoneResolutionError } from "../domain/region-catalog.js";
 import { fetchIpIntelligence } from "../proxy/ip-intel.js";
 import type { IpIntelligence } from "../detection/types.js";
 import { recordFixSummary, recordCheck, readHistory } from "../fix/history.js";
@@ -14,11 +15,12 @@ import type { StreamEvent } from "../events/types.js";
 import { buildMetadata } from "../version.js";
 import { RegionResolutionError } from "../domain/region.js";
 import { parseRegionCode, resolveRegion } from "../domain/region.js";
-import { resolveProtectionRequest } from "../domain/protection.js";
+import { ProtectionRequestError, resolveProtectionRequest } from "../domain/protection.js";
 import { createPersistRuntime } from "../persist/runtime.js";
 import type { PersistApplicationService } from "../persist/application.js";
 import { GuiSession } from "./session.js";
 import { detectRunningBrowsers } from "../platform/browser.js";
+import { resetSystemState, systemState } from "../platform/system-state.js";
 import { createFontFixService } from "../fonts/service.js";
 import { defaultPersistRoot } from "../state/paths.js";
 import { recordFontAction } from "../fix/history.js";
@@ -137,25 +139,24 @@ type PersistStepOutcome = {
   degraded?: string[];
 };
 
-/** persist 三步骤的共享骨架：锁 → 202 → step-start → 工作 → step-ok/fail → summary（catch 时 fatal summary）→ 释放锁。
- * prepare 返回 { name, ...contxt }，ctx 传入 execute 复用（fix/on 需在命名前解析目标）。 */
+/** 持锁准备操作，校验通过才返回 202 并执行事务。 */
 async function runPersistStep<C extends { name: string }>(
   orchestrator: ReturnType<typeof createGuiOrchestrator>,
   res: http.ServerResponse,
   step: {
     stepId: string;
     historyName?: "persist-on" | "persist-off";
-    prepare?: () => Promise<C>;
+    prepare: () => Promise<C>;
     execute: (ctx: C) => Promise<PersistStepOutcome>;
     onSuccess?: (outcome: PersistStepOutcome) => void;
   },
 ): Promise<void> {
   if (!orchestrator.tryAcquireLock(res)) return;
-  res.writeHead(202);
-  res.end();
 
   try {
-    const ctx = (await step.prepare?.()) ?? ({ name: step.stepId } as C);
+    const ctx = await step.prepare();
+    res.writeHead(202);
+    res.end();
     orchestrator.broadcast({ type: "step-start", stepId: step.stepId, name: ctx.name });
     const outcome = await step.execute(ctx);
     if (outcome.failed) {
@@ -175,13 +176,29 @@ async function runPersistStep<C extends { name: string }>(
     if (step.historyName) void recordFixSummary(step.historyName, summary);
     orchestrator.broadcast(summary);
   } catch (error) {
-    orchestrator.broadcast({ type: "step-fail", stepId: step.stepId, error: error instanceof Error ? error.message : String(error) });
-    const summary = { type: "summary" as const, ok: 0, fail: 1, rolledBack: false, fatal: true };
-    if (step.historyName) void recordFixSummary(step.historyName, summary);
+    const message = error instanceof Error ? error.message : String(error);
+    const preparing = !res.headersSent;
+    const stepId = preparing ? `${step.stepId}-prepare` : step.stepId;
+    if (preparing) {
+      if (error instanceof ProtectionRequestError || error instanceof TimezoneResolutionError || error instanceof RegionResolutionError) throw error;
+      orchestrator.broadcast({ type: "step-start", stepId, name: "准备保护操作" });
+    }
+    orchestrator.broadcast({ type: "step-fail", stepId, error: message });
+    const summary = {
+      type: "summary" as const, ok: 0, fail: 1, rolledBack: false, fatal: !preparing,
+      ...(preparing ? { failedDuring: "prepare" as const } : {}),
+    };
+    if (step.historyName) await recordFixSummary(step.historyName, summary);
     orchestrator.broadcast(summary);
+    if (preparing) sendJson(res, { error: { id: "PERSIST_PREPARE_FAILED", code: 500, message } }, 500);
   } finally {
     orchestrator.releaseLock();
   }
+}
+
+async function currentSystemTimezone() {
+  resetSystemState();
+  return (await systemState()).timezone;
 }
 
 async function handleFixOn(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse, url: URL) {
@@ -196,8 +213,12 @@ async function handleFixOn(orchestrator: ReturnType<typeof createGuiOrchestrator
       const runtime = await orchestrator.getRuntime();
       const status = await runtime.status();
       const region = resolveRegion({ explicit: requestedRegion ?? undefined, active: status.target?.region, preferred: status.preferredRegion });
-      const target = resolveProtectionRequest({ currentMode: status.mode, resolvedRegion: region, level: requestedLevel });
-      return { name: `切换到 ${target.mode} / ${target.region}`, target };
+      const timezone = resolveTargetTimezone({
+        region: region.code, explicit: url.searchParams.get("timezone") ?? undefined, active: status.target,
+        current: await currentSystemTimezone(),
+      });
+      const target = resolveProtectionRequest({ currentMode: status.mode, resolvedRegion: region, level: requestedLevel, timezone });
+      return { name: `切换到 ${target.mode} / ${target.region} / ${target.timezone}`, target };
     },
     execute: async ({ target }) => {
       const result = await (await orchestrator.getRuntime()).protect(target);
@@ -273,7 +294,9 @@ async function handleCheckStart(orchestrator: ReturnType<typeof createGuiOrchest
       orchestrator.ipIntelFetcher(),
     ]);
     const status = await runtime.status();
-    const target = getTargetRegion(status.target?.region ?? status.preferredRegion);
+    const region = status.target?.region ?? status.preferredRegion;
+    const timezone = resolveTargetTimezone({ region, active: status.target, current: await currentSystemTimezone() });
+    const target = getTargetRegion(region, timezone);
     await runDetection("auto", target.timezone, target.lang, ipIntel, orchestrator.checkEventConsumer);
   } finally {
     orchestrator.releaseLock();
@@ -282,7 +305,11 @@ async function handleCheckStart(orchestrator: ReturnType<typeof createGuiOrchest
 
 async function handleStatus(orchestrator: ReturnType<typeof createGuiOrchestrator>, res: http.ServerResponse) {
   const status = await (await orchestrator.getRuntime()).status();
-  sendJson(res, status);
+  const currentTimezone = await currentSystemTimezone();
+  sendJson(res, {
+    ...status, currentTimezone,
+    resolvedTimezone: resolveTargetTimezone({ region: status.target?.region ?? status.preferredRegion, active: status.target, current: currentTimezone }),
+  });
 }
 
 async function handleHistory(res: http.ServerResponse) {
@@ -292,7 +319,7 @@ async function handleHistory(res: http.ServerResponse) {
 function handleRegions(res: http.ServerResponse) {
   sendJson(res, {
     default: DEFAULT_REGION,
-    regions: Object.values(TARGET_REGIONS).map(r => ({ code: r.code, name: r.name })),
+    regions: Object.values(TARGET_REGIONS).map(r => ({ code: r.code, name: r.name, timezone: r.timezone, timezones: REGION_TIMEZONES[r.code] })),
   });
 }
 
@@ -485,6 +512,14 @@ export function startGuiServer(
         res.end("Not found");
       }
     } catch (err) {
+      if (err instanceof ProtectionRequestError) {
+        sendJson(res, { error: { id: err.code, code: 400, message: err.message, validLevels: err.validLevels } }, 400);
+        return;
+      }
+      if (err instanceof TimezoneResolutionError) {
+        sendJson(res, { error: { id: err.code, code: 400, message: err.message, region: err.region, value: err.value, validTimezones: err.validTimezones } }, 400);
+        return;
+      }
       if (err instanceof RegionResolutionError) {
         // #107：与 CLI JSON 契约一致的稳定信封 { error: { id, code, ... } }
         sendJson(res, {

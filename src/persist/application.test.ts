@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +36,7 @@ async function fixture() {
   const testCoordinator = new InProcessTestMutationCoordinator();
   const stateRepository = new StateRepository({ root, mutationCoordinator: testCoordinator.capability });
   const backupRepository = new BackupRepository({ root, mutationCoordinator: testCoordinator.capability });
+  const journalRepository = new TransactionJournalRepository(root, statePaths(root).journal);
   await stateRepository.initialize('us');
   const current = new Map<PersistStepId, StoredValue<JsonValue>>(Object.entries(dailyValues()) as Array<[PersistStepId, StoredValue<JsonValue>]>);
   const writes: PersistStepId[] = [];
@@ -50,7 +51,7 @@ async function fixture() {
     coordinator: testCoordinator.capability,
     stateRepository,
     backupRepository,
-    journalRepository: new TransactionJournalRepository(root, statePaths(root).journal),
+    journalRepository,
     authorities,
     now: () => '2026-08-13T00:00:00.000Z',
     snapshotId: () => '7f60ed4b-bd54-4f9e-8c4c-c628a94b02a0',
@@ -65,13 +66,59 @@ async function fixture() {
   });
   return {
     root, testCoordinator, stateRepository, backupRepository,
-    journalRepository: new TransactionJournalRepository(root, statePaths(root).journal),
+    journalRepository,
     current, writes, deletedSnapshots, authorities, service, serviceWithoutDelete,
     setDeleteFailure(value: boolean) { deleteFails = value; },
   };
 }
 
 describe('persist application service', () => {
+  it('upgrades v1 before planning a city change and recovers a crash before state.begin', async () => {
+    const subject = await fixture();
+    const oldTarget = { mode: 'standard', region: 'us' } as const;
+    const city = { ...oldTarget, timezone: 'America/Los_Angeles' };
+    await subject.service.protect(oldTarget);
+    expect((await subject.stateRepository.read()).value.schemaVersion).toBe(1);
+    subject.writes.length = 0;
+
+    const plan = subject.journalRepository.plan.bind(subject.journalRepository);
+    vi.spyOn(subject.journalRepository, 'plan').mockImplementationOnce(async (...args) => {
+      expect((await subject.stateRepository.read()).value).toMatchObject({
+        schemaVersion: 2, committedTarget: oldTarget, activeTransactionId: null,
+      });
+      await plan(...args);
+      throw new Error('interrupted after plan');
+    });
+    await expect(subject.service.protect(city)).rejects.toThrow('interrupted after plan');
+    expect((await subject.journalRepository.read())?.context?.requestedTarget).toEqual(city);
+    expect((await subject.service.status()).health).toBe('recovery_required');
+    await expect(subject.service.recover()).resolves.toEqual({ kind: 'recovered', failed: [] });
+    expect(subject.writes).toEqual([]);
+    expect((await subject.stateRepository.read()).value).toMatchObject({
+      schemaVersion: 2, committedTarget: oldTarget, activeTransactionId: null, health: 'healthy',
+    });
+  });
+
+  it('switches US cities, preserves the first backup, survives reopening, and restores daily values', async () => {
+    const subject = await fixture();
+    const losAngeles = { mode: 'standard' as const, region: 'us' as const, timezone: 'America/Los_Angeles' };
+    await subject.service.protect({ mode: 'standard', region: 'us' });
+    const backupBefore = await subject.backupRepository.read();
+    subject.writes.length = 0;
+    await expect(subject.service.protect(losAngeles)).resolves.toMatchObject({ kind: 'committable' });
+    expect(subject.writes).toEqual(['environment', 'system_timezone']);
+    expect(subject.current.get('environment')).toEqual(desiredValues(losAngeles).environment);
+    expect(subject.current.get('system_timezone')).toEqual(storedValue('Pacific Standard Time'));
+    expect(await subject.backupRepository.read()).toEqual(backupBefore);
+    expect((await new StateRepository({ root: subject.root }).read()).value.committedTarget).toEqual(losAngeles);
+    expect((await subject.journalRepository.read())?.context?.requestedTarget).toEqual(losAngeles);
+    subject.writes.length = 0;
+    await expect(subject.service.protect(losAngeles)).resolves.toMatchObject({ kind: 'noop' });
+    expect(subject.writes).toEqual([]);
+    await subject.service.restore();
+    for (const [id, value] of Object.entries(dailyValues())) expect(subject.current.get(id as PersistStepId)).toEqual(value);
+  });
+
   it('owns the complete root-locked backup, journal, authority and state commit path', async () => {
     const subject = await fixture();
     await expect(subject.service.protect({ mode: 'standard', region: 'us' })).resolves.toMatchObject({ kind: 'committable' });

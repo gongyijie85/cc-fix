@@ -13,6 +13,7 @@
 // | 30 | 启动/前置组件/内部不可分类错误 |
 
 import { RegionResolutionError } from "../domain/region.js";
+import { TimezoneResolutionError } from "../domain/region-catalog.js";
 import { ProtectionRequestError } from "../domain/protection.js";
 import { MutationBusyError, MutationRecoveryRequiredError } from "../state/mutation-coordinator.js";
 import { PersistApplicationError } from "../persist/transaction/index.js";
@@ -34,6 +35,7 @@ export const EXIT_INTERNAL = 30;
 /** 稳定 error id：JSON 输出与人类输出共用同一分类。 */
 export type CliErrorId =
   | "INVALID_REGION"
+  | "INVALID_TIMEZONE"
   | "INVALID_PROTECTION_LEVEL"
   | "CONFLICTING_PROTECTION_LEVEL"
   | "INVALID_COMMAND"
@@ -86,6 +88,9 @@ export function classifyError(error: unknown): ClassifiedFailure {
   }
   if (error instanceof RegionResolutionError) {
     return { exitCode: EXIT_INVALID_INPUT, errorId: "INVALID_REGION" };
+  }
+  if (error instanceof TimezoneResolutionError) {
+    return { exitCode: EXIT_INVALID_INPUT, errorId: "INVALID_TIMEZONE" };
   }
   if (error instanceof ProtectionRequestError) {
     return error.code === "CONFLICTING_PROTECTION_LEVEL"

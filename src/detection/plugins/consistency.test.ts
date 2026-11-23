@@ -156,6 +156,14 @@ describe("createConsistencyPlugin", () => {
     expect(result.risk).toBe("low");
   });
 
+  it.each(['America/Los_Angeles', 'America/Chicago', 'America/Denver'])("美国城市 %s 仍检查出口国家", async (timezone) => {
+    state.timezone = timezone;
+    state.locale = 'en-US';
+    const result = await createConsistencyPlugin(ipOf('SG')).run({ targetTimezone: timezone, targetLang: 'en_US' });
+    expect(result.value).toBe('IP(SG)≠目标(US)');
+    expect(result.risk).toBe('medium');
+  });
+
   it("未知目标时区不触发 IP 检查（防御未知画像误报）", async () => {
     state.timezone = "Pacific/Auckland";
     state.locale = "en-NZ";

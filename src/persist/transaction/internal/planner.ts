@@ -34,7 +34,7 @@ export function planTransition(input: {
       steps.push({ id, disposition: 'required', action: 'restore' });
     }
   }
-  const sameTarget = from?.mode === target.mode && from.region === target.region;
+  const sameTarget = from?.mode === target.mode && from.region === target.region && from.timezone === target.timezone;
   const kind = sameTarget && steps.every((step) => step.action === 'noop') ? 'noop' : 'protect';
   return { kind, from, target, steps };
 }

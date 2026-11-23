@@ -7,6 +7,7 @@ import type { JsonValue } from './checksum.js';
 import {
   deleteCheckedFile,
   nodeDurableFileSystem,
+  readCheckedFile,
   type DurableFileSystem,
   writeCheckedFile,
 } from './durable-file.js';
@@ -14,6 +15,7 @@ import {
   BACKUP_AUTHORITY_IDS,
   BROWSER_POLICY_SLOTS,
   isBackupSnapshotV4,
+  isProtectionState,
   storedMissing,
   storedValue,
   type BackupSnapshotV4,
@@ -576,6 +578,46 @@ describe('StateRepository revisioned commits', () => {
     ).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
   });
 
+  it('publishes city targets as a newer schema that the v1 reader refuses despite a valid .prev', async () => {
+    const root = await makeRoot();
+    const repository = stateRepository(root);
+    const daily = (await repository.initialize('us')).value;
+    const target = { mode: 'standard', region: 'us', timezone: 'America/Los_Angeles' } as const;
+    await repository.commit(0, {
+      committedTarget: target, preferredRegion: 'us', health: 'healthy', degradation: [], activeTransactionId: null,
+    });
+
+    // The released repository blocks .prev only for unknown versions, not invalid target keys.
+    class UnknownPayloadSchemaError extends Error {}
+    const legacy = await readCheckedFile({
+      stateRoot: root, filePath: statePaths(root).state, schema: 'cc-fix-state-v1',
+      validatePayload: (value): value is JsonValue => {
+        if (typeof value === 'object' && value !== null && !Array.isArray(value) &&
+          'schemaVersion' in value && value.schemaVersion !== 1) throw new UnknownPayloadSchemaError();
+        return isProtectionState(value) && (value.committedTarget === null ||
+          Object.keys(value.committedTarget).sort().join(',') === 'mode,region');
+      },
+    });
+    expect(legacy).toMatchObject({ source: 'previous', payload: daily, currentFailure: { cause: expect.any(UnknownPayloadSchemaError) } });
+    expect(await repository.read()).toMatchObject({ source: 'current', value: { schemaVersion: 2, committedTarget: target } });
+  });
+
+  it('reads early v1 city files and keeps v2 after clearing the target', async () => {
+    const root = await makeRoot();
+    const repository = stateRepository(root);
+    const daily = (await repository.initialize('us')).value;
+    const target = { mode: 'standard', region: 'us', timezone: 'America/Los_Angeles' } as const;
+    const early = { ...daily, committedTarget: target, revision: 1 };
+    await writeCheckedFile({
+      stateRoot: root, filePath: statePaths(root).state, schema: 'cc-fix-state-v1', payload: early,
+    });
+    expect(await repository.read()).toMatchObject({ source: 'current', value: early });
+    await repository.commit(early.revision, {
+      committedTarget: null, preferredRegion: 'us', health: 'healthy', degradation: [], activeTransactionId: null,
+    });
+    expect((await repository.read()).value).toMatchObject({ schemaVersion: 2, revision: 2, committedTarget: null });
+  });
+
   it('fails closed on missing or corrupt generations', async () => {
     const root = await makeRoot();
     const repository = stateRepository(root);
@@ -593,14 +635,14 @@ describe('StateRepository revisioned commits', () => {
     await expect(repository.read()).rejects.toBeInstanceOf(RepositoryError);
   });
 
-  it('fails closed on an unknown new state schema even with a valid predecessor', async () => {
+  it.each(['cc-fix-state-v1', 'cc-fix-state-v3'])('fails closed on an unknown state schema in envelope %s even with a valid predecessor', async (schema) => {
     const root = await makeRoot();
     const repository = stateRepository(root);
     await repository.initialize('us');
     await copyFile(statePaths(root).state, `${statePaths(root).state}.prev`);
     await writeFile(
       statePaths(root).state,
-      serializeCheckedEnvelope(createCheckedEnvelope('cc-fix-state-v2', { schemaVersion: 2 })),
+      serializeCheckedEnvelope(createCheckedEnvelope(schema, { schemaVersion: 3 })),
       'utf8',
     );
     await expect(repository.read()).rejects.toMatchObject({ code: 'STATE_CORRUPT' });
