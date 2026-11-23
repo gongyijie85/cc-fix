@@ -57,6 +57,7 @@ test('具体时区：保护请求携带选中的城市（拦截写入）', async
 test("首载：渲染状态栏与操作控件，无控制台错误", async ({ page }) => {
   await openApp(page, { state: dailyState() });
   await expect(page).toHaveTitle("CC-Fix 环境安全检测");
+  await expect(page.locator(".network-note")).toContainText("DNS 项只检查域名解析结果");
   await expect(page.locator("#statusText")).toBeVisible();
   await expect(page.locator("#btnOn")).toBeVisible();
   await expect(page.locator("#btnOff")).toBeVisible();
@@ -169,7 +170,11 @@ test("视觉基线：窄屏与桌面首屏层级稳定", { tag: "@visual-baselin
   const response = {
     score: 0, riskLevel: 'low', status: 'supported', region: 'auto', matchedRegion: null,
     signals: [{ id: 'timezone', label: '系统时区', value: 'America/Los_Angeles', score: 0, weight: 25, contribution: 0, source: 'system', risk: 'low' }],
-    ipIntelligence: null, recommendations: [],
+    ipIntelligence: {
+      ip: '192.0.2.1', country: 'US', city: 'Chicago', timezone: 'America/Chicago',
+      asn: 'AS64496', ipType: 'residential', multiSourceConsistent: true,
+    },
+    recommendations: [],
   };
   await page.route('**/api/check/start', (route) => route.fulfill({ status: 202, body: '' }));
   await page.route('**/api/events', (route) => route.fulfill({
@@ -184,6 +189,7 @@ test("视觉基线：窄屏与桌面首屏层级稳定", { tag: "@visual-baselin
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.locator("#statusText")).not.toHaveText("检测中...", { timeout: 15_000 });
     await expect(page.locator('#timezoneSelect')).toBeEnabled();
+    await expect(page.locator('.ip-item').filter({ hasText: '出口时区' })).toContainText('America/Chicago');
     await expect(page.locator('#detectCard')).not.toHaveClass(/visible/);
     await expect(page).toHaveScreenshot(`gui-${name}.png`, {
       fullPage: true,

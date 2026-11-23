@@ -17,6 +17,8 @@ CC-Fix 是面向 Windows 的环境一致性检测与可恢复保护工具。它�
 ## 重要边界
 
 - CC-Fix 会检测出口网络、VPN、路由、网卡、DNS、hosts 与 DoH 风险，但只给出提醒，绝不修改这些网络配置。
+- DNS 项只检查域名解析结果，无法据此判断 DNS 解析器的实际出口或是否发生 DNS 泄露。检测会向 ipwho.is 和 ipinfo.io 查询公网出口 IP 的位置、时区和 ASN，必要时也会向 ipwho.is 查询解析所得公网地址的归属。
+- 风险评分汇总本次环境检测信号。出口 IP 的信誉需单独查询，调整本机时区或语言无法清除已有的 IP 滥用记录。
 - “标准保护”会修改当前用户的 `TZ`、`LANG`、`LC_ALL`，Windows 系统时区，以及 Chrome/Edge 的 6 个受管策略槽。
 - “深度保护”还会修改 `LocaleName`、首选语言列表和用户 Culture，因此会更明显地影响日常 Windows 体验。深度保护通过 `Set-WinUserLanguageList -Force` 用目标语言重建首选语言列表，**会一并重置该列表绑定的输入法关联**：已安装的中文输入法（IME）**不会被卸载**，但需要手动加回（设置 → 时间和语言 → 语言 → 键盘/输入法），`persist off` 完整还原时输入法关联会一并恢复。
 - 只想保持中文输入法、不动语言/区域偏好时，请使用“标准保护”（`persist on`，不修改首选语言列表）。
@@ -62,8 +64,9 @@ cc-fix check --region us
 # 默认标准保护
 cc-fix persist on --region us
 
-# 按城市指定时区；后续检测和 run 默认沿用已提交的选择
-cc-fix persist on --region us --timezone America/Chicago
+# 按洛杉矶时区检测，再将其设为美国地区的保护时区
+cc-fix check --region us --timezone America/Los_Angeles
+cc-fix persist on --region us --timezone America/Los_Angeles
 
 # 深度保护（会额外改变语言和区域画像）
 cc-fix persist on --level deep --region jp
@@ -81,6 +84,10 @@ cc-fix persist off
 # 只在子进程中注入目标环境，不改变持久状态
 cc-fix run --region eu claude
 ```
+
+桌面应用和本地 GUI 可在“目标地区”旁选择“具体时区”。美国地区支持纽约、洛杉矶、芝加哥和丹佛。省略 `--timezone` 时，优先沿用该地区已提交的城市。若尚未选择城市，则沿用该地区支持的本机时区，最后才使用地区默认时区。切换城市会保留首次保护前的还原快照。
+
+“网络出口”中的“出口时区”来自公网 IP 查询，可与所选的保护时区对照。
 
 桌面应用和 `cc-fix gui` 共用经过会话认证的 `127.0.0.1` 服务。启动令牌一次性使用，API/SSE 同时检查 Host、Origin 和会话 Cookie。
 

@@ -614,6 +614,7 @@ function buildDetectResultHtml(data) {
     html += `<div class="ip-info"><h3><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm6.9 9h-3.1a16 16 0 0 0-1.2-5A8 8 0 0 1 18.9 11ZM12 4c.9 1.2 1.6 3 1.8 5h-3.6c.2-2 .9-3.8 1.8-5ZM9.4 6a16 16 0 0 0-1.2 5H5.1A8 8 0 0 1 9.4 6ZM5.1 13h3.1a16 16 0 0 0 1.2 5A8 8 0 0 1 5.1 13ZM12 20c-.9-1.2-1.6-3-1.8-5h3.6c-.2 2-.9 3.8-1.8 5Zm2.6-2a16 16 0 0 0 1.2-5h3.1a8 8 0 0 1-4.3 5Z"/></svg> 网络出口</h3><div class="ip-grid">
       <div class="ip-item"><span>IP:</span> ${esc(ip.ip || "N/A")}</div>
       <div class="ip-item"><span>位置:</span> ${esc(location || "N/A")}</div>
+      <div class="ip-item"><span>出口时区:</span> ${esc(ip.timezone || "N/A")}</div>
       <div class="ip-item"><span>ASN:</span> ${esc(ip.asn || "N/A")}</div>
       <div class="ip-item"><span>类型:</span> ${ipTypeLabel}</div>
       <div class="ip-item"><span>多源:</span> ${ip.multiSourceConsistent ? '<span class="text-success">一致</span>' : '<span class="text-danger">不一致</span>'}</div>
@@ -670,7 +671,7 @@ function renderFullContent(data) {
     <button class="btn btn-refresh" id="btnRefresh">重新检测</button>
   </div>`;
 
-  html += `<p class="network-note">VPN、路由器、网卡、DNS、hosts 与 DoH 仅做检测和提醒，CC-Fix 不会修改这些网络配置。检测会向 ipwho.is / ipinfo.io 查询出口 IP 以判断风险（仅公网 IP 与国家/ASN 信息）。</p>`;
+  html += `<p class="network-note">VPN、路由器、网卡、DNS、hosts 与 DoH 仅做只读检测。DNS 项只检查域名解析结果，无法据此判断 DNS 是否泄露。检测会向 ipwho.is 和 ipinfo.io 查询公网出口 IP 的位置、时区和 ASN，必要时也会向 ipwho.is 查询解析所得公网地址的归属。出口 IP 的信誉需单独查询。</p>`;
 
   html += `<div class="recommendations" id="detectRecs"${recommendations && recommendations.length > 0 ? "" : ' style="display:none"'}>${recommendationsFragment(recommendations)}</div>`;
 
