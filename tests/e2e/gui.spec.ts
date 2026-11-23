@@ -298,11 +298,22 @@ test("detect-done 局部补丁不再重拉 regions/status（#89）", async ({ pa
     if (u.includes("/api/regions") || u.includes("/api/status")) regionsStatusRequests.push(u);
   });
 
-  // 直接 POST 检测（不经 refresh，不重建 content —— 走 renderDetectResult 局部补丁路径）
-  await page.evaluate(() => fetch("/api/check/start", { method: "POST" }));
-  // 先等新检测启动（标题进入"检测进行中…"，避开上个检测的残留"检测完成"标题）
-  await expect(page.locator("#detectTitle")).toHaveText("检测进行中…", { timeout: 15_000 });
-  // 再等 detect-done
+  // 先记录本轮标题变化，快速检测可能在 Playwright 第一次轮询前就已经结束。
+  const titles = await page.locator("#detectTitle").evaluateHandle((title) => {
+    const seen: string[] = [];
+    const observer = new MutationObserver((changes) => {
+      for (const change of changes) {
+        for (const node of change.addedNodes) seen.push(node.textContent ?? "");
+      }
+      if (seen.includes("检测完成")) observer.disconnect();
+    });
+    observer.observe(title, { childList: true });
+    return seen;
+  });
+  const status = await page.evaluate(async () => (await fetch("/api/check/start", { method: "POST" })).status);
+  expect(status).toBe(202);
+  await expect.poll(() => titles.jsonValue(), { timeout: 15_000 }).toContain("检测完成");
+  expect((await titles.jsonValue())[0]).toBe("检测进行中…");
   await expect(page.locator("#detectTitle")).toHaveText("检测完成", { timeout: 15_000 });
 
   // 补丁路径不应重新请求 regions/status（regions 已缓存，纯检测不改 status）
