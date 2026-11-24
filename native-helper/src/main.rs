@@ -243,17 +243,20 @@ mod windows_helper {
         use crate::{MAX_STDIN_BYTES, read_expected_limited};
         use super::compare_delete;
         use std::fs;
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::sync::atomic::{AtomicU64, Ordering};
 
         fn root() -> std::path::PathBuf {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("cc-fix-helper-{}-{unique}", std::process::id()));
-            fs::create_dir(&path).unwrap();
-            path
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+            loop {
+                let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir()
+                    .join(format!("cc-fix-helper-{}-{id}", std::process::id()));
+                match fs::create_dir(&path) {
+                    Ok(()) => return path,
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(err) => panic!("could not create test directory {}: {err}", path.display()),
+                }
+            }
         }
 
         #[test]

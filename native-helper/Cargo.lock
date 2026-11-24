@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "cc-fix-native-helper"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "windows-sys",
 ]
