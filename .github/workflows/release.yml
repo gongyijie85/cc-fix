@@ -61,22 +61,42 @@ jobs:
         shell: pwsh
         run: |
           $lock = Get-Content toolchain.lock.json -Raw | ConvertFrom-Json
-          Invoke-WebRequest $lock.tools.innoSetup.source -OutFile inno.exe
-          if ((Get-FileHash inno.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $lock.tools.innoSetup.sha256) { throw 'Inno digest mismatch' }
-          Start-Process .\inno.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER' -WindowStyle Hidden -Wait
+          $setup = Join-Path $env:RUNNER_TEMP 'inno.exe'
+          Invoke-WebRequest $lock.tools.innoSetup.source -OutFile $setup
+          if ((Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $lock.tools.innoSetup.sha256) { throw 'Inno digest mismatch' }
+          Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER' -WindowStyle Hidden -Wait
       - run: pnpm release:bundle
         env:
           CC_FIX_SIGNING_STATUS: unsigned
       - run: pnpm verify:evidence
       - run: pnpm test:windows
+      - name: Collect checksums from the tagged build
+        shell: pwsh
+        run: |
+          $info = Get-Content release/evidence/build-info.json -Raw | ConvertFrom-Json
+          if ($info.sourceTreeDirty -or $info.commit -ne $env:GITHUB_SHA -or $env:GITHUB_REF_NAME -ne "v$($info.version)") { throw 'Release source does not match the clean workflow tag' }
+          $assets = @(Get-Item "release/installer/$($info.installer.file)") + @(Get-ChildItem release/evidence -File)
+          $assets | Sort-Object Name | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          } | Set-Content release/evidence/SHA256SUMS.txt -Encoding utf8NoBOM
       - name: Attest installer and evidence
+        id: provenance
         uses: actions/attest@v4
         with:
           subject-path: |
             release/installer/CC-Fix-Setup-*.exe
-            release/installer/CC-Fix-Setup-*.sha256
-            release/evidence/sbom.cdx.json
-            release/evidence/build-info.json
+            release/evidence/*
+      - name: Verify artifact provenance
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          $assets = @(Get-ChildItem release/installer/CC-Fix-Setup-*.exe) + @(Get-ChildItem release/evidence -File)
+          foreach ($asset in $assets) {
+            gh attestation verify $asset.FullName --bundle $env:BUNDLE --repo $env:GITHUB_REPOSITORY --source-digest $env:GITHUB_SHA --source-ref $env:GITHUB_REF
+            if ($LASTEXITCODE -ne 0) { throw "Attestation verification failed: $($asset.Name)" }
+          }
       - name: Create immutable-ready draft
         shell: pwsh
         env:
@@ -95,11 +115,11 @@ jobs:
           # （本地逐文件探针均成功，判定为 CI GITHUB_TOKEN 下多文件上传会话的偶发问题）。
           # 改为「逐文件单独上传」= 每次一个文件一个上传请求，规避该问题。
           gh release create $env:RELEASE_TAG --verify-tag --draft --prerelease --title "CC-Fix $version" --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed' }
           $assetFiles = @()
           $assetFiles += @(Get-ChildItem 'release/installer/CC-Fix-Setup-*.exe')
-          $assetFiles += @(Get-ChildItem 'release/installer/CC-Fix-Setup-*.sha256')
           $assetFiles += @(Get-ChildItem 'release/evidence/*')
           foreach ($asset in $assetFiles) {
-            gh release upload "$env:RELEASE_TAG" --clobber $asset.FullName
+            gh release upload "$env:RELEASE_TAG" $asset.FullName
             if ($LASTEXITCODE -ne 0) { throw "Asset upload failed: $($asset.Name)" }
           }
